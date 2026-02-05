@@ -1,6 +1,6 @@
 use crate::ast::{
-    Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, Item, Module, Param, StaticDef,
-    Stmt, StructDef, Type,
+    Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, Item, Module, Param, RustUse,
+    StaticDef, Stmt, StructDef, Type,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -43,6 +43,9 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Option<Item> {
+        if self.match_kind(TokenKind::Rust) {
+            return self.parse_rust_use().map(Item::RustUse);
+        }
         if self.match_kind(TokenKind::Struct) {
             return self.parse_struct().map(Item::Struct);
         }
@@ -59,8 +62,15 @@ impl Parser {
             return self.parse_static_item().map(Item::Static);
         }
 
-        self.error_current("Expected top-level item (`struct`, `enum`, `fn`, `const`, `static`)");
+        self.error_current("Expected top-level item (`rust use`, `struct`, `enum`, `fn`, `const`, `static`)");
         None
+    }
+
+    fn parse_rust_use(&mut self) -> Option<RustUse> {
+        self.expect(TokenKind::Use, "Expected `use` after `rust`")?;
+        let path = self.parse_path("Expected import path after `rust use`")?;
+        self.expect(TokenKind::Semicolon, "Expected ';' after rust use import")?;
+        Some(RustUse { path })
     }
 
     fn parse_struct(&mut self) -> Option<StructDef> {
@@ -182,6 +192,14 @@ impl Parser {
             self.expect(TokenKind::Semicolon, "Expected ';' after const statement")?;
             return Some(Stmt::Const(ConstDef { name, ty, value }));
         }
+        if self.match_kind(TokenKind::Return) {
+            if self.match_kind(TokenKind::Semicolon) {
+                return Some(Stmt::Return(None));
+            }
+            let expr = self.parse_expr()?;
+            self.expect(TokenKind::Semicolon, "Expected ';' after return value")?;
+            return Some(Stmt::Return(Some(expr)));
+        }
 
         let expr = self.parse_expr()?;
         self.expect(TokenKind::Semicolon, "Expected ';' after expression statement")?;
@@ -189,8 +207,27 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Option<Expr> {
-        let mut expr = self.parse_primary()?;
+        self.parse_postfix_expr()
+    }
+
+    fn parse_postfix_expr(&mut self) -> Option<Expr> {
+        let mut expr = self.parse_primary_expr()?;
         loop {
+            if self.match_kind(TokenKind::LParen) {
+                let mut args = Vec::new();
+                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                    args.push(self.parse_expr()?);
+                    if !self.match_kind(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen, "Expected ')' after function arguments")?;
+                expr = Expr::Call {
+                    callee: Box::new(expr),
+                    args,
+                };
+                continue;
+            }
             if self.match_kind(TokenKind::Dot) {
                 let field = self.expect_ident("Expected field name after '.'")?;
                 expr = Expr::Field {
@@ -199,12 +236,16 @@ impl Parser {
                 };
                 continue;
             }
+            if self.match_kind(TokenKind::Question) {
+                expr = Expr::Try(Box::new(expr));
+                continue;
+            }
             break;
         }
         Some(expr)
     }
 
-    fn parse_primary(&mut self) -> Option<Expr> {
+    fn parse_primary_expr(&mut self) -> Option<Expr> {
         let token = self.peek().clone();
         match token.kind {
             TokenKind::IntLiteral(value) => {
@@ -223,21 +264,15 @@ impl Parser {
                 self.advance();
                 Some(Expr::String(value))
             }
-            TokenKind::Identifier(name) => {
+            TokenKind::Identifier(_) => {
+                let path = self.parse_path("Expected identifier path")?;
+                Some(Expr::Path(path))
+            }
+            TokenKind::LParen => {
                 self.advance();
-                if self.match_kind(TokenKind::LParen) {
-                    let mut args = Vec::new();
-                    while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
-                        args.push(self.parse_expr()?);
-                        if !self.match_kind(TokenKind::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(TokenKind::RParen, "Expected ')' after function arguments")?;
-                    Some(Expr::Call { callee: name, args })
-                } else {
-                    Some(Expr::Var(name))
-                }
+                let expr = self.parse_expr()?;
+                self.expect(TokenKind::RParen, "Expected ')' after parenthesized expression")?;
+                Some(expr)
             }
             _ => {
                 self.error_current("Expected expression");
@@ -247,17 +282,27 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Option<Type> {
-        let token = self.peek().clone();
-        match token.kind {
-            TokenKind::Identifier(name) => {
-                self.advance();
-                Some(Type::Named(name))
+        let path = self.parse_path("Expected type name")?;
+        let mut args = Vec::new();
+        if self.match_kind(TokenKind::Lt) {
+            while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
+                args.push(self.parse_type()?);
+                if !self.match_kind(TokenKind::Comma) {
+                    break;
+                }
             }
-            _ => {
-                self.error_current("Expected type name");
-                None
-            }
+            self.expect(TokenKind::Gt, "Expected '>' to close generic arguments")?;
         }
+        Some(Type { path, args })
+    }
+
+    fn parse_path(&mut self, message: &str) -> Option<Vec<String>> {
+        let mut path = Vec::new();
+        path.push(self.expect_ident(message)?);
+        while self.match_kind(TokenKind::ColonColon) {
+            path.push(self.expect_ident("Expected identifier after '::'")?);
+        }
+        Some(path)
     }
 
     fn expect_ident(&mut self, message: &str) -> Option<String> {
@@ -317,7 +362,8 @@ impl Parser {
             if self.match_kind(TokenKind::Semicolon) {
                 return;
             }
-            if self.at(TokenKind::Struct)
+            if self.at(TokenKind::Rust)
+                || self.at(TokenKind::Struct)
                 || self.at(TokenKind::Enum)
                 || self.at(TokenKind::Fn)
                 || self.at(TokenKind::Const)
@@ -334,11 +380,14 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
     use TokenKind::*;
     matches!(
         (left, right),
-        (Struct, Struct)
+        (Rust, Rust)
+            | (Use, Use)
+            | (Struct, Struct)
             | (Enum, Enum)
             | (Fn, Fn)
             | (Const, Const)
             | (Static, Static)
+            | (Return, Return)
             | (True, True)
             | (False, False)
             | (Identifier(_), Identifier(_))
@@ -349,11 +398,15 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (LParen, LParen)
             | (RParen, RParen)
             | (Colon, Colon)
+            | (ColonColon, ColonColon)
             | (Semicolon, Semicolon)
             | (Comma, Comma)
             | (Dot, Dot)
             | (Equal, Equal)
             | (Arrow, Arrow)
+            | (Lt, Lt)
+            | (Gt, Gt)
+            | (Question, Question)
             | (Eof, Eof)
     )
 }
@@ -365,15 +418,11 @@ mod tests {
     use super::parse_module;
 
     #[test]
-    fn parse_struct_and_function() {
+    fn parse_rust_use_and_function() {
         let source = r#"
-            struct Point {
-                x: i64;
-                y: i64;
-            }
-
-            fn origin_x(p: Point) -> i64 {
-                p.x;
+            rust use std::fmt;
+            fn read_value() -> Result<i64, Error> {
+                return get_value()?;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

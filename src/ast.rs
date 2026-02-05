@@ -5,11 +5,17 @@ pub struct Module {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
+    RustUse(RustUse),
     Struct(StructDef),
     Enum(EnumDef),
     Function(FunctionDef),
     Const(ConstDef),
     Static(StaticDef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustUse {
+    pub path: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +64,7 @@ pub struct Block {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Const(ConstDef),
+    Return(Option<Expr>),
     Expr(Expr),
 }
 
@@ -76,8 +83,9 @@ pub struct StaticDef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Type {
-    Named(String),
+pub struct Type {
+    pub path: Vec<String>,
+    pub args: Vec<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,13 +93,14 @@ pub enum Expr {
     Int(i64),
     Bool(bool),
     String(String),
-    Var(String),
+    Path(Vec<String>),
     Call {
-        callee: String,
+        callee: Box<Expr>,
         args: Vec<Expr>,
     },
     Field {
         base: Box<Expr>,
         field: String,
     },
+    Try(Box<Expr>),
 }

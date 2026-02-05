@@ -5,11 +5,17 @@ pub struct RustModule {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustItem {
+    Use(RustUse),
     Struct(RustStruct),
     Enum(RustEnum),
     Function(RustFunction),
     Const(RustConst),
     Static(RustStatic),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustUse {
+    pub path: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +46,8 @@ pub struct RustVariant {
 pub struct RustFunction {
     pub name: String,
     pub params: Vec<RustParam>,
-    pub return_type: Option<String>,
+    pub return_type: String,
+    pub body: Vec<RustStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,9 +57,16 @@ pub struct RustParam {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustStmt {
+    Const(RustConst),
+    Return(Option<RustExpr>),
+    Expr(RustExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustConst {
     pub name: String,
-    pub ty: Option<String>,
+    pub ty: String,
     pub value: RustExpr,
 }
 
@@ -68,13 +82,14 @@ pub enum RustExpr {
     Int(i64),
     Bool(bool),
     String(String),
-    Var(String),
+    Path(Vec<String>),
     Call {
-        callee: String,
+        callee: Box<RustExpr>,
         args: Vec<RustExpr>,
     },
     Field {
         base: Box<RustExpr>,
         field: String,
     },
+    Try(Box<RustExpr>),
 }

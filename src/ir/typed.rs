@@ -5,11 +5,17 @@ pub struct TypedModule {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedItem {
+    RustUse(TypedRustUse),
     Struct(TypedStruct),
     Enum(TypedEnum),
     Function(TypedFunction),
     Const(TypedConst),
     Static(TypedStatic),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedRustUse {
+    pub path: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +46,8 @@ pub struct TypedVariant {
 pub struct TypedFunction {
     pub name: String,
     pub params: Vec<TypedParam>,
-    pub return_type: Option<String>,
+    pub return_type: String,
+    pub body: Vec<TypedStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,9 +57,16 @@ pub struct TypedParam {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedStmt {
+    Const(TypedConst),
+    Return(Option<TypedExpr>),
+    Expr(TypedExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedConst {
     pub name: String,
-    pub ty: Option<String>,
+    pub ty: String,
     pub value: TypedExpr,
 }
 
@@ -64,17 +78,24 @@ pub struct TypedStatic {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TypedExpr {
+pub struct TypedExpr {
+    pub kind: TypedExprKind,
+    pub ty: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedExprKind {
     Int(i64),
     Bool(bool),
     String(String),
-    Var(String),
+    Path(Vec<String>),
     Call {
-        callee: String,
+        callee: Box<TypedExpr>,
         args: Vec<TypedExpr>,
     },
     Field {
         base: Box<TypedExpr>,
         field: String,
     },
+    Try(Box<TypedExpr>),
 }

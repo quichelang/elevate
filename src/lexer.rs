@@ -8,11 +8,14 @@ pub struct Token {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
+    Rust,
+    Use,
     Struct,
     Enum,
     Fn,
     Const,
     Static,
+    Return,
     True,
     False,
     Identifier(String),
@@ -23,11 +26,15 @@ pub enum TokenKind {
     LParen,
     RParen,
     Colon,
+    ColonColon,
     Semicolon,
     Comma,
     Dot,
     Equal,
     Arrow,
+    Lt,
+    Gt,
+    Question,
     Eof,
 }
 
@@ -73,11 +80,24 @@ impl<'a> Lexer<'a> {
                 '}' => self.push_simple(TokenKind::RBrace, start),
                 '(' => self.push_simple(TokenKind::LParen, start),
                 ')' => self.push_simple(TokenKind::RParen, start),
-                ':' => self.push_simple(TokenKind::Colon, start),
+                ':' => {
+                    if self.peek_char() == Some(':') {
+                        self.advance();
+                        self.tokens.push(Token {
+                            kind: TokenKind::ColonColon,
+                            span: Span::new(start, self.cursor),
+                        });
+                    } else {
+                        self.push_simple(TokenKind::Colon, start);
+                    }
+                }
                 ';' => self.push_simple(TokenKind::Semicolon, start),
                 ',' => self.push_simple(TokenKind::Comma, start),
                 '.' => self.push_simple(TokenKind::Dot, start),
                 '=' => self.push_simple(TokenKind::Equal, start),
+                '<' => self.push_simple(TokenKind::Lt, start),
+                '>' => self.push_simple(TokenKind::Gt, start),
+                '?' => self.push_simple(TokenKind::Question, start),
                 '-' => {
                     if self.peek_char() == Some('>') {
                         self.advance();
@@ -164,11 +184,14 @@ impl<'a> Lexer<'a> {
             }
         }
         let kind = match ident.as_str() {
+            "rust" => TokenKind::Rust,
+            "use" => TokenKind::Use,
             "struct" => TokenKind::Struct,
             "enum" => TokenKind::Enum,
             "fn" => TokenKind::Fn,
             "const" => TokenKind::Const,
             "static" => TokenKind::Static,
+            "return" => TokenKind::Return,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             _ => TokenKind::Identifier(ident),
@@ -249,5 +272,15 @@ mod tests {
         assert!(matches!(tokens[1].kind, TokenKind::Identifier(_)));
         assert!(matches!(tokens[2].kind, TokenKind::LBrace));
         assert!(matches!(tokens[3].kind, TokenKind::Identifier(_)));
+    }
+
+    #[test]
+    fn lex_path_and_try_tokens() {
+        let source = "rust use std::io; value?;";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Rust)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Use)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::ColonColon)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Question)));
     }
 }

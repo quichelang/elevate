@@ -11,5 +11,5 @@ enum MaybeI64 {
 }
 
 fn get_x(p: Point) -> i64 {
-  p.x;
+  return p.x;
 }
