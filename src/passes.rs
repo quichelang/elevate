@@ -246,27 +246,35 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
             for param in &def.params {
                 locals.insert(param.name.clone(), type_from_ast(&param.ty));
             }
-            let return_ty = def
-                .return_type
-                .as_ref()
-                .map(type_from_ast)
-                .unwrap_or(SemType::Unit);
+            let declared_return_ty = def.return_type.as_ref().map(type_from_ast);
+            let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
             let mut body = Vec::new();
             let mut has_explicit_return = false;
+            let mut inferred_returns = Vec::new();
             for statement in &def.body.statements {
                 if matches!(statement, Stmt::Return(_)) {
                     has_explicit_return = true;
                 }
-                if let Some(stmt) = lower_stmt_with_types(statement, context, &mut locals, &return_ty, diagnostics) {
+                if let Some(stmt) = lower_stmt_with_types(
+                    statement,
+                    context,
+                    &mut locals,
+                    &provisional_return_ty,
+                    &mut inferred_returns,
+                    diagnostics,
+                ) {
                     body.push(stmt);
                 }
             }
-            if return_ty != SemType::Unit && !has_explicit_return {
+            let final_return_ty = declared_return_ty.unwrap_or_else(|| {
+                infer_return_type(&inferred_returns, diagnostics, &def.name)
+            });
+            if final_return_ty != SemType::Unit && !has_explicit_return {
                 diagnostics.push(Diagnostic::new(
                     format!(
                         "Function `{}` must explicitly return `{}`",
                         def.name,
-                        type_to_string(&return_ty)
+                        type_to_string(&final_return_ty)
                     ),
                     Span::new(0, 0),
                 ));
@@ -282,7 +290,7 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                         ty: type_to_string(&type_from_ast(&param.ty)),
                     })
                     .collect(),
-                return_type: type_to_string(&return_ty),
+                return_type: type_to_string(&final_return_ty),
                 body,
             }))
         }
@@ -294,6 +302,7 @@ fn lower_stmt_with_types(
     context: &Context,
     locals: &mut HashMap<String, SemType>,
     return_ty: &SemType,
+    inferred_returns: &mut Vec<SemType>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<TypedStmt> {
     match stmt {
@@ -326,7 +335,8 @@ fn lower_stmt_with_types(
         Stmt::Return(value) => {
             if let Some(expr) = value {
                 let (typed_expr, inferred) = infer_expr(expr, context, locals, return_ty, diagnostics);
-                if !is_compatible(&inferred, return_ty) {
+                inferred_returns.push(inferred.clone());
+                if *return_ty != SemType::Unknown && !is_compatible(&inferred, return_ty) {
                     diagnostics.push(Diagnostic::new(
                         format!(
                             "Return type mismatch: expected `{}`, got `{}`",
@@ -338,7 +348,8 @@ fn lower_stmt_with_types(
                 }
                 Some(TypedStmt::Return(Some(typed_expr)))
             } else {
-                if *return_ty != SemType::Unit {
+                inferred_returns.push(SemType::Unit);
+                if *return_ty != SemType::Unknown && *return_ty != SemType::Unit {
                     diagnostics.push(Diagnostic::new(
                         format!(
                             "Return type mismatch: expected `{}`, got `()`",
@@ -392,9 +403,10 @@ fn infer_expr(
                     .get(&path[0])
                     .cloned()
                     .or_else(|| context.globals.get(&path[0]).cloned())
+                    .or_else(|| resolve_path_value(path, context))
                     .unwrap_or(SemType::Unknown)
             } else {
-                SemType::Unknown
+                resolve_path_value(path, context).unwrap_or(SemType::Unknown)
             };
             (
                 TypedExpr {
@@ -524,6 +536,8 @@ fn resolve_call_type(
         if let Some(resolved) = resolve_constructor_call(path, args, context, diagnostics) {
             return resolved;
         }
+
+        return SemType::Unknown;
     }
 
     diagnostics.push(Diagnostic::new(
@@ -663,6 +677,13 @@ fn resolve_constructor_call(
 
 fn resolve_try_type(inner: &SemType, return_ty: &SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
     if let Some(inner_value) = option_inner(inner) {
+        if *return_ty == SemType::Unknown {
+            diagnostics.push(Diagnostic::new(
+                "Functions using `?` must declare an Option/Result return type",
+                Span::new(0, 0),
+            ));
+            return inner_value.clone();
+        }
         if option_inner(return_ty).is_none() {
             diagnostics.push(Diagnostic::new(
                 "The `?` operator on Option requires the function to return Option",
@@ -672,6 +693,13 @@ fn resolve_try_type(inner: &SemType, return_ty: &SemType, diagnostics: &mut Vec<
         return inner_value.clone();
     }
     if let Some((ok_ty, err_ty)) = result_parts(inner) {
+        if *return_ty == SemType::Unknown {
+            diagnostics.push(Diagnostic::new(
+                "Functions using `?` must declare an Option/Result return type",
+                Span::new(0, 0),
+            ));
+            return ok_ty.clone();
+        }
         if let Some((_, fn_err_ty)) = result_parts(return_ty) {
             if !is_compatible(err_ty, fn_err_ty) {
                 diagnostics.push(Diagnostic::new(
@@ -815,4 +843,53 @@ fn result_parts(ty: &SemType) -> Option<(&SemType, &SemType)> {
         }
     }
     None
+}
+
+fn resolve_path_value(path: &[String], context: &Context) -> Option<SemType> {
+    if path.len() == 1 && path[0] == "None" {
+        return Some(option_type(SemType::Unknown));
+    }
+    if path.len() == 2 && path[0] == "Option" && path[1] == "None" {
+        return Some(option_type(SemType::Unknown));
+    }
+    if path.len() == 2 {
+        let enum_name = &path[0];
+        let variant_name = &path[1];
+        if let Some(variants) = context.enums.get(enum_name)
+            && let Some(payload) = variants.get(variant_name)
+            && payload.is_none()
+        {
+            return Some(named_type(enum_name));
+        }
+    }
+    None
+}
+
+fn infer_return_type(returns: &[SemType], diagnostics: &mut Vec<Diagnostic>, function_name: &str) -> SemType {
+    if returns.is_empty() {
+        return SemType::Unit;
+    }
+
+    let mut current = returns[0].clone();
+    for ty in &returns[1..] {
+        if current == SemType::Unknown {
+            current = ty.clone();
+            continue;
+        }
+        if *ty == SemType::Unknown {
+            continue;
+        }
+        if !is_compatible(&current, ty) || !is_compatible(ty, &current) {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Cannot infer single return type for `{function_name}`: saw `{}` and `{}`",
+                    type_to_string(&current),
+                    type_to_string(ty)
+                ),
+                Span::new(0, 0),
+            ));
+            return SemType::Unknown;
+        }
+    }
+    current
 }

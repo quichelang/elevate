@@ -110,4 +110,52 @@ mod tests {
                 .contains("The `?` operator on Option requires the function to return Option")
         );
     }
+
+    #[test]
+    fn compile_infers_return_type_when_annotation_is_missing() {
+        let source = r#"
+            fn id(v: i64) {
+                return v;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("pub fn id(v: i64) -> i64"));
+    }
+
+    #[test]
+    fn compile_rejects_try_when_return_type_is_not_declared() {
+        let source = r#"
+            fn parse_i64(input: String) -> Result<i64, String> {
+                return Result::Ok(1);
+            }
+
+            fn read(input: String) {
+                return parse_i64(input)?;
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(
+            error
+                .to_string()
+                .contains("Functions using `?` must declare an Option/Result return type")
+        );
+    }
+
+    #[test]
+    fn compile_allows_external_rust_path_calls() {
+        let source = r#"
+            rust use std::mem::drop;
+
+            fn cleanup(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("use std::mem::drop;"));
+        assert!(output.rust_code.contains("std::mem::drop(value);"));
+    }
 }
