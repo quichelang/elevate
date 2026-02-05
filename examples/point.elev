@@ -1,0 +1,15 @@
+const ANSWER: i64 = 42;
+
+struct Point {
+  x: i64;
+  y: i64;
+}
+
+enum MaybeI64 {
+  Just(i64);
+  None;
+}
+
+fn get_x(p: Point) -> i64 {
+  p.x;
+}
