@@ -108,7 +108,7 @@ fn emit_expr(expr: &RustExpr) -> String {
     match expr {
         RustExpr::Int(value) => value.to_string(),
         RustExpr::Bool(value) => value.to_string(),
-        RustExpr::String(value) => format!("{value:?}"),
+        RustExpr::String(value) => format!("::std::string::String::from({value:?})"),
         RustExpr::Path(path) => path.join("::"),
         RustExpr::Call { callee, args } => {
             let args = args.iter().map(emit_expr).collect::<Vec<_>>().join(", ");

@@ -58,6 +58,11 @@ pub fn compile_ast(module: &Module) -> Result<CompilerOutput, CompileError> {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::fs;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::compile_source;
 
     #[test]
@@ -157,5 +162,72 @@ mod tests {
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("use std::mem::drop;"));
         assert!(output.rust_code.contains("std::mem::drop(value);"));
+    }
+
+    #[test]
+    fn compile_rejects_unknown_inferred_return() {
+        let source = r#"
+            fn maybe_value() {
+                return None;
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(
+            error
+                .to_string()
+                .contains("return type could not be fully inferred")
+        );
+    }
+
+    #[test]
+    fn generated_rust_compiles_for_result_try_flow() {
+        let source = r#"
+            rust use std::num::ParseIntError;
+
+            fn parse_i64(input: String) -> Result<i64, ParseIntError> {
+                return Result::Ok(1);
+            }
+
+            fn parse_value(input: String) -> Result<i64, ParseIntError> {
+                const parsed = parse_i64(input)?;
+                std::mem::drop(parsed);
+                return Result::Ok(1);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    fn assert_rust_code_compiles(code: &str) {
+        let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
+        if !rustc_available {
+            return;
+        }
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after epoch")
+            .as_nanos();
+        let base = env::temp_dir().join(format!("elevate-test-{nanos}"));
+        fs::create_dir_all(&base).expect("temp dir create should succeed");
+        let source_path = base.join("generated.rs");
+        let output_path = base.join("generated.rlib");
+
+        fs::write(&source_path, code).expect("write generated source should succeed");
+        let result = Command::new("rustc")
+            .arg("--crate-type=lib")
+            .arg("--edition=2024")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&output_path)
+            .output()
+            .expect("rustc invocation should run");
+
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            panic!("generated Rust failed to compile:\n{stderr}");
+        }
     }
 }

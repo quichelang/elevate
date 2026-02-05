@@ -213,6 +213,15 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
             } else {
                 inferred
             };
+            if contains_unknown(&final_ty) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Const `{}` type could not be fully inferred; add an explicit type",
+                        def.name
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
             Some(TypedItem::Const(TypedConst {
                 name: def.name.clone(),
                 ty: type_to_string(&final_ty),
@@ -231,6 +240,15 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                         def.name,
                         type_to_string(&declared),
                         type_to_string(&inferred)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+            if contains_unknown(&declared) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Static `{}` type must be concrete and cannot include `_`",
+                        def.name
                     ),
                     Span::new(0, 0),
                 ));
@@ -269,6 +287,15 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
             let final_return_ty = declared_return_ty.unwrap_or_else(|| {
                 infer_return_type(&inferred_returns, diagnostics, &def.name)
             });
+            if contains_unknown(&final_return_ty) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Function `{}` return type could not be fully inferred; add an explicit return type",
+                        def.name
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
             if final_return_ty != SemType::Unit && !has_explicit_return {
                 diagnostics.push(Diagnostic::new(
                     format!(
@@ -892,4 +919,12 @@ fn infer_return_type(returns: &[SemType], diagnostics: &mut Vec<Diagnostic>, fun
         }
     }
     current
+}
+
+fn contains_unknown(ty: &SemType) -> bool {
+    match ty {
+        SemType::Unknown => true,
+        SemType::Unit => false,
+        SemType::Path { args, .. } => args.iter().any(contains_unknown),
+    }
 }

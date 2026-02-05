@@ -281,9 +281,17 @@ This file is authoritative for language behavior unless explicitly superseded by
 
 Status as of 2026-02-05:
 - Rust compiler project initialized in this repository.
-- Working skeleton pipeline exists: lex -> parse -> typed IR -> lowered Rust IR -> Rust emission.
+- Working pipeline exists: lex -> parse -> typed IR/type checks -> lowered Rust IR -> Rust emission.
 - CLI entrypoint reads source and prints or writes generated Rust.
-- Unit tests cover lexer, parser, and compile smoke path.
+- Unit tests cover lexer, parser, type checks, and codegen behavior.
+- Generated Rust is validated in tests via `rustc --crate-type=lib`.
+
+Implemented language surface:
+- Top-level items: `rust use`, `struct`, `enum`, `fn`, `const`, `static`.
+- Statements: local `const`, `return`, expression statements.
+- Expressions: literals, path refs/calls, field access, postfix `?`.
+- Types: named paths + generic arguments (for forms like `Option<T>`, `Result<T, E>`).
+- `Option`/`Result` constructor and `?` semantics with compile-time validation.
 
 Current command surface:
 - Build: `cargo build`
@@ -292,6 +300,7 @@ Current command surface:
 - Emit to file: `cargo run -- <input-file> --emit-rust <output-file>`
 
 What is intentionally incomplete:
-- Type inference/checking rules are currently structural placeholders.
-- Ownership decision logic is not implemented yet.
-- Function body lowering currently emits `todo!` in generated Rust.
+- Ownership lowering policy is not implemented yet.
+- Pattern matching is not implemented yet.
+- Generic function definitions and constrained generic bounds are not implemented yet.
+- Borrow/reference features remain intentionally unsupported.
