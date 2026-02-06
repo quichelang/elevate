@@ -2104,11 +2104,16 @@ fn finite_tuple_domains(scrutinee_ty: &SemType, context: &Context) -> Option<Vec
 }
 
 fn finite_enum_variants_for_tuple_domain(enum_name: &str, context: &Context) -> Option<Vec<String>> {
-    let variants = context.enums.get(enum_name)?;
-    if variants.values().any(|payload| !payload.is_empty()) {
-        return None;
+    if enum_name == "Option" {
+        return Some(vec!["Some".to_string(), "None".to_string()]);
     }
-    Some(variants.keys().cloned().collect())
+    if enum_name == "Result" {
+        return Some(vec!["Ok".to_string(), "Err".to_string()]);
+    }
+    context
+        .enums
+        .get(enum_name)
+        .map(|variants| variants.keys().cloned().collect())
 }
 
 fn collect_finite_tuple_coverage(
@@ -2169,7 +2174,12 @@ fn finite_tuple_pattern_values(pattern: &TypedPattern, domain: &[String]) -> Opt
                 None
             }
         }
-        TypedPattern::Variant { path, .. } => {
+        TypedPattern::Variant { path, payload } => {
+            if let Some(payload_pattern) = payload
+                && !pattern_is_total(payload_pattern)
+            {
+                return None;
+            }
             let selected = match path.as_slice() {
                 [enum_name, variant, ..] => Some(format!("{enum_name}::{variant}")),
                 [variant] => {

@@ -1012,6 +1012,24 @@ mod tests {
     }
 
     #[test]
+    fn compile_reports_non_exhaustive_option_tuple_match() {
+        let source = r#"
+            fn classify() -> i64 {
+                const input = (false, Option::None);
+                return match input {
+                    (true, Option::Some(_)) => 1;
+                    (true, Option::None) => 2;
+                    (false, Option::Some(_)) => 3;
+                };
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(error.to_string().contains("Non-exhaustive match on finite tuple domain"));
+        assert!(error.to_string().contains("(false, Option::None)"));
+    }
+
+    #[test]
     fn compile_skips_finite_tuple_exhaustiveness_for_payload_enums() {
         let source = r#"
             enum Maybe {
