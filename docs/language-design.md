@@ -1,6 +1,6 @@
 # Language Design (Single Source of Truth)
 
-Status: Draft v0.6  
+Status: Draft v0.7  
 Owner: Language team  
 Last updated: 2026-02-06
 
@@ -160,6 +160,7 @@ Implemented:
 - Visibility controls for top-level items (`pub` vs private defaults).
 - Control-flow statements: `if` / `else` and `while`.
 - Struct functions via `impl` blocks (associated methods).
+- Struct literal expressions (`Type { field: value }`) including support for imported Rust struct paths.
 - Logical boolean operators: `and`, `or`, `!`, `not`.
 - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
 - Tail-expression returns for final function/method expressions.
@@ -169,11 +170,16 @@ Implemented:
 - Closure expressions and closure calls with typed parameters.
 - Comment support (`//` and `/* ... */`) and raw multiline string literals.
 - `rust use` imports and external Rust path calls.
+- Centralized interop policy registry for clone/borrow/shim behavior.
+- Auto-borrow coverage for selected associated Rust calls (String/Option/Result/Vec/HashMap/BTreeMap/HashSet/BTreeSet cases).
+- String interop shims for owned-return helpers (`str::strip_prefix_known`, `str::split_once_known`) with borrow-safe lowering.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
+- Crate build diagnostics now include line/column output (plus symbol declaration hints when span data is coarse).
 
 Quality status:
 - Unit tests cover lexer, parser, semantic checks, and codegen behavior.
 - Generated Rust is validated via `rustc --crate-type=lib` in tests.
+- Generated condition formatting avoids unnecessary outer parentheses for single-clause `if`/`while` conditions.
 
 ### Command Surface
 
@@ -202,6 +208,7 @@ Behavior:
 - Build step runs cargo with `--target-dir <crate>/target`, so final artifacts land in the standard:
 - `<crate>/target/debug`
 - `<crate>/target/release`
+- Compilation failures in `.ers` crate builds are reported with source-relative line/column context.
 
 Safety:
 - Path collisions between generated `.rs` outputs and copied files are treated as errors.
@@ -250,5 +257,5 @@ Quality gates:
 - Slices are not complete.
 - Deep destructuring coverage (all contexts) is not complete.
 - Match guards and full exhaustiveness diagnostics are not complete.
-- Full tail-expression return behavior across all nested block forms is not complete.
+- Inline `rust { ... }` escape blocks are not complete.
 - Borrow/reference features remain intentionally unsupported.

@@ -1,6 +1,6 @@
 # Lexopt Case Study
 
-Status: In Progress (Baseline)
+Status: In Progress (Milestone 4)
 Date: 2026-02-06
 Target: `examples/lexopt-elevate`
 Reference: `https://github.com/blyxxyz/lexopt`
@@ -9,10 +9,10 @@ Reference: `https://github.com/blyxxyz/lexopt`
 
 Recreate lexopt semantics in Elevate, then compare generated Rust and behavior against upstream lexopt.
 
-## Baseline Scope (This Milestone)
+## Current Scope (Implemented So Far)
 
 - Create an Elevate-first public surface (`.ers`) for core parser operations.
-- Implement a compatibility runtime in Rust for features not yet expressible in Elevate.
+- Keep a compatibility runtime in Rust only for parser-state storage and low-level host integration.
 - Add behavior tests for a minimal but real slice:
 - short options (`-n`)
 - long options (`--name`)
@@ -23,7 +23,12 @@ Recreate lexopt semantics in Elevate, then compare generated Rust and behavior a
 ### Refactor Note (Current)
 
 - Parser control flow and decision logic now live in `examples/lexopt-elevate/src/parser.ers`.
-- `examples/lexopt-elevate/src/runtime.rs` is reduced to parser-state storage, argument access, and string utility primitives used by Elevate code.
+- `examples/lexopt-elevate/src/runtime.ers` now holds most string classification logic.
+- Rust compatibility core is reduced to `examples/lexopt-elevate/src/runtime_core.rs` for:
+- parser-state registry/storage
+- host argument ingestion (`from_env`, `from_raw`)
+- one low-level helper (`drop_first_char_known`)
+- constructor-style helpers previously in Rust have been migrated into native Elevate via struct literals.
 
 ## Current Deviations From Upstream lexopt
 
@@ -31,17 +36,18 @@ Recreate lexopt semantics in Elevate, then compare generated Rust and behavior a
 - Public parser handle is `i64` (registry-backed), not a struct API yet.
 - Input helper `from_raw` splits by whitespace (shell quoting is not modeled yet).
 - `values()` currently returns one value per call, not an iterator object.
+- Runtime still depends on Rust-side state management (`runtime_core`) rather than a pure Elevate runtime model.
 
 ## Next Milestones
 
-1. Expand syntax parity:
-- `--` end-of-options marker
-- `-o=value`
-- attached short arg parsing behavior (`-ovalue`)
-
-2. API parity pass:
+1. API parity pass:
 - model `Parser` and `Arg` ergonomics closer to lexopt surface
 - add `unexpected()` helper semantics
+- replace handle-based API with a parser-typed user-facing object
+
+2. Runtime reduction pass:
+- migrate remaining Rust runtime responsibilities where feasible
+- keep Rust code only for unavoidable host interop/performance boundaries
 
 3. Comparison harness:
 - run identical fixture vectors through upstream lexopt and Elevate implementation
