@@ -1,6 +1,6 @@
 # Language Design (Single Source of Truth)
 
-Status: Draft v0.2  
+Status: Draft v0.3  
 Owner: Language team  
 Last updated: 2026-02-06
 
@@ -22,25 +22,31 @@ Process note:
 1. **Constrained generic syntax**
 - Decide final user syntax for field-based constraints.
 - Placeholder today: `where T has { x: f64, y: f64 }`.
+- Alternatives to choose from:
+- Option A: `fn norm<T where T has { x: f64, y: f64 }>(p: T) -> f64`
+- Option B: `fn norm<T: has { x: f64, y: f64 }>(p: T) -> f64`
+- Option C: `fn norm(p: { x: f64, y: f64, .. }) -> f64`
+- Recommendation: Option A for MVP (most explicit, easiest diagnostics).
 
-2. **String model**
-- Decide whether source `String` maps to owned Rust `String` always, or if we introduce a source-level distinction later.
-
-3. **Specialization overflow policy**
+2. **Specialization overflow policy**
 - Decide default behavior when specialization budget is exceeded:
 - Option A: hard compile error.
 - Option B: fallback to boxed/internal representation.
+- Current preference: Option A.
 
-4. **Closure scope in MVP**
-- Decide: no closures vs restricted closures.
-
-5. **Shared ownership fallback policy**
-- Decide preferred default where sharing is required: `Rc` or `Arc`.
+3. **Rust interop trait strategy**
+- We will not support traits in the Elevate source language.
+- We do need interoperability with Rust crates/frameworks that require trait implementations.
+- Decision needed on user-facing mechanism priority:
+- Option A: external wrapper `.rs` files (MVP recommended).
+- Option B: inline `rust { ... }` escape blocks (MVP+1 recommended).
 
 ### Immediate Product Input Needed
 
 1. Confirm `.ers` as the canonical source file extension (current implementation now uses `.ers` examples).
+ - Decision: confirmed.
 2. Confirm whether generic function definitions are required for MVP completion or can ship in MVP+1.
+ - Decision: required for MVP.
 
 ## Stable (Unlikely To Change Frequently)
 
@@ -64,6 +70,7 @@ Guiding principles:
 6. Static typing with local type inference.
 7. Compiler makes automatic ownership/memory decisions in lowered Rust.
 8. Generics compile by monomorphization with explicit safety limits.
+9. Closures are deferred to MVP+1.
 
 ### Non-Goals (MVP)
 
@@ -86,6 +93,16 @@ Type policy:
 - Local inference is enabled.
 - Public API boundaries should prefer explicit return types.
 - Errors must include concrete expected vs actual details.
+
+String policy:
+- Source-level `String` is immutable by default from the language perspective.
+- String concatenation (for example `"hello" + "world"`) may be lowered using mutable builder internals for performance.
+- Rust interop may use native Rust string operations (`String::new`, `push_str`) inside interoperability boundaries, without exposing general mutable references in Elevate source.
+
+Rust interop policy:
+- Interoperability with Rust crates is supported.
+- Trait implementations required by Rust frameworks are handled via Rust-side adapters (wrapper `.rs` files in MVP).
+- Future direction: optional inline `rust { ... }` escape blocks (MVP+1).
 
 ### Core Compiler Architecture
 
@@ -208,3 +225,4 @@ Quality gates:
 - Ownership lowering policy implementation is not complete.
 - Generic function definitions and constrained bounds are not complete.
 - Borrow/reference features remain intentionally unsupported.
+- Closure support is deferred to MVP+1.
