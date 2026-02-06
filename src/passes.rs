@@ -1464,7 +1464,7 @@ fn infer_expr(
             if let Expr::Field { base, field } = callee.as_ref() {
                 let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
                 let resolved =
-                    resolve_method_call_type(&base_ty, field, &arg_types, diagnostics);
+                    resolve_method_call_type(&base_ty, field, &arg_types, context, diagnostics);
                 let typed_callee = TypedExpr {
                     kind: TypedExprKind::Field {
                         base: Box::new(typed_base),
@@ -2586,6 +2586,7 @@ fn resolve_method_call_type(
     base_ty: &SemType,
     method: &str,
     args: &[SemType],
+    context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SemType {
     if let SemType::Path { path, .. } = base_ty {
@@ -2749,6 +2750,66 @@ fn resolve_method_call_type(
                 _ => {}
             },
             _ => {}
+        }
+    }
+
+    if let SemType::Path { path, .. } = base_ty
+        && let Some(type_name) = path.last()
+    {
+        let lookup = format!("{type_name}::{method}");
+        if let Some(sig) = context.functions.get(&lookup) {
+            if sig.params.len() == args.len() + 1 {
+                if !is_compatible(base_ty, &sig.params[0]) {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Method `{lookup}` receiver mismatch: expected `{}`, got `{}`",
+                            type_to_string(&sig.params[0]),
+                            type_to_string(base_ty)
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+                for (index, (actual, expected)) in args.iter().zip(sig.params.iter().skip(1)).enumerate()
+                {
+                    if !is_compatible(actual, expected) {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Arg {} for method `{lookup}`: expected `{}`, got `{}`",
+                                index + 1,
+                                type_to_string(expected),
+                                type_to_string(actual)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                }
+                return sig.return_type.clone();
+            }
+            if sig.params.len() == args.len() {
+                for (index, (actual, expected)) in args.iter().zip(&sig.params).enumerate() {
+                    if !is_compatible(actual, expected) {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Arg {} for method `{lookup}`: expected `{}`, got `{}`",
+                                index + 1,
+                                type_to_string(expected),
+                                type_to_string(actual)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                }
+                return sig.return_type.clone();
+            }
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Method `{lookup}` expects {} arg(s), got {}",
+                    sig.params.len().saturating_sub(1),
+                    args.len()
+                ),
+                Span::new(0, 0),
+            ));
+            return sig.return_type.clone();
         }
     }
 

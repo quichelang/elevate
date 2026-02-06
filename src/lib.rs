@@ -1442,6 +1442,31 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_instance_method_call_syntax_for_impls() {
+        let source = r#"
+            pub struct Counter { value: i64; }
+
+            impl Counter {
+                pub fn inc(self: Self) -> Counter {
+                    Counter { value: self.value + 1; }
+                }
+
+                pub fn get(self: Self) -> i64 {
+                    self.value
+                }
+            }
+
+            pub fn run(counter: Counter) -> i64 {
+                counter.inc().get()
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("counter.inc().get()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_struct_literals() {
         let source = r#"
             pub struct Pair { left: i64; right: i64; }

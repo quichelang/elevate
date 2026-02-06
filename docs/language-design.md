@@ -206,6 +206,7 @@ Implemented:
 - Native assert function forms in Elevate source (non-macro syntax): `assert(...)`, `assert_eq(...)`, `assert_ne(...)`.
 - CLI support for `test` subcommand and experiment flag toggles.
 - Lexopt case study API now centered on `Parser` impl methods (compatibility wrapper surface removed).
+- Instance method-call syntax (`value.method(...)`) resolves against user `impl` methods, enabling object-native API style beyond associated-call form.
 
 Quality status:
 - Unit tests cover lexer, parser, semantic checks, and codegen behavior.
@@ -295,7 +296,7 @@ Quality gates:
 - Full exhaustiveness diagnostics are not complete (current checks focus on bool/finite-tuple finite domains and enum variants).
 - Full Rust-pattern parity for match is not complete (remaining work includes ref/binding-mode patterns and richer guard/exhaustiveness combinations).
 - Interop contract signature verification now covers declaration shape, callsite arity, and lightweight literal argument type checks, but not full type-level compatibility across all compiler phases.
-- Object-native parser APIs are in preview form (lexopt example) and are not yet generalized as a standard library pattern.
+- Object-native parser APIs are now language-capable via instance method calls, but a reusable standard-library pattern/module is still pending.
 
 ### Experimental Feature Flags (Opt-In)
 
