@@ -134,8 +134,10 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
         };
         items.push(lowered);
     }
-    for shim in state.used_shims.iter().copied() {
-        items.push(RustItem::Function(lower_interop_shim(shim)));
+    for shim_name in &state.used_shims {
+        if let Some(shim) = state.registry.resolve_shim_by_name(shim_name) {
+            items.push(RustItem::Function(lower_interop_shim(shim)));
+        }
     }
     RustModule {
         items,
@@ -151,7 +153,7 @@ struct LoweringContext {
 
 #[derive(Debug, Default)]
 struct LoweringState {
-    used_shims: BTreeSet<InteropShimKind>,
+    used_shims: BTreeSet<String>,
     imported_rust_paths: HashMap<String, Vec<Vec<String>>>,
     ownership_notes: Vec<String>,
     ownership_note_keys: BTreeSet<String>,
@@ -170,18 +172,19 @@ enum CallArgMode {
     Borrowed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum InteropShimKind {
-    StrLen,
-    StrIsEmpty,
-    StrContains,
-    StrStartsWith,
-    StrEndsWith,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InteropShimDef {
+    name: String,
+    target_path: Vec<String>,
+    param_types: Vec<String>,
+    return_type: String,
+    borrowed_arg_indexes: Vec<usize>,
 }
 
 #[derive(Debug, Default)]
 struct InteropPolicyRegistry {
-    shim_policies: HashMap<String, InteropShimKind>,
+    shim_policies: HashMap<String, String>,
+    shim_defs: HashMap<String, InteropShimDef>,
     direct_borrow_policies: HashMap<String, Vec<usize>>,
     cloneable_types: BTreeSet<String>,
     observed_import_paths: BTreeSet<String>,
@@ -247,21 +250,46 @@ impl InteropPolicyRegistry {
     }
 
     fn register_builtin_shims(&mut self) {
-        for path in ["str::len", "std::str::len"] {
-            self.register_shim_policy(path, InteropShimKind::StrLen);
-        }
-        for path in ["str::is_empty", "std::str::is_empty"] {
-            self.register_shim_policy(path, InteropShimKind::StrIsEmpty);
-        }
-        for path in ["str::contains", "std::str::contains"] {
-            self.register_shim_policy(path, InteropShimKind::StrContains);
-        }
-        for path in ["str::starts_with", "std::str::starts_with"] {
-            self.register_shim_policy(path, InteropShimKind::StrStartsWith);
-        }
-        for path in ["str::ends_with", "std::str::ends_with"] {
-            self.register_shim_policy(path, InteropShimKind::StrEndsWith);
-        }
+        self.register_function_shim(
+            &["str::len", "std::str::len"],
+            "__elevate_shim_str_len",
+            &["str", "len"],
+            &["&str"],
+            "usize",
+            &[0],
+        );
+        self.register_function_shim(
+            &["str::is_empty", "std::str::is_empty"],
+            "__elevate_shim_str_is_empty",
+            &["str", "is_empty"],
+            &["&str"],
+            "bool",
+            &[0],
+        );
+        self.register_function_shim(
+            &["str::contains", "std::str::contains"],
+            "__elevate_shim_str_contains",
+            &["str", "contains"],
+            &["&str", "&str"],
+            "bool",
+            &[0, 1],
+        );
+        self.register_function_shim(
+            &["str::starts_with", "std::str::starts_with"],
+            "__elevate_shim_str_starts_with",
+            &["str", "starts_with"],
+            &["&str", "&str"],
+            "bool",
+            &[0, 1],
+        );
+        self.register_function_shim(
+            &["str::ends_with", "std::str::ends_with"],
+            "__elevate_shim_str_ends_with",
+            &["str", "ends_with"],
+            &["&str", "&str"],
+            "bool",
+            &[0, 1],
+        );
     }
 
     fn register_builtin_direct_borrows(&mut self) {
@@ -315,8 +343,27 @@ impl InteropPolicyRegistry {
         self.cloneable_types.insert("String".to_string());
     }
 
-    fn register_shim_policy(&mut self, path: &str, shim: InteropShimKind) {
-        self.shim_policies.insert(path.to_string(), shim);
+    fn register_function_shim(
+        &mut self,
+        source_paths: &[&str],
+        shim_name: &str,
+        target_path: &[&str],
+        param_types: &[&str],
+        return_type: &str,
+        borrowed_arg_indexes: &[usize],
+    ) {
+        let def = InteropShimDef {
+            name: shim_name.to_string(),
+            target_path: target_path.iter().map(|part| (*part).to_string()).collect(),
+            param_types: param_types.iter().map(|ty| (*ty).to_string()).collect(),
+            return_type: return_type.to_string(),
+            borrowed_arg_indexes: borrowed_arg_indexes.to_vec(),
+        };
+        self.shim_defs.insert(shim_name.to_string(), def);
+        for path in source_paths {
+            self.shim_policies
+                .insert((*path).to_string(), shim_name.to_string());
+        }
     }
 
     fn register_direct_borrow_policy(&mut self, path: &str, borrowed_indexes: &[usize]) {
@@ -332,8 +379,13 @@ impl InteropPolicyRegistry {
         self.observed_import_paths.insert(path.join("::"));
     }
 
-    fn resolve_shim(&self, path: &[String]) -> Option<InteropShimKind> {
-        self.shim_policies.get(&path.join("::")).copied()
+    fn resolve_shim(&self, path: &[String]) -> Option<&InteropShimDef> {
+        let shim_name = self.shim_policies.get(&path.join("::"))?;
+        self.shim_defs.get(shim_name)
+    }
+
+    fn resolve_shim_by_name(&self, name: &str) -> Option<&InteropShimDef> {
+        self.shim_defs.get(name)
     }
 
     fn resolve_direct_borrow_modes(
@@ -1964,10 +2016,10 @@ fn lower_call_callee(
     state: &mut LoweringState,
 ) -> (RustExpr, Vec<CallArgMode>) {
     if let Some(shim) = resolve_interop_shim(callee, state) {
-        state.used_shims.insert(shim);
+        state.used_shims.insert(shim.name.clone());
         return (
-            RustExpr::Path(vec![interop_shim_name(shim).to_string()]),
-            interop_arg_modes(shim, arg_count),
+            RustExpr::Path(vec![shim.name.clone()]),
+            interop_arg_modes(&shim, arg_count),
         );
     }
     if let Some(modes) = resolve_direct_borrow_arg_modes(callee, state, arg_count) {
@@ -1988,26 +2040,18 @@ fn lower_call_callee(
     )
 }
 
-fn resolve_interop_shim(callee: &TypedExpr, state: &LoweringState) -> Option<InteropShimKind> {
+fn resolve_interop_shim(callee: &TypedExpr, state: &LoweringState) -> Option<InteropShimDef> {
     let TypedExprKind::Path(path) = &callee.kind else {
         return None;
     };
     let resolved = state.resolve_callee_path(path);
-    state.registry.resolve_shim(&resolved)
+    state.registry.resolve_shim(&resolved).cloned()
 }
 
-fn interop_arg_modes(shim: InteropShimKind, arg_count: usize) -> Vec<CallArgMode> {
+fn interop_arg_modes(shim: &InteropShimDef, arg_count: usize) -> Vec<CallArgMode> {
     let mut modes = vec![CallArgMode::Owned; arg_count];
-    match shim {
-        InteropShimKind::StrLen | InteropShimKind::StrIsEmpty => {
-            set_borrowed(&mut modes, 0);
-        }
-        InteropShimKind::StrContains
-        | InteropShimKind::StrStartsWith
-        | InteropShimKind::StrEndsWith => {
-            set_borrowed(&mut modes, 0);
-            set_borrowed(&mut modes, 1);
-        }
+    for index in &shim.borrowed_arg_indexes {
+        set_borrowed(&mut modes, *index);
     }
     modes
 }
@@ -2047,44 +2091,14 @@ fn resolve_method_borrow_arg_modes(
     }
 }
 
-fn interop_shim_name(shim: InteropShimKind) -> &'static str {
-    match shim {
-        InteropShimKind::StrLen => "__elevate_shim_str_len",
-        InteropShimKind::StrIsEmpty => "__elevate_shim_str_is_empty",
-        InteropShimKind::StrContains => "__elevate_shim_str_contains",
-        InteropShimKind::StrStartsWith => "__elevate_shim_str_starts_with",
-        InteropShimKind::StrEndsWith => "__elevate_shim_str_ends_with",
-    }
-}
-
-fn interop_shim_target_path(shim: InteropShimKind) -> &'static [&'static str] {
-    match shim {
-        InteropShimKind::StrLen => &["str", "len"],
-        InteropShimKind::StrIsEmpty => &["str", "is_empty"],
-        InteropShimKind::StrContains => &["str", "contains"],
-        InteropShimKind::StrStartsWith => &["str", "starts_with"],
-        InteropShimKind::StrEndsWith => &["str", "ends_with"],
-    }
-}
-
-fn interop_shim_signature(shim: InteropShimKind) -> (&'static [&'static str], &'static str) {
-    match shim {
-        InteropShimKind::StrLen => (&["&str"], "usize"),
-        InteropShimKind::StrIsEmpty => (&["&str"], "bool"),
-        InteropShimKind::StrContains => (&["&str", "&str"], "bool"),
-        InteropShimKind::StrStartsWith => (&["&str", "&str"], "bool"),
-        InteropShimKind::StrEndsWith => (&["&str", "&str"], "bool"),
-    }
-}
-
-fn lower_interop_shim(shim: InteropShimKind) -> RustFunction {
-    let (param_types, return_type) = interop_shim_signature(shim);
-    let params = param_types
+fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
+    let params = shim
+        .param_types
         .iter()
         .enumerate()
         .map(|(index, ty)| RustParam {
             name: format!("__arg{index}"),
-            ty: (*ty).to_string(),
+            ty: ty.clone(),
         })
         .collect::<Vec<_>>();
     let args = params
@@ -2093,16 +2107,11 @@ fn lower_interop_shim(shim: InteropShimKind) -> RustFunction {
         .collect::<Vec<_>>();
     RustFunction {
         is_public: false,
-        name: interop_shim_name(shim).to_string(),
+        name: shim.name.clone(),
         params,
-        return_type: return_type.to_string(),
+        return_type: shim.return_type.clone(),
         body: vec![RustStmt::Return(Some(RustExpr::Call {
-            callee: Box::new(RustExpr::Path(
-                interop_shim_target_path(shim)
-                    .iter()
-                    .map(|part| (*part).to_string())
-                    .collect(),
-            )),
+            callee: Box::new(RustExpr::Path(shim.target_path.clone())),
             args,
         }))],
     }
