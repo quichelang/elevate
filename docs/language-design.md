@@ -181,6 +181,9 @@ Implemented:
 - Inline `rust { ... }` escape blocks (top-level and statement position) that pass raw Rust through without Elevate parsing.
 - Centralized interop policy registry for clone/borrow/shim behavior.
 - Auto-borrow coverage for selected associated Rust calls (String/Option/Result/Vec/HashMap/BTreeMap/HashSet/BTreeSet cases).
+- Method-call ownership lowering for known Rust receiver methods:
+- borrowed receiver/arg handling for non-consuming calls (for example `len`, `contains`, `contains_key`);
+- auto-clone insertion for reused owned receivers on consuming-style calls when clone-safe.
 - String interop shims for owned-return helpers (`str::strip_prefix_known`, `str::split_once_known`) with borrow-safe lowering.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 - Crate build diagnostics now include line/column output (plus symbol declaration hints when span data is coarse).

@@ -410,6 +410,57 @@ mod tests {
     }
 
     #[test]
+    fn compile_auto_clones_reused_method_receiver_for_owned_calls() {
+        let source = r#"
+            fn demo(text: String) {
+                std::mem::drop(text.into_bytes());
+                std::mem::drop(text.into_bytes());
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("text.clone().into_bytes()"));
+        assert!(output.rust_code.contains("text.into_bytes()"));
+        assert!(
+            output
+                .ownership_notes
+                .iter()
+                .any(|note| note.contains("`text` of type `String`"))
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_auto_borrows_method_call_arguments_for_string_contains() {
+        let source = r#"
+            fn demo(text: String, needle: String) -> bool {
+                return text.contains(needle);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("text.contains(&needle)"));
+        assert!(!output.rust_code.contains("needle.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_keeps_borrowed_method_receiver_without_clone() {
+        let source = r#"
+            fn demo(text: String) {
+                std::mem::drop(text.len());
+                std::mem::drop(text.len());
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(!output.rust_code.contains("text.clone().len()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_auto_borrows_for_str_contains_calls() {
         let source = r#"
             fn demo(text: String, needle: String) {

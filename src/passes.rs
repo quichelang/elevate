@@ -177,6 +177,12 @@ enum CallArgMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct MethodCallModes {
+    receiver: CallArgMode,
+    args: Vec<CallArgMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct InteropShimDef {
     name: String,
     target_path: Vec<String>,
@@ -2082,6 +2088,9 @@ fn resolve_field_type(
                 ));
                 return SemType::Unknown;
             }
+            // For non-Elevate structs (including imported Rust types), defer
+            // member validation so method-call lowering can apply ownership policies.
+            return SemType::Unknown;
         }
     }
 
@@ -2264,18 +2273,95 @@ fn resolve_method_call_type(
 ) -> SemType {
     if let SemType::Path { path, .. } = base_ty {
         let type_name = path.last().map(|s| s.as_str()).unwrap_or("");
-        if type_name == "String" {
-            match method {
+        match type_name {
+            "String" => match method {
+                "len" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("usize");
+                }
                 "is_empty" => {
                     expect_method_arity(type_name, method, args.len(), 0, diagnostics);
                     return named_type("bool");
                 }
-                "starts_with" | "contains" | "ends_with" => {
+                "starts_with" | "contains" | "ends_with" | "strip_prefix" | "split_once" => {
+                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
+                    return if method == "strip_prefix" {
+                        option_type(named_type("String"))
+                    } else if method == "split_once" {
+                        option_type(SemType::Tuple(vec![named_type("String"), named_type("String")]))
+                    } else {
+                        named_type("bool")
+                    };
+                }
+                "into_bytes" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return SemType::Path {
+                        path: vec!["Vec".to_string()],
+                        args: vec![named_type("u8")],
+                    };
+                }
+                _ => {}
+            },
+            "Vec" => match method {
+                "len" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("usize");
+                }
+                "is_empty" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("bool");
+                }
+                "contains" => {
                     expect_method_arity(type_name, method, args.len(), 1, diagnostics);
                     return named_type("bool");
                 }
                 _ => {}
-            }
+            },
+            "Option" => match method {
+                "is_some" | "is_none" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("bool");
+                }
+                _ => {}
+            },
+            "Result" => match method {
+                "is_ok" | "is_err" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("bool");
+                }
+                _ => {}
+            },
+            "HashMap" | "BTreeMap" => match method {
+                "len" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("usize");
+                }
+                "is_empty" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("bool");
+                }
+                "contains_key" => {
+                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
+                    return named_type("bool");
+                }
+                _ => {}
+            },
+            "HashSet" | "BTreeSet" => match method {
+                "len" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("usize");
+                }
+                "is_empty" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("bool");
+                }
+                "contains" => {
+                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
+                    return named_type("bool");
+                }
+                _ => {}
+            },
+            _ => {}
         }
     }
 
@@ -2880,13 +2966,13 @@ fn lower_call_callee(
             interop_arg_modes(&shim, arg_count),
         );
     }
-    if let Some(modes) = resolve_direct_borrow_arg_modes(callee, state, arg_count) {
+    if let Some(modes) = resolve_method_call_modes(callee, arg_count) {
         return (
-            lower_expr_with_context(callee, context, ExprPosition::Value, state),
-            modes,
+            lower_method_callee(callee, modes.receiver, context, state),
+            modes.args,
         );
     }
-    if let Some(modes) = resolve_method_borrow_arg_modes(callee, arg_count) {
+    if let Some(modes) = resolve_direct_borrow_arg_modes(callee, state, arg_count) {
         return (
             lower_expr_with_context(callee, context, ExprPosition::Value, state),
             modes,
@@ -2928,24 +3014,86 @@ fn resolve_direct_borrow_arg_modes(
         .resolve_direct_borrow_modes(&resolved, arg_count)
 }
 
-fn resolve_method_borrow_arg_modes(
+fn resolve_method_call_modes(
     callee: &TypedExpr,
     arg_count: usize,
-) -> Option<Vec<CallArgMode>> {
+) -> Option<MethodCallModes> {
     let TypedExprKind::Field { base, field } = &callee.kind else {
         return None;
     };
-    if base.ty != "String" {
-        return None;
-    }
 
-    let mut modes = vec![CallArgMode::Owned; arg_count];
-    match field.as_str() {
-        "starts_with" | "contains" | "ends_with" => {
-            set_borrowed(&mut modes, 0);
-            Some(modes)
+    let mut arg_modes = vec![CallArgMode::Owned; arg_count];
+    let receiver = if method_receiver_is_borrowed(&base.ty, field) {
+        if method_borrows_first_arg(&base.ty, field) {
+            set_borrowed(&mut arg_modes, 0);
         }
-        _ => None,
+        CallArgMode::Borrowed
+    } else {
+        CallArgMode::Owned
+    };
+
+    Some(MethodCallModes {
+        receiver,
+        args: arg_modes,
+    })
+}
+
+fn lower_method_callee(
+    callee: &TypedExpr,
+    receiver_mode: CallArgMode,
+    context: &mut LoweringContext,
+    state: &mut LoweringState,
+) -> RustExpr {
+    let TypedExprKind::Field { base, field } = &callee.kind else {
+        return lower_expr_with_context(callee, context, ExprPosition::Value, state);
+    };
+    let receiver_position = if receiver_mode == CallArgMode::Owned {
+        ExprPosition::CallArgOwned
+    } else {
+        ExprPosition::Value
+    };
+    RustExpr::Field {
+        base: Box::new(lower_expr_with_context(
+            base,
+            context,
+            receiver_position,
+            state,
+        )),
+        field: field.clone(),
+    }
+}
+
+fn method_receiver_is_borrowed(base_ty: &str, field: &str) -> bool {
+    match last_path_segment(base_ty) {
+        "String" => matches!(
+            field,
+            "len"
+                | "is_empty"
+                | "contains"
+                | "starts_with"
+                | "ends_with"
+                | "strip_prefix"
+                | "split_once"
+        ),
+        "Vec" => matches!(field, "len" | "is_empty" | "contains"),
+        "Option" => matches!(field, "is_some" | "is_none"),
+        "Result" => matches!(field, "is_ok" | "is_err"),
+        "HashMap" | "BTreeMap" => matches!(field, "len" | "is_empty" | "contains_key"),
+        "HashSet" | "BTreeSet" => matches!(field, "len" | "is_empty" | "contains"),
+        _ => false,
+    }
+}
+
+fn method_borrows_first_arg(base_ty: &str, field: &str) -> bool {
+    match last_path_segment(base_ty) {
+        "String" => matches!(
+            field,
+            "contains" | "starts_with" | "ends_with" | "strip_prefix" | "split_once"
+        ),
+        "Vec" => matches!(field, "contains"),
+        "HashMap" | "BTreeMap" => matches!(field, "contains_key"),
+        "HashSet" | "BTreeSet" => matches!(field, "contains"),
+        _ => false,
     }
 }
 
