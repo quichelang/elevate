@@ -1,6 +1,6 @@
 # Language Design (Single Source of Truth)
 
-Status: Draft v0.3  
+Status: Draft v0.4  
 Owner: Language team  
 Last updated: 2026-02-06
 
@@ -20,13 +20,11 @@ Process note:
 ### Open Language Decisions
 
 1. **Constrained generic syntax**
-- Decide final user syntax for field-based constraints.
-- Placeholder today: `where T has { x: f64, y: f64 }`.
-- Alternatives to choose from:
+- Decision: support both Option A and Option C for maximum expressiveness.
 - Option A: `fn norm<T where T has { x: f64, y: f64 }>(p: T) -> f64`
-- Option B: `fn norm<T: has { x: f64, y: f64 }>(p: T) -> f64`
 - Option C: `fn norm(p: { x: f64, y: f64, .. }) -> f64`
-- Recommendation: Option A for MVP (most explicit, easiest diagnostics).
+- Note: Option A is preferred when reuse across multiple parameters/returns reduces duplication.
+- Note: Option C is preferred for concise single-use shape constraints.
 
 2. **Specialization overflow policy**
 - Decide default behavior when specialization budget is exceeded:
@@ -37,9 +35,9 @@ Process note:
 3. **Rust interop trait strategy**
 - We will not support traits in the Elevate source language.
 - We do need interoperability with Rust crates/frameworks that require trait implementations.
-- Decision needed on user-facing mechanism priority:
-- Option A: external wrapper `.rs` files (MVP recommended).
-- Option B: inline `rust { ... }` escape blocks (MVP+1 recommended).
+- Decision: Option A for MVP.
+- Option A: external wrapper `.rs` files.
+- Option B remains MVP+1: inline `rust { ... }` escape blocks.
 
 ### Immediate Product Input Needed
 
@@ -71,6 +69,11 @@ Guiding principles:
 7. Compiler makes automatic ownership/memory decisions in lowered Rust.
 8. Generics compile by monomorphization with explicit safety limits.
 9. Closures are deferred to MVP+1.
+10. To support substantial real-world verification and validation, MVP must include:
+- Conditional blocks (`if` / `else`).
+- Loop constructs.
+- Struct functions (associated functions/methods).
+- Public/private visibility controls.
 
 ### Non-Goals (MVP)
 
@@ -88,6 +91,7 @@ Declarations:
 
 Expressions/statements:
 - Literals, path refs/calls, field access, `match`, postfix `?`, local `const`, `return`.
+- Conditionals and loops are required MVP features (implementation pending).
 
 Type policy:
 - Local inference is enabled.
@@ -224,5 +228,7 @@ Quality gates:
 
 - Ownership lowering policy implementation is not complete.
 - Generic function definitions and constrained bounds are not complete.
+- Conditional blocks and loop constructs are not complete.
+- Struct functions and visibility controls are not complete.
 - Borrow/reference features remain intentionally unsupported.
 - Closure support is deferred to MVP+1.
