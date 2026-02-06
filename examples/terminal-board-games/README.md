@@ -13,8 +13,12 @@ A purpose-built, no-external-dependencies game engine for terminal board games.
 
 - `crates/game-core`
   - Runtime loop, app trait, input trait, frame buffer, renderer trait.
+- `crates/game-board`
+  - Shared grid/board primitives for board-game state models.
 - `crates/game-loop`
   - Fixed-step planning for deterministic update loops.
+- `crates/game-scenes`
+  - Scene-stack orchestration for menus, overlays, and game states.
 - `crates/game-ui-term`
   - Reusable terminal widgets (panels, labels, menus).
 - `crates/game-save`

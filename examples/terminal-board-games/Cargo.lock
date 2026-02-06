@@ -7,6 +7,10 @@ name = "game-ai"
 version = "0.1.0"
 
 [[package]]
+name = "game-board"
+version = "0.1.0"
+
+[[package]]
 name = "game-core"
 version = "0.1.0"
 
@@ -17,6 +21,13 @@ version = "0.1.0"
 [[package]]
 name = "game-save"
 version = "0.1.0"
+
+[[package]]
+name = "game-scenes"
+version = "0.1.0"
+dependencies = [
+ "game-core",
+]
 
 [[package]]
 name = "game-sudoku"

@@ -47,6 +47,8 @@ This file maps active compiler-level "Known Incomplete Areas" to what matters fo
 - Host platform input abstraction (`platform-host`) with macOS raw-mode backend.
 - Reusable runtime loop.
 - Fixed-step planning helpers (`game-loop`).
+- Shared board/grid primitives (`game-board`).
+- Scene stack orchestration (`game-scenes`).
 - Terminal widget layer (`game-ui-term`).
 - Snapshot/replay serialization support (`game-save`).
 - AI hint traits plus Sudoku backtracking hint solver (`game-ai`).
@@ -57,5 +59,5 @@ This file maps active compiler-level "Known Incomplete Areas" to what matters fo
 
 - `crates/platform-linux` (raw mode + key decoding backend behind `platform-host`).
 - `crates/platform-windows` (console input backend behind `platform-host`).
-- `crates/game-scenes` (scene stack/router, transitions, modal layering).
-- `crates/game-board` (shared grid/board primitives for multiple board games).
+- `crates/game-replay` (deterministic runtime replay playback + tooling integration).
+- `crates/game-assets` (text/board asset loading and schema validation).

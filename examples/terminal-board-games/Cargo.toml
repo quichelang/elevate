@@ -1,8 +1,10 @@
 [workspace]
 members = [
+  "crates/game-board",
   "crates/game-core",
   "crates/game-ai",
   "crates/game-loop",
+  "crates/game-scenes",
   "crates/game-save",
   "crates/game-ui-term",
   "crates/platform-host",
