@@ -99,6 +99,7 @@ pub enum RustAssignTarget {
         base: RustExpr,
         field: String,
     },
+    Tuple(Vec<RustAssignTarget>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

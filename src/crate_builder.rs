@@ -1244,6 +1244,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn transpile_crate_with_tuple_assignment_compiles_with_cargo() {
+        let root = create_temp_dir("elevate-tuple-assign-build");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "pub fn swap(a: i64, b: i64) -> i64 {\n    (a, b) = (b, a);\n    a\n}\n",
+        )
+        .expect("write lib.ers should succeed");
+
+        let summary = transpile_ers_crate(&root).expect("transpile should succeed");
+        let generated_src = summary.generated_root.join("src");
+        let generated_lib =
+            fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");
+        assert!(generated_lib.contains("(a, b) = (b, a);"));
+
+        let output = std::process::Command::new("rustc")
+            .arg("--crate-type=lib")
+            .arg(generated_src.join("lib.rs"))
+            .arg("-o")
+            .arg(summary.generated_root.join("libtuple_test.rlib"))
+            .output()
+            .expect("rustc should execute");
+        assert!(
+            output.status.success(),
+            "rustc compile failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     fn create_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -341,6 +341,14 @@ fn emit_assign_target(target: &RustAssignTarget) -> String {
     match target {
         RustAssignTarget::Path(name) => name.clone(),
         RustAssignTarget::Field { base, field } => format!("{}.{}", emit_expr(base), field),
+        RustAssignTarget::Tuple(items) => {
+            let inner = items
+                .iter()
+                .map(emit_assign_target)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({inner})")
+        }
     }
 }
 
@@ -539,16 +547,7 @@ fn collect_mutated_paths_in_stmt(
 ) {
     match stmt {
         RustStmt::Assign { target, .. } => {
-            match target {
-                RustAssignTarget::Path(name) => {
-                    out.insert(name.clone());
-                }
-                RustAssignTarget::Field { base, .. } => {
-                    if let Some(name) = root_path_name(base) {
-                        out.insert(name.to_string());
-                    }
-                }
-            }
+            collect_mutated_paths_in_target(target, out);
         }
         RustStmt::If {
             then_body,
@@ -573,6 +572,27 @@ fn collect_mutated_paths_in_stmt(
         | RustStmt::DestructureConst { .. }
         | RustStmt::Return(_)
         | RustStmt::Expr(_) => {}
+    }
+}
+
+fn collect_mutated_paths_in_target(
+    target: &RustAssignTarget,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match target {
+        RustAssignTarget::Path(name) => {
+            out.insert(name.clone());
+        }
+        RustAssignTarget::Field { base, .. } => {
+            if let Some(name) = root_path_name(base) {
+                out.insert(name.to_string());
+            }
+        }
+        RustAssignTarget::Tuple(items) => {
+            for item in items {
+                collect_mutated_paths_in_target(item, out);
+            }
+        }
     }
 }
 

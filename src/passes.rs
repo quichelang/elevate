@@ -982,6 +982,12 @@ fn lower_stmt_with_types(
                     }
                 }
                 AssignOp::AddAssign => {
+                    if matches!(typed_target, TypedAssignTarget::Tuple(_)) {
+                        diagnostics.push(Diagnostic::new(
+                            "`+=` is not supported on tuple assignment targets",
+                            Span::new(0, 0),
+                        ));
+                    }
                     let sum_ty = resolve_add_type(&target_ty, &value_ty, diagnostics);
                     if !is_compatible(&sum_ty, &target_ty) {
                         diagnostics.push(Diagnostic::new(
@@ -1158,6 +1164,23 @@ fn infer_assign_target(
                 },
                 resolved_ty,
             ))
+        }
+        AssignTarget::Tuple(items) => {
+            let mut typed_items = Vec::with_capacity(items.len());
+            let mut tys = Vec::with_capacity(items.len());
+            for item in items {
+                let (typed_item, ty) = infer_assign_target(
+                    item,
+                    context,
+                    locals,
+                    immutable_locals,
+                    return_ty,
+                    diagnostics,
+                )?;
+                typed_items.push(typed_item);
+                tys.push(ty);
+            }
+            Some((TypedAssignTarget::Tuple(typed_items), SemType::Tuple(tys)))
         }
     }
 }
@@ -2624,9 +2647,7 @@ fn collect_path_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<String, usize>
         TypedStmt::DestructureConst { value, .. } => collect_path_uses_in_expr(value, uses),
         TypedStmt::Assign { target, value, .. } => {
             collect_path_uses_in_expr(value, uses);
-            if let TypedAssignTarget::Field { base, .. } = target {
-                collect_path_uses_in_expr(base, uses);
-            }
+            collect_path_uses_in_assign_target(target, uses);
         }
         TypedStmt::Return(Some(expr)) => collect_path_uses_in_expr(expr, uses),
         TypedStmt::Return(None) => {}
@@ -2652,6 +2673,18 @@ fn collect_path_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<String, usize>
             }
         }
         TypedStmt::Expr(expr) => collect_path_uses_in_expr(expr, uses),
+    }
+}
+
+fn collect_path_uses_in_assign_target(target: &TypedAssignTarget, uses: &mut HashMap<String, usize>) {
+    match target {
+        TypedAssignTarget::Path(_) => {}
+        TypedAssignTarget::Field { base, .. } => collect_path_uses_in_expr(base, uses),
+        TypedAssignTarget::Tuple(items) => {
+            for item in items {
+                collect_path_uses_in_assign_target(item, uses);
+            }
+        }
     }
 }
 
@@ -3260,6 +3293,12 @@ fn lower_assign_target(
             base: lower_expr_with_context(base, context, ExprPosition::Value, state),
             field: field.clone(),
         },
+        TypedAssignTarget::Tuple(items) => RustAssignTarget::Tuple(
+            items
+                .iter()
+                .map(|item| lower_assign_target(item, context, state))
+                .collect(),
+        ),
     }
 }
 

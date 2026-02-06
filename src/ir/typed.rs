@@ -98,6 +98,7 @@ pub enum TypedAssignTarget {
         base: TypedExpr,
         field: String,
     },
+    Tuple(Vec<TypedAssignTarget>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

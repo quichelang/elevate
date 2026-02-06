@@ -742,6 +742,20 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_tuple_assignment_targets() {
+        let source = r#"
+            pub fn swap(a: i64, b: i64) -> i64 {
+                (a, b) = (b, a);
+                a
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("(a, b) = (b, a);"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_advanced_match_patterns() {
         let source = r#"
             enum Maybe {

@@ -779,8 +779,17 @@ impl Parser {
                 }
             }
             Expr::Field { base, field } => Some(AssignTarget::Field { base, field }),
+            Expr::Tuple(items) => {
+                let mut targets = Vec::new();
+                for item in items {
+                    targets.push(self.expr_to_assign_target(item)?);
+                }
+                Some(AssignTarget::Tuple(targets))
+            }
             _ => {
-                self.error_current("Invalid assignment target; expected identifier or field access");
+                self.error_current(
+                    "Invalid assignment target; expected identifier, field access, or tuple target",
+                );
                 None
             }
         }
@@ -1061,6 +1070,19 @@ mod tests {
                 n = n + 1;
                 n += 1;
                 return n;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_tuple_assignment_target() {
+        let source = r#"
+            fn swap(a: i64, b: i64) -> i64 {
+                (a, b) = (b, a);
+                return a;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

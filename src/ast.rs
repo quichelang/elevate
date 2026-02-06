@@ -187,6 +187,7 @@ pub enum AssignTarget {
         base: Box<Expr>,
         field: String,
     },
+    Tuple(Vec<AssignTarget>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
