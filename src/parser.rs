@@ -1,6 +1,7 @@
 use crate::ast::{
-    Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, ImplBlock, Item, MatchArm,
-    Module, Param, Pattern, RustUse, StaticDef, Stmt, StructDef, Type, Visibility,
+    BinaryOp, Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, ImplBlock, Item,
+    MatchArm, Module, Param, Pattern, RustUse, StaticDef, Stmt, StructDef, Type, UnaryOp,
+    Visibility,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -283,13 +284,88 @@ impl Parser {
         }
 
         let expr = self.parse_expr()?;
-        self.expect(TokenKind::Semicolon, "Expected ';' after expression statement")?;
-        Some(Stmt::Expr(expr))
+        if self.match_kind(TokenKind::Semicolon) {
+            return Some(Stmt::Expr(expr));
+        }
+        if self.at(TokenKind::RBrace) {
+            return Some(Stmt::TailExpr(expr));
+        }
+        self.error_current("Expected ';' after expression statement");
+        None
     }
 
     fn parse_expr(&mut self) -> Option<Expr> {
         if self.match_kind(TokenKind::Match) {
             return self.parse_match_expr();
+        }
+        self.parse_or_expr()
+    }
+
+    fn parse_or_expr(&mut self) -> Option<Expr> {
+        let mut expr = self.parse_and_expr()?;
+        while self.match_kind(TokenKind::Or) {
+            let right = self.parse_and_expr()?;
+            expr = Expr::Binary {
+                op: BinaryOp::Or,
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+        Some(expr)
+    }
+
+    fn parse_and_expr(&mut self) -> Option<Expr> {
+        let mut expr = self.parse_cmp_expr()?;
+        while self.match_kind(TokenKind::And) {
+            let right = self.parse_cmp_expr()?;
+            expr = Expr::Binary {
+                op: BinaryOp::And,
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+        Some(expr)
+    }
+
+    fn parse_cmp_expr(&mut self) -> Option<Expr> {
+        let mut expr = self.parse_unary_expr()?;
+        loop {
+            let op = if self.match_kind(TokenKind::EqualEqual) {
+                Some(BinaryOp::Eq)
+            } else if self.match_kind(TokenKind::BangEqual) {
+                Some(BinaryOp::Ne)
+            } else if self.match_kind(TokenKind::LtEqual) {
+                Some(BinaryOp::Le)
+            } else if self.match_kind(TokenKind::GtEqual) {
+                Some(BinaryOp::Ge)
+            } else if self.match_kind(TokenKind::Lt) {
+                Some(BinaryOp::Lt)
+            } else if self.match_kind(TokenKind::Gt) {
+                Some(BinaryOp::Gt)
+            } else {
+                None
+            };
+            if let Some(op) = op {
+                let right = self.parse_unary_expr()?;
+                expr = Expr::Binary {
+                    op,
+                    left: Box::new(expr),
+                    right: Box::new(right),
+                };
+            } else {
+                break;
+            }
+        }
+        Some(expr)
+    }
+
+    fn parse_unary_expr(&mut self) -> Option<Expr> {
+        if self.match_kind(TokenKind::Bang) || self.match_kind(TokenKind::Not) {
+            let expr = self.parse_unary_expr()?;
+            return Some(Expr::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(expr),
+            });
         }
         self.parse_postfix_expr()
     }
@@ -513,6 +589,9 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (While, While)
             | (Pub, Pub)
             | (Match, Match)
+            | (And, And)
+            | (Or, Or)
+            | (Not, Not)
             | (True, True)
             | (False, False)
             | (Underscore, Underscore)
@@ -528,11 +607,16 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Semicolon, Semicolon)
             | (Comma, Comma)
             | (Dot, Dot)
+            | (Bang, Bang)
             | (Equal, Equal)
+            | (EqualEqual, EqualEqual)
+            | (BangEqual, BangEqual)
             | (FatArrow, FatArrow)
             | (Arrow, Arrow)
             | (Lt, Lt)
+            | (LtEqual, LtEqual)
             | (Gt, Gt)
+            | (GtEqual, GtEqual)
             | (Question, Question)
             | (Eof, Eof)
     )
@@ -622,5 +706,21 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 2);
+    }
+
+    #[test]
+    fn parse_tail_expression_and_operators() {
+        let source = r#"
+            pub fn ok(a: bool, b: bool, x: i64, y: i64) -> bool {
+                if not a and b {
+                    x <= y
+                } else {
+                    x != y
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
     }
 }

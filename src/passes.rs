@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 
-use crate::ast::{Block, Expr, Item, Module, Pattern, Stmt, Type, Visibility};
+use crate::ast::{BinaryOp, Block, Expr, Item, Module, Pattern, Stmt, Type, UnaryOp, Visibility};
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
-    RustConst, RustEnum, RustExpr, RustField, RustFunction, RustImpl, RustItem, RustMatchArm,
-    RustModule, RustParam, RustPattern, RustStatic, RustStmt, RustStruct, RustUse, RustVariant,
+    RustBinaryOp, RustConst, RustEnum, RustExpr, RustField, RustFunction, RustImpl, RustItem,
+    RustMatchArm, RustModule, RustParam, RustPattern, RustStatic, RustStmt, RustStruct, RustUnaryOp,
+    RustUse, RustVariant,
 };
 use crate::ir::typed::{
-    TypedConst, TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedItem,
-    TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedRustUse, TypedStatic, TypedStmt,
-    TypedStruct, TypedVariant,
+    TypedBinaryOp, TypedConst, TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction,
+    TypedImpl, TypedItem, TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedRustUse,
+    TypedStatic, TypedStmt, TypedStruct, TypedUnaryOp, TypedVariant,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,7 +252,34 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                 let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
                 let mut body = Vec::new();
                 let mut inferred_returns = Vec::new();
-                for statement in &method.body.statements {
+                for (index, statement) in method.body.statements.iter().enumerate() {
+                    let is_last = index + 1 == method.body.statements.len();
+                    if is_last
+                        && let Stmt::TailExpr(expr) = statement
+                    {
+                        let (typed_expr, inferred) = infer_expr(
+                            expr,
+                            context,
+                            &mut locals,
+                            &provisional_return_ty,
+                            diagnostics,
+                        );
+                        inferred_returns.push(inferred.clone());
+                        if provisional_return_ty != SemType::Unknown
+                            && !is_compatible(&inferred, &provisional_return_ty)
+                        {
+                            diagnostics.push(Diagnostic::new(
+                                format!(
+                                    "Return type mismatch: expected `{}`, got `{}`",
+                                    type_to_string(&provisional_return_ty),
+                                    type_to_string(&inferred)
+                                ),
+                                Span::new(0, 0),
+                            ));
+                        }
+                        body.push(TypedStmt::Return(Some(typed_expr)));
+                        continue;
+                    }
                     if let Some(stmt) = lower_stmt_with_types(
                         statement,
                         context,
@@ -383,7 +411,34 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
             let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
             let mut body = Vec::new();
             let mut inferred_returns = Vec::new();
-            for statement in &def.body.statements {
+            for (index, statement) in def.body.statements.iter().enumerate() {
+                let is_last = index + 1 == def.body.statements.len();
+                if is_last
+                    && let Stmt::TailExpr(expr) = statement
+                {
+                    let (typed_expr, inferred) = infer_expr(
+                        expr,
+                        context,
+                        &mut locals,
+                        &provisional_return_ty,
+                        diagnostics,
+                    );
+                    inferred_returns.push(inferred.clone());
+                    if provisional_return_ty != SemType::Unknown
+                        && !is_compatible(&inferred, &provisional_return_ty)
+                    {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Return type mismatch: expected `{}`, got `{}`",
+                                type_to_string(&provisional_return_ty),
+                                type_to_string(&inferred)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                    body.push(TypedStmt::Return(Some(typed_expr)));
+                    continue;
+                }
                 if let Some(stmt) = lower_stmt_with_types(
                     statement,
                     context,
@@ -502,6 +557,10 @@ fn lower_stmt_with_types(
             }
         }
         Stmt::Expr(expr) => {
+            let (typed_expr, _) = infer_expr(expr, context, locals, return_ty, diagnostics);
+            Some(TypedStmt::Expr(typed_expr))
+        }
+        Stmt::TailExpr(expr) => {
             let (typed_expr, _) = infer_expr(expr, context, locals, return_ty, diagnostics);
             Some(TypedStmt::Expr(typed_expr))
         }
@@ -682,6 +741,98 @@ fn infer_expr(
                     ty: type_to_string(&final_ty),
                 },
                 final_ty,
+            )
+        }
+        Expr::Unary { op, expr } => {
+            let (typed_expr, expr_ty) = infer_expr(expr, context, locals, return_ty, diagnostics);
+            match op {
+                UnaryOp::Not => {
+                    if !is_compatible(&expr_ty, &named_type("bool")) {
+                        diagnostics.push(Diagnostic::new(
+                            format!("`not` expects `bool`, got `{}`", type_to_string(&expr_ty)),
+                            Span::new(0, 0),
+                        ));
+                    }
+                    let out_ty = named_type("bool");
+                    (
+                        TypedExpr {
+                            kind: TypedExprKind::Unary {
+                                op: TypedUnaryOp::Not,
+                                expr: Box::new(typed_expr),
+                            },
+                            ty: type_to_string(&out_ty),
+                        },
+                        out_ty,
+                    )
+                }
+            }
+        }
+        Expr::Binary { op, left, right } => {
+            let (typed_left, left_ty) = infer_expr(left, context, locals, return_ty, diagnostics);
+            let (typed_right, right_ty) = infer_expr(right, context, locals, return_ty, diagnostics);
+            let (typed_op, out_ty) = match op {
+                BinaryOp::And | BinaryOp::Or => {
+                    if !is_compatible(&left_ty, &named_type("bool"))
+                        || !is_compatible(&right_ty, &named_type("bool"))
+                    {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "logical op expects `bool` operands, got `{}` and `{}`",
+                                type_to_string(&left_ty),
+                                type_to_string(&right_ty)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                    (
+                        if matches!(op, BinaryOp::And) {
+                            TypedBinaryOp::And
+                        } else {
+                            TypedBinaryOp::Or
+                        },
+                        named_type("bool"),
+                    )
+                }
+                BinaryOp::Eq
+                | BinaryOp::Ne
+                | BinaryOp::Lt
+                | BinaryOp::Le
+                | BinaryOp::Gt
+                | BinaryOp::Ge => {
+                    if !is_compatible(&left_ty, &right_ty) {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "comparison operands must be compatible, got `{}` and `{}`",
+                                type_to_string(&left_ty),
+                                type_to_string(&right_ty)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                    (
+                        match op {
+                            BinaryOp::Eq => TypedBinaryOp::Eq,
+                            BinaryOp::Ne => TypedBinaryOp::Ne,
+                            BinaryOp::Lt => TypedBinaryOp::Lt,
+                            BinaryOp::Le => TypedBinaryOp::Le,
+                            BinaryOp::Gt => TypedBinaryOp::Gt,
+                            BinaryOp::Ge => TypedBinaryOp::Ge,
+                            _ => unreachable!(),
+                        },
+                        named_type("bool"),
+                    )
+                }
+            };
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Binary {
+                        op: typed_op,
+                        left: Box::new(typed_left),
+                        right: Box::new(typed_right),
+                    },
+                    ty: type_to_string(&out_ty),
+                },
+                out_ty,
             )
         }
         Expr::Try(inner) => {
@@ -1042,6 +1193,26 @@ fn lower_expr(expr: &TypedExpr) -> RustExpr {
                     value: lower_expr(&arm.value),
                 })
                 .collect(),
+        },
+        TypedExprKind::Unary { op, expr } => RustExpr::Unary {
+            op: match op {
+                TypedUnaryOp::Not => RustUnaryOp::Not,
+            },
+            expr: Box::new(lower_expr(expr)),
+        },
+        TypedExprKind::Binary { op, left, right } => RustExpr::Binary {
+            op: match op {
+                TypedBinaryOp::And => RustBinaryOp::And,
+                TypedBinaryOp::Or => RustBinaryOp::Or,
+                TypedBinaryOp::Eq => RustBinaryOp::Eq,
+                TypedBinaryOp::Ne => RustBinaryOp::Ne,
+                TypedBinaryOp::Lt => RustBinaryOp::Lt,
+                TypedBinaryOp::Le => RustBinaryOp::Le,
+                TypedBinaryOp::Gt => RustBinaryOp::Gt,
+                TypedBinaryOp::Ge => RustBinaryOp::Ge,
+            },
+            left: Box::new(lower_expr(left)),
+            right: Box::new(lower_expr(right)),
         },
         TypedExprKind::Try(inner) => RustExpr::Try(Box::new(lower_expr(inner))),
     }

@@ -22,6 +22,9 @@ pub enum TokenKind {
     While,
     Pub,
     Match,
+    And,
+    Or,
+    Not,
     True,
     False,
     Underscore,
@@ -37,11 +40,16 @@ pub enum TokenKind {
     Semicolon,
     Comma,
     Dot,
+    Bang,
     Equal,
+    EqualEqual,
+    BangEqual,
     FatArrow,
     Arrow,
     Lt,
+    LtEqual,
     Gt,
+    GtEqual,
     Question,
     Eof,
 }
@@ -102,8 +110,25 @@ impl<'a> Lexer<'a> {
                 ';' => self.push_simple(TokenKind::Semicolon, start),
                 ',' => self.push_simple(TokenKind::Comma, start),
                 '.' => self.push_simple(TokenKind::Dot, start),
+                '!' => {
+                    if self.peek_char() == Some('=') {
+                        self.advance();
+                        self.tokens.push(Token {
+                            kind: TokenKind::BangEqual,
+                            span: Span::new(start, self.cursor),
+                        });
+                    } else {
+                        self.push_simple(TokenKind::Bang, start);
+                    }
+                }
                 '=' => {
-                    if self.peek_char() == Some('>') {
+                    if self.peek_char() == Some('=') {
+                        self.advance();
+                        self.tokens.push(Token {
+                            kind: TokenKind::EqualEqual,
+                            span: Span::new(start, self.cursor),
+                        });
+                    } else if self.peek_char() == Some('>') {
                         self.advance();
                         self.tokens.push(Token {
                             kind: TokenKind::FatArrow,
@@ -113,8 +138,28 @@ impl<'a> Lexer<'a> {
                         self.push_simple(TokenKind::Equal, start);
                     }
                 }
-                '<' => self.push_simple(TokenKind::Lt, start),
-                '>' => self.push_simple(TokenKind::Gt, start),
+                '<' => {
+                    if self.peek_char() == Some('=') {
+                        self.advance();
+                        self.tokens.push(Token {
+                            kind: TokenKind::LtEqual,
+                            span: Span::new(start, self.cursor),
+                        });
+                    } else {
+                        self.push_simple(TokenKind::Lt, start);
+                    }
+                }
+                '>' => {
+                    if self.peek_char() == Some('=') {
+                        self.advance();
+                        self.tokens.push(Token {
+                            kind: TokenKind::GtEqual,
+                            span: Span::new(start, self.cursor),
+                        });
+                    } else {
+                        self.push_simple(TokenKind::Gt, start);
+                    }
+                }
                 '?' => self.push_simple(TokenKind::Question, start),
                 '-' => {
                     if self.peek_char() == Some('>') {
@@ -217,6 +262,9 @@ impl<'a> Lexer<'a> {
             "while" => TokenKind::While,
             "pub" => TokenKind::Pub,
             "match" => TokenKind::Match,
+            "and" => TokenKind::And,
+            "or" => TokenKind::Or,
+            "not" => TokenKind::Not,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             _ => TokenKind::Identifier(ident),
@@ -334,5 +382,19 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Impl)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Pub)));
+    }
+
+    #[test]
+    fn lex_boolean_and_comparison_ops() {
+        let source = "if not a and b or !c { x == y; x != y; x <= y; x >= y; x < y; x > y; }";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Not)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Bang)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::And)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Or)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::EqualEqual)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::BangEqual)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::LtEqual)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::GtEqual)));
     }
 }

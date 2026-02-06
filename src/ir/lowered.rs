@@ -116,7 +116,33 @@ pub enum RustExpr {
         scrutinee: Box<RustExpr>,
         arms: Vec<RustMatchArm>,
     },
+    Unary {
+        op: RustUnaryOp,
+        expr: Box<RustExpr>,
+    },
+    Binary {
+        op: RustBinaryOp,
+        left: Box<RustExpr>,
+        right: Box<RustExpr>,
+    },
     Try(Box<RustExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustUnaryOp {
+    Not,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustBinaryOp {
+    And,
+    Or,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

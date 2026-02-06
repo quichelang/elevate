@@ -273,6 +273,22 @@ mod tests {
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_boolean_comparisons_and_tail_return() {
+        let source = r#"
+            pub fn check(a: bool, b: bool, x: i64, y: i64) -> bool {
+                (not a and b) or (x <= y and x != y)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("(!a && b)"));
+        assert!(output.rust_code.contains("(x <= y)"));
+        assert!(output.rust_code.contains("(x != y)"));
+        assert!(output.rust_code.contains("return"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {

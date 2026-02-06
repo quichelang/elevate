@@ -1,6 +1,6 @@
 use crate::ir::lowered::{
-    RustConst, RustEnum, RustExpr, RustFunction, RustImpl, RustItem, RustModule, RustPattern,
-    RustStatic, RustStmt, RustStruct, RustUse,
+    RustBinaryOp, RustConst, RustEnum, RustExpr, RustFunction, RustImpl, RustItem, RustModule,
+    RustPattern, RustStatic, RustStmt, RustStruct, RustUnaryOp, RustUse,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -181,6 +181,22 @@ fn emit_expr(expr: &RustExpr) -> String {
             }
             text.push('}');
             text
+        }
+        RustExpr::Unary { op, expr } => match op {
+            RustUnaryOp::Not => format!("!{}", emit_expr(expr)),
+        },
+        RustExpr::Binary { op, left, right } => {
+            let symbol = match op {
+                RustBinaryOp::And => "&&",
+                RustBinaryOp::Or => "||",
+                RustBinaryOp::Eq => "==",
+                RustBinaryOp::Ne => "!=",
+                RustBinaryOp::Lt => "<",
+                RustBinaryOp::Le => "<=",
+                RustBinaryOp::Gt => ">",
+                RustBinaryOp::Ge => ">=",
+            };
+            format!("({} {} {})", emit_expr(left), symbol, emit_expr(right))
         }
         RustExpr::Try(inner) => format!("{}?", emit_expr(inner)),
     }

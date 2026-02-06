@@ -91,6 +91,13 @@ Declarations:
 Expressions/statements:
 - Literals, path refs/calls, field access, `match`, postfix `?`, local `const`, `return`.
 - Conditionals and loops are required MVP features (implementation pending).
+- Required operator/features for substantial programs:
+- Ranges (`..`).
+- Slices.
+- Spread-like expansion (`...`) where applicable by design.
+- Logical boolean ops: `and`, `or`, and negation via both `!` and `not`.
+- Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
+- Automatic return of the last value in a block/function when trailing semicolon is omitted (Rust-like tail expression behavior).
 
 Type policy:
 - Local inference is enabled.
@@ -231,5 +238,8 @@ Quality gates:
 - Ownership lowering policy implementation is not complete.
 - Generic function definitions and constrained bounds are not complete.
 - Additional loop forms beyond `while` are not complete.
+- Ranges, slices, and spread-like expansion are not complete.
+- Full logical/comparison operator surface is not complete.
+- Full tail-expression return behavior across all block forms is not complete.
 - Borrow/reference features remain intentionally unsupported.
 - Closure support is deferred to MVP+1.

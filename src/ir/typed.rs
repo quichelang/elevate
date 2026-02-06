@@ -122,7 +122,33 @@ pub enum TypedExprKind {
         scrutinee: Box<TypedExpr>,
         arms: Vec<TypedMatchArm>,
     },
+    Unary {
+        op: TypedUnaryOp,
+        expr: Box<TypedExpr>,
+    },
+    Binary {
+        op: TypedBinaryOp,
+        left: Box<TypedExpr>,
+        right: Box<TypedExpr>,
+    },
     Try(Box<TypedExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedUnaryOp {
+    Not,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedBinaryOp {
+    And,
+    Or,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
