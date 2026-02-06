@@ -9,14 +9,15 @@ use crate::ir::lowered::{
     RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
     RustExpr, RustField, RustFunction, RustImpl, RustItem, RustMatchArm, RustModule, RustParam,
     RustPattern, RustPatternField, RustStatic, RustStmt, RustStruct, RustStructLiteralField,
-    RustUnaryOp, RustUse,
+    RustTypeParam, RustUnaryOp, RustUse,
     RustVariant,
 };
 use crate::ir::typed::{
     TypedAssignOp, TypedAssignTarget, TypedBinaryOp, TypedConst, TypedDestructurePattern,
     TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedItem,
     TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedRustUse, TypedStatic, TypedStmt,
-    TypedStruct, TypedStructLiteralField, TypedUnaryOp, TypedVariant, TypedPatternField,
+    TypedStruct, TypedStructLiteralField, TypedTypeParam, TypedUnaryOp, TypedVariant,
+    TypedPatternField,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +39,7 @@ enum SemType {
 #[derive(Debug, Clone)]
 struct FunctionSig {
     type_params: Vec<String>,
+    type_param_bounds: HashMap<String, Vec<SemType>>,
     params: Vec<SemType>,
     return_type: SemType,
 }
@@ -540,7 +542,14 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
     RustFunction {
         is_public: def.is_public,
         name: def.name.clone(),
-        type_params: def.type_params.clone(),
+        type_params: def
+            .type_params
+            .iter()
+            .map(|param| RustTypeParam {
+                name: param.name.clone(),
+                bounds: param.bounds.clone(),
+            })
+            .collect(),
         params: def
             .params
             .iter()
@@ -584,7 +593,17 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
             }
             Item::Function(def) => {
                 let sig = FunctionSig {
-                    type_params: def.type_params.clone(),
+                    type_params: def.type_params.iter().map(|param| param.name.clone()).collect(),
+                    type_param_bounds: def
+                        .type_params
+                        .iter()
+                        .map(|param| {
+                            (
+                                param.name.clone(),
+                                param.bounds.iter().map(type_from_ast).collect::<Vec<_>>(),
+                            )
+                        })
+                        .collect(),
                     params: def
                         .params
                         .iter()
@@ -601,7 +620,24 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
             Item::Impl(def) => {
                 for method in &def.methods {
                     let sig = FunctionSig {
-                        type_params: method.type_params.clone(),
+                        type_params: method
+                            .type_params
+                            .iter()
+                            .map(|param| param.name.clone())
+                            .collect(),
+                        type_param_bounds: method
+                            .type_params
+                            .iter()
+                            .map(|param| {
+                                (
+                                    param.name.clone(),
+                                    param.bounds
+                                        .iter()
+                                        .map(|bound| type_from_ast_with_impl_self(bound, &def.target))
+                                        .collect::<Vec<_>>(),
+                                )
+                            })
+                            .collect(),
                         params: method
                             .params
                             .iter()
@@ -757,7 +793,18 @@ fn lower_item(
                 methods.push(TypedFunction {
                     is_public: method.visibility == Visibility::Public,
                     name: method.name.clone(),
-                    type_params: method.type_params.clone(),
+                    type_params: method
+                        .type_params
+                        .iter()
+                        .map(|param| TypedTypeParam {
+                            name: param.name.clone(),
+                            bounds: param
+                                .bounds
+                                .iter()
+                                .map(|bound| type_to_string(&type_from_ast_with_impl_self(bound, &def.target)))
+                                .collect(),
+                        })
+                        .collect(),
                     params: method
                         .params
                         .iter()
@@ -927,7 +974,19 @@ fn lower_item(
             Some(TypedItem::Function(TypedFunction {
                 is_public: def.visibility == Visibility::Public,
                 name: def.name.clone(),
-                type_params: def.type_params.clone(),
+                type_params: def
+                    .type_params
+                    .iter()
+                    .map(|param| TypedTypeParam {
+                        name: param.name.clone(),
+                        bounds: param
+                            .bounds
+                            .iter()
+                            .map(type_from_ast)
+                            .map(|bound| type_to_string(&bound))
+                            .collect(),
+                    })
+                    .collect(),
                 params: def
                     .params
                     .iter()
@@ -2447,6 +2506,29 @@ fn resolve_named_function_call(
         }
     }
 
+    for type_param in &sig.type_params {
+        let Some(actual_ty) = generic_bindings.get(type_param) else {
+            continue;
+        };
+        let Some(bounds) = sig.type_param_bounds.get(type_param) else {
+            continue;
+        };
+        for bound in bounds {
+            if !type_satisfies_bound(actual_ty, bound) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Type `{}` does not satisfy bound `{}` for `{}` in function `{}`",
+                        type_to_string(actual_ty),
+                        type_to_string(bound),
+                        type_param,
+                        name
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+        }
+    }
+
     substitute_generic_type(&sig.return_type, &type_param_set, &generic_bindings)
 }
 
@@ -3746,6 +3828,71 @@ fn type_to_string(ty: &SemType) -> String {
                     .join(", ");
                 format!("{head}<{args_text}>")
             }
+        }
+    }
+}
+
+fn type_satisfies_bound(actual: &SemType, bound: &SemType) -> bool {
+    if *actual == SemType::Unknown {
+        return true;
+    }
+    let Some(bound_name) = bound_trait_name(bound) else {
+        return true;
+    };
+    match bound_name {
+        "Clone" => type_is_clone(actual),
+        "Copy" => type_is_copy(actual),
+        _ => true,
+    }
+}
+
+fn bound_trait_name(bound: &SemType) -> Option<&str> {
+    if let SemType::Path { path, .. } = bound {
+        return path.last().map(|part| part.as_str());
+    }
+    None
+}
+
+fn type_is_clone(ty: &SemType) -> bool {
+    match ty {
+        SemType::Unknown | SemType::Unit => true,
+        SemType::Tuple(items) => items.iter().all(type_is_clone),
+        SemType::Iter(item) => type_is_clone(item),
+        SemType::Fn { .. } => false,
+        SemType::Path { path, args } => {
+            let Some(head) = path.last().map(|part| part.as_str()) else {
+                return false;
+            };
+            if is_copy_primitive_type(head) || head == "String" {
+                return true;
+            }
+            if matches!(
+                head,
+                "Option"
+                    | "Result"
+                    | "Vec"
+                    | "HashMap"
+                    | "BTreeMap"
+                    | "HashSet"
+                    | "BTreeSet"
+            ) {
+                return args.iter().all(type_is_clone);
+            }
+            is_probably_nominal_type(head)
+        }
+    }
+}
+
+fn type_is_copy(ty: &SemType) -> bool {
+    match ty {
+        SemType::Unknown | SemType::Unit => true,
+        SemType::Tuple(items) => items.iter().all(type_is_copy),
+        SemType::Iter(_) | SemType::Fn { .. } => false,
+        SemType::Path { path, args } => {
+            let Some(head) = path.last().map(|part| part.as_str()) else {
+                return false;
+            };
+            args.is_empty() && is_copy_primitive_type(head)
         }
     }
 }

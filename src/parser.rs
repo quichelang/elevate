@@ -1,7 +1,8 @@
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, ConstDef, DestructurePattern, EnumDef, EnumVariant,
-    Expr, Field, FunctionDef, ImplBlock, Item, MatchArm, Module, Param, Pattern, PatternField,
-    RustUse, StaticDef, Stmt, StructLiteralField, StructDef, Type, UnaryOp, Visibility,
+    Expr, Field, FunctionDef, GenericParam, ImplBlock, Item, MatchArm, Module, Param, Pattern,
+    PatternField, RustUse, StaticDef, Stmt, StructLiteralField, StructDef, Type, UnaryOp,
+    Visibility,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -168,7 +169,18 @@ impl Parser {
         let mut type_params = Vec::new();
         if self.match_kind(TokenKind::Lt) {
             while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
-                type_params.push(self.expect_ident("Expected generic type parameter name")?);
+                let param_name = self.expect_ident("Expected generic type parameter name")?;
+                let mut bounds = Vec::new();
+                if self.match_kind(TokenKind::Colon) {
+                    bounds.push(self.parse_type()?);
+                    while self.match_kind(TokenKind::Plus) {
+                        bounds.push(self.parse_type()?);
+                    }
+                }
+                type_params.push(GenericParam {
+                    name: param_name,
+                    bounds,
+                });
                 if !self.match_kind(TokenKind::Comma) {
                     break;
                 }

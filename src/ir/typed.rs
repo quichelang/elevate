@@ -50,10 +50,16 @@ pub struct TypedVariant {
 pub struct TypedFunction {
     pub is_public: bool,
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypedTypeParam>,
     pub params: Vec<TypedParam>,
     pub return_type: String,
     pub body: Vec<TypedStmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedTypeParam {
+    pub name: String,
+    pub bounds: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

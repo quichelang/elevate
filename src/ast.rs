@@ -56,10 +56,16 @@ pub struct Field {
 pub struct FunctionDef {
     pub visibility: Visibility,
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub body: Block,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericParam {
+    pub name: String,
+    pub bounds: Vec<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

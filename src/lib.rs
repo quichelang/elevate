@@ -719,6 +719,39 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_generic_bounds_syntax() {
+        let source = r#"
+            fn keep<T: Clone + Copy>(value: T) -> T {
+                value
+            }
+
+            fn run() -> i64 {
+                keep(7)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("fn keep<T: Clone + Copy>(value: T) -> T"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_reports_generic_bound_violation() {
+        let source = r#"
+            fn keep<T: Copy>(value: T) -> T {
+                value
+            }
+
+            fn run() -> String {
+                keep("hello")
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected bound violation");
+        assert!(error.to_string().contains("does not satisfy bound `Copy`"));
+    }
+
+    #[test]
     fn compile_supports_match_on_enums() {
         let source = r#"
             enum Maybe {

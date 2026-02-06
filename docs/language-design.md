@@ -169,7 +169,7 @@ Implemented:
 - `Vec` indexing and range slicing expressions (`values[i]`, `values[a..b]`).
 - Heterogeneous tuple support with Rust-like semantics (tuple literals, tuple type annotations, and tuple destructuring bindings in const/assignment/`for` contexts).
 - Slice destructuring bindings for `Vec` values in `const`/`for` patterns (`[head, ..tail]`, `[left, right]`).
-- Generic function definitions with callsite type inference (for example `fn id<T>(x: T) -> T`).
+- Generic function definitions with callsite type inference and trait-style bound syntax (for example `fn id<T>(x: T) -> T`, `fn keep<T: Clone + Copy>(x: T) -> T`).
 - Array/vector literals (`[a, b, c]`) with inferred element type and `Vec` lowering.
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
 - Struct rest match patterns (`Type { field, .. }`) with diagnostics for missing required fields when rest is omitted.
@@ -289,7 +289,7 @@ Quality gates:
 ### Known Incomplete Areas
 
 - Ownership lowering policy implementation is not complete.
-- Generic constrained bounds are not complete (generic function definitions are implemented, but trait-style bound constraints are still pending).
+- Generic constrained bounds are partially complete (syntax + Rust emission + initial compile-time checks for `Clone`/`Copy` are implemented; broader trait-bound enforcement remains pending).
 - Full iterator-model ergonomics for `for` loops are not complete beyond current lowering support.
 - Slices are not complete (current support focuses on `Vec` literals/index/range expressions and slice-style match patterns).
 - Full exhaustiveness diagnostics are not complete (current checks focus on bool/finite-tuple finite domains and enum variants).

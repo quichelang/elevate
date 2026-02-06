@@ -86,7 +86,13 @@ fn emit_function(def: &RustFunction, out: &mut String) {
     let generics = if def.type_params.is_empty() {
         String::new()
     } else {
-        format!("<{}>", def.type_params.join(", "))
+        let params = def
+            .type_params
+            .iter()
+            .map(emit_type_param)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("<{params}>")
     };
     out.push_str(&format!(
         "{}fn {}{}({})",
@@ -122,7 +128,13 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
         let generics = if method.type_params.is_empty() {
             String::new()
         } else {
-            format!("<{}>", method.type_params.join(", "))
+            let params = method
+                .type_params
+                .iter()
+                .map(emit_type_param)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("<{params}>")
         };
         out.push_str(&format!(
             "    {}fn {}{}({}) -> {} {{\n",
@@ -530,6 +542,14 @@ fn emit_pattern_field(field: &RustPatternField) -> String {
     match &field.pattern {
         RustPattern::Binding(name) if name == &field.name => field.name.clone(),
         pattern => format!("{}: {}", field.name, emit_pattern(pattern)),
+    }
+}
+
+fn emit_type_param(param: &crate::ir::lowered::RustTypeParam) -> String {
+    if param.bounds.is_empty() {
+        param.name.clone()
+    } else {
+        format!("{}: {}", param.name, param.bounds.join(" + "))
     }
 }
 
