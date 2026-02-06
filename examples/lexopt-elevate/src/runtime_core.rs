@@ -139,18 +139,6 @@ pub fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
     .unwrap_or_else(|| format!("unexpected argument: {value}"))
 }
 
-pub fn starts_with_text(text: String, prefix: String) -> bool {
-    text.starts_with(&prefix)
-}
-
-pub fn is_empty_text(text: String) -> bool {
-    text.is_empty()
-}
-
-pub fn has_separator(text: String, sep: String) -> bool {
-    text.contains(&sep)
-}
-
 pub fn strip_prefix_known(text: String, prefix: String) -> String {
     text.strip_prefix(&prefix)
         .expect("prefix must exist before stripping")

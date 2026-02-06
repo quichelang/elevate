@@ -996,8 +996,6 @@ fn infer_expr(
             )
         }
         Expr::Call { callee, args } => {
-            let (typed_callee, callee_ty) =
-                infer_expr(callee, context, locals, return_ty, diagnostics);
             let mut typed_args = Vec::new();
             let mut arg_types = Vec::new();
             for arg in args {
@@ -1005,8 +1003,33 @@ fn infer_expr(
                 typed_args.push(typed_arg);
                 arg_types.push(ty);
             }
-            let resolved =
-                resolve_call_type(&typed_callee, &callee_ty, &arg_types, context, diagnostics);
+
+            if let Expr::Field { base, field } = callee.as_ref() {
+                let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
+                let resolved =
+                    resolve_method_call_type(&base_ty, field, &arg_types, diagnostics);
+                let typed_callee = TypedExpr {
+                    kind: TypedExprKind::Field {
+                        base: Box::new(typed_base),
+                        field: field.clone(),
+                    },
+                    ty: "_".to_string(),
+                };
+                return (
+                    TypedExpr {
+                        kind: TypedExprKind::Call {
+                            callee: Box::new(typed_callee),
+                            args: typed_args,
+                        },
+                        ty: type_to_string(&resolved),
+                    },
+                    resolved,
+                );
+            }
+
+            let (typed_callee, callee_ty) =
+                infer_expr(callee, context, locals, return_ty, diagnostics);
+            let resolved = resolve_call_type(&typed_callee, &callee_ty, &arg_types, context, diagnostics);
             (
                 TypedExpr {
                     kind: TypedExprKind::Call {
@@ -1437,6 +1460,58 @@ fn resolve_call_type(
 
     diagnostics.push(Diagnostic::new("Unsupported call target", Span::new(0, 0)));
     SemType::Unknown
+}
+
+fn resolve_method_call_type(
+    base_ty: &SemType,
+    method: &str,
+    args: &[SemType],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> SemType {
+    if let SemType::Path { path, .. } = base_ty {
+        let type_name = path.last().map(|s| s.as_str()).unwrap_or("");
+        if type_name == "String" {
+            match method {
+                "is_empty" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("bool");
+                }
+                "starts_with" | "contains" | "ends_with" => {
+                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
+                    return named_type("bool");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    diagnostics.push(Diagnostic::new(
+        format!(
+            "Unsupported method call `{}` on type `{}`",
+            method,
+            type_to_string(base_ty)
+        ),
+        Span::new(0, 0),
+    ));
+    SemType::Unknown
+}
+
+fn expect_method_arity(
+    type_name: &str,
+    method: &str,
+    actual: usize,
+    expected: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if actual != expected {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "Method `{}::{}` expects {} args, got {}",
+                type_name, method, expected, actual
+            ),
+            Span::new(0, 0),
+        ));
+    }
 }
 
 fn resolve_constructor_call(
@@ -1901,6 +1976,12 @@ fn lower_call_callee(
             modes,
         );
     }
+    if let Some(modes) = resolve_method_borrow_arg_modes(callee, arg_count) {
+        return (
+            lower_expr_with_context(callee, context, ExprPosition::Value, state),
+            modes,
+        );
+    }
     (
         lower_expr_with_context(callee, context, ExprPosition::Value, state),
         vec![CallArgMode::Owned; arg_count],
@@ -1943,6 +2024,27 @@ fn resolve_direct_borrow_arg_modes(
     state
         .registry
         .resolve_direct_borrow_modes(&resolved, arg_count)
+}
+
+fn resolve_method_borrow_arg_modes(
+    callee: &TypedExpr,
+    arg_count: usize,
+) -> Option<Vec<CallArgMode>> {
+    let TypedExprKind::Field { base, field } = &callee.kind else {
+        return None;
+    };
+    if base.ty != "String" {
+        return None;
+    }
+
+    let mut modes = vec![CallArgMode::Owned; arg_count];
+    match field.as_str() {
+        "starts_with" | "contains" | "ends_with" => {
+            set_borrowed(&mut modes, 0);
+            Some(modes)
+        }
+        _ => None,
+    }
 }
 
 fn interop_shim_name(shim: InteropShimKind) -> &'static str {
