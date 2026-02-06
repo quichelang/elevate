@@ -151,6 +151,7 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
                 out.push_str(&format!(
                     "    let {binding} = {value}.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n"
                 ));
+                emit_slice_element_rebinds(pattern, out, 1);
             } else {
                 out.push_str(&format!("    let {binding} = {value};\n"));
             }
@@ -204,6 +205,7 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
                     "        let {} = __item.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n",
                     emit_destructure_pattern(binding)
                 ));
+                emit_slice_element_rebinds(binding, out, 2);
                 for stmt in body {
                     emit_stmt_with_indent(stmt, out, 2);
                 }
@@ -559,6 +561,7 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
                 out.push_str(&format!(
                     "{pad}let {binding} = {value}.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n"
                 ));
+                emit_slice_element_rebinds(pattern, out, indent);
             } else {
                 out.push_str(&format!("{pad}let {binding} = {value};\n"));
             }
@@ -612,6 +615,7 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
                     "{pad}    let {} = __item.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n",
                     emit_destructure_pattern(binding)
                 ));
+                emit_slice_element_rebinds(binding, out, indent + 1);
                 for nested in body {
                     emit_stmt_with_indent(nested, out, indent + 1);
                 }
@@ -794,6 +798,62 @@ fn collect_mutated_paths_in_target(
         RustAssignTarget::Tuple(items) => {
             for item in items {
                 collect_mutated_paths_in_target(item, out);
+            }
+        }
+    }
+}
+
+fn emit_slice_element_rebinds(pattern: &RustDestructurePattern, out: &mut String, indent: usize) {
+    let mut names = Vec::new();
+    let rest_name = slice_rest_binding_name(pattern);
+    collect_slice_element_binding_names(pattern, rest_name, &mut names);
+    let pad = "    ".repeat(indent);
+    for name in names {
+        out.push_str(&format!("{pad}let {name} = (*{name}).clone();\n"));
+    }
+}
+
+fn slice_rest_binding_name(pattern: &RustDestructurePattern) -> Option<&str> {
+    if let RustDestructurePattern::Slice { rest, .. } = pattern
+        && let Some(name) = rest.as_deref()
+    {
+        return Some(name);
+    }
+    None
+}
+
+fn collect_slice_element_binding_names<'a>(
+    pattern: &'a RustDestructurePattern,
+    rest_name: Option<&'a str>,
+    out: &mut Vec<&'a str>,
+) {
+    match pattern {
+        RustDestructurePattern::Name(name) => {
+            if Some(name.as_str()) != rest_name {
+                out.push(name.as_str());
+            }
+        }
+        RustDestructurePattern::Ignore => {}
+        RustDestructurePattern::Tuple(items) => {
+            for item in items {
+                collect_slice_element_binding_names(item, rest_name, out);
+            }
+        }
+        RustDestructurePattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        } => {
+            for item in prefix {
+                collect_slice_element_binding_names(item, rest_name, out);
+            }
+            if let Some(rest_binding) = rest {
+                if Some(rest_binding.as_str()) != rest_name {
+                    out.push(rest_binding.as_str());
+                }
+            }
+            for item in suffix {
+                collect_slice_element_binding_names(item, rest_name, out);
             }
         }
     }

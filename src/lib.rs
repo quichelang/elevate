@@ -1043,9 +1043,8 @@ mod tests {
         let source = r#"
             fn head(values: Vec<i64>) -> i64 {
                 const [first, ..rest] = values;
-                std::mem::drop(first);
                 std::mem::drop(rest);
-                0
+                first
             }
         "#;
 
@@ -1055,6 +1054,7 @@ mod tests {
                 .rust_code
                 .contains("let [first, rest @ ..] = values.as_slice() else")
         );
+        assert!(output.rust_code.contains("let first = (*first).clone();"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
