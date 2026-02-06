@@ -155,8 +155,34 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
 
 #[derive(Debug, Default)]
 struct LoweringContext {
-    remaining_path_uses: HashMap<String, usize>,
+    ownership_plan: OwnershipPlan,
     scope_name: String,
+}
+
+#[derive(Debug, Default, Clone)]
+struct OwnershipPlan {
+    remaining_root_uses: HashMap<String, usize>,
+}
+
+impl OwnershipPlan {
+    fn from_stmts(stmts: &[TypedStmt]) -> Self {
+        Self {
+            remaining_root_uses: collect_path_uses_in_stmts(stmts),
+        }
+    }
+
+    fn remaining_for_root(&self, name: &str) -> usize {
+        self.remaining_root_uses.get(name).copied().unwrap_or(0)
+    }
+
+    fn consume_root(&mut self, name: &str) -> usize {
+        let remaining = self.remaining_for_root(name);
+        if remaining > 0 {
+            self.remaining_root_uses
+                .insert(name.to_string(), remaining - 1);
+        }
+        remaining
+    }
 }
 
 #[derive(Debug, Default)]
@@ -536,7 +562,7 @@ impl InteropPolicyRegistry {
 
 fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunction {
     let mut context = LoweringContext {
-        remaining_path_uses: collect_path_uses_in_stmts(&def.body),
+        ownership_plan: OwnershipPlan::from_stmts(&def.body),
         scope_name: def.name.clone(),
     };
     RustFunction {
@@ -3449,29 +3475,79 @@ fn lower_expr_with_context(
                 .map(|arg| lower_expr_with_context(arg, context, ExprPosition::Value, state))
                 .collect(),
         },
-        TypedExprKind::Field { base, field } => RustExpr::Field {
-            base: Box::new(lower_expr_with_context(
-                base,
-                context,
-                ExprPosition::Value,
-                state,
-            )),
-            field: field.clone(),
-        },
-        TypedExprKind::Index { base, index } => RustExpr::Index {
-            base: Box::new(lower_expr_with_context(
-                base,
-                context,
-                ExprPosition::Value,
-                state,
-            )),
-            index: Box::new(lower_expr_with_context(
-                index,
-                context,
-                ExprPosition::Value,
-                state,
-            )),
-        },
+        TypedExprKind::Field { base, field } => {
+            let root = root_local_typed_expr(base);
+            let remaining_before = root
+                .map(|name| context.ownership_plan.remaining_for_root(name))
+                .unwrap_or(0);
+            let lowered_field = RustExpr::Field {
+                base: Box::new(lower_expr_with_context(
+                    base,
+                    context,
+                    ExprPosition::Value,
+                    state,
+                )),
+                field: field.clone(),
+            };
+            if position == ExprPosition::CallArgOwned
+                && remaining_before > 1
+                && should_clone_for_reuse(&expr.ty, state)
+            {
+                if let Some(name) = root {
+                    let scope = if context.scope_name.is_empty() {
+                        "<module>"
+                    } else {
+                        context.scope_name.as_str()
+                    };
+                    state.push_ownership_note(format!(
+                        "auto-clone inserted in `{scope}` for `{name}` field value of type `{}`",
+                        expr.ty.trim()
+                    ));
+                }
+                clone_expr(lowered_field)
+            } else {
+                lowered_field
+            }
+        }
+        TypedExprKind::Index { base, index } => {
+            let root = root_local_typed_expr(base);
+            let remaining_before = root
+                .map(|name| context.ownership_plan.remaining_for_root(name))
+                .unwrap_or(0);
+            let lowered_index_expr = RustExpr::Index {
+                base: Box::new(lower_expr_with_context(
+                    base,
+                    context,
+                    ExprPosition::Value,
+                    state,
+                )),
+                index: Box::new(lower_expr_with_context(
+                    index,
+                    context,
+                    ExprPosition::Value,
+                    state,
+                )),
+            };
+            if position == ExprPosition::CallArgOwned
+                && remaining_before > 1
+                && should_clone_for_reuse(&expr.ty, state)
+            {
+                if let Some(name) = root {
+                    let scope = if context.scope_name.is_empty() {
+                        "<module>"
+                    } else {
+                        context.scope_name.as_str()
+                    };
+                    state.push_ownership_note(format!(
+                        "auto-clone inserted in `{scope}` for `{name}` indexed value of type `{}`",
+                        expr.ty.trim()
+                    ));
+                }
+                clone_expr(lowered_index_expr)
+            } else {
+                lowered_index_expr
+            }
+        }
         TypedExprKind::Match { scrutinee, arms } => RustExpr::Match {
             scrutinee: Box::new(lower_expr_with_context(
                 scrutinee,
@@ -3605,7 +3681,7 @@ fn lower_expr_with_context(
             body,
         } => {
             let mut closure_context = LoweringContext {
-                remaining_path_uses: collect_path_uses_in_stmts(body),
+                ownership_plan: OwnershipPlan::from_stmts(body),
                 scope_name: format!("{}::<closure>", context.scope_name),
             };
             RustExpr::Closure {
@@ -3667,12 +3743,7 @@ fn lower_path_expr(
     }
 
     let name = path[0].clone();
-    let remaining = context.remaining_path_uses.get(&name).copied().unwrap_or(0);
-    if remaining > 0 {
-        context
-            .remaining_path_uses
-            .insert(name.clone(), remaining - 1);
-    }
+    let remaining = context.ownership_plan.consume_root(&name);
 
     let path_expr = RustExpr::Path(path.to_vec());
     if position == ExprPosition::CallArgOwned && remaining > 1 && should_clone_for_reuse(ty, state)
@@ -3689,6 +3760,15 @@ fn lower_path_expr(
         return clone_expr(path_expr);
     }
     path_expr
+}
+
+fn root_local_typed_expr(expr: &TypedExpr) -> Option<&str> {
+    match &expr.kind {
+        TypedExprKind::Path(path) if path.len() == 1 => Some(path[0].as_str()),
+        TypedExprKind::Field { base, .. } => root_local_typed_expr(base),
+        TypedExprKind::Index { base, .. } => root_local_typed_expr(base),
+        _ => None,
+    }
 }
 
 fn cast_expr(expr: RustExpr, ty: String) -> RustExpr {

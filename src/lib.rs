@@ -475,6 +475,61 @@ mod tests {
     }
 
     #[test]
+    fn compile_auto_clones_reused_struct_field_call_argument() {
+        let source = r#"
+            pub struct State { text: String; }
+
+            fn consume(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn demo(state: State) {
+                consume(state.text);
+                std::mem::drop(state.text);
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("consume(state.text.clone());"));
+        assert!(output.rust_code.contains("std::mem::drop(state.text);"));
+        assert!(
+            output
+                .ownership_notes
+                .iter()
+                .any(|note| note.contains("field value"))
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_auto_clones_reused_struct_field_owned_method_receiver() {
+        let source = r#"
+            pub struct State { text: String; }
+
+            fn demo(state: State) {
+                std::mem::drop(state.text.into_bytes());
+                std::mem::drop(state.text.into_bytes());
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output
+            .rust_code
+            .contains("state.text.clone().into_bytes()"));
+        assert!(output.rust_code.contains("state.text.into_bytes()"));
+        assert!(
+            output
+                .ownership_notes
+                .iter()
+                .any(|note| note.contains("field value"))
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_auto_borrows_method_call_arguments_for_string_contains() {
         let source = r#"
             fn demo(text: String, needle: String) -> bool {
