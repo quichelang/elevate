@@ -130,6 +130,7 @@ Implemented:
 - `Option`/`Result` constructors plus `?` validation.
 - Enum `match` expressions.
 - `rust use` imports and external Rust path calls.
+- Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 
 Quality status:
 - Unit tests cover lexer, parser, semantic checks, and codegen behavior.
@@ -141,6 +142,8 @@ Quality status:
 - Test: `cargo test`
 - Run compiler: `cargo run -- <input-file>`
 - Emit to file: `cargo run -- <input-file> --emit-rust <output-file>`
+- Build `.ers` crate (debug): `cargo run -- build <crate-root>`
+- Build `.ers` crate (release): `cargo run -- build <crate-root> --release`
 
 ### Current Source Extension
 
@@ -148,6 +151,21 @@ Quality status:
 - `examples/point.ers`
 - `examples/result_flow.ers`
 - `examples/match.ers`
+
+### `.ers` Crate Build Integration
+
+Behavior:
+- Input crate is expected to have `Cargo.toml` and `src/`.
+- All `.ers` files under `src/` are transpiled to `.rs` under `target/elevate-gen/src/` with identical relative paths.
+- Non-`.ers` files under `src/` are copied through unchanged.
+- `Cargo.toml` is copied to `target/elevate-gen/Cargo.toml`.
+- Build step runs `cargo build --manifest-path <crate>/target/elevate-gen/Cargo.toml`.
+- Build step runs cargo with `--target-dir <crate>/target`, so final artifacts land in the standard:
+- `<crate>/target/debug`
+- `<crate>/target/release`
+
+Safety:
+- Path collisions between generated `.rs` outputs and copied files are treated as errors.
 
 ### Implementation Plan (Roadmap)
 

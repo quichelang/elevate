@@ -5,8 +5,43 @@ use std::process;
 fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() {
-        eprintln!("usage: elevate <input-file> [--emit-rust <output-file>]");
+        eprintln!("usage:");
+        eprintln!("  elevate <input-file.ers> [--emit-rust <output-file>]");
+        eprintln!("  elevate build <crate-root>");
         process::exit(2);
+    }
+
+    if args[0] == "build" {
+        if args.len() < 2 || args.len() > 3 {
+            eprintln!("usage: elevate build <crate-root> [--release]");
+            process::exit(2);
+        }
+        let crate_root = PathBuf::from(&args[1]);
+        let release = if args.len() == 3 {
+            if args[2] != "--release" {
+                eprintln!("error: unknown argument '{}'", args[2]);
+                process::exit(2);
+            }
+            true
+        } else {
+            false
+        };
+        match elevate::crate_builder::build_ers_crate(&crate_root, release) {
+            Ok(summary) => {
+                println!(
+                    "built generated crate at {} (transpiled {}, copied {}), artifacts in {}",
+                    summary.generated_root.display(),
+                    summary.transpiled_files,
+                    summary.copied_files,
+                    summary.source_root.join("target").display()
+                );
+                process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                process::exit(1);
+            }
+        }
     }
 
     let input_path = PathBuf::from(&args[0]);

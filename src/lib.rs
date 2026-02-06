@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod codegen;
+pub mod crate_builder;
 pub mod diag;
 pub mod ir;
 pub mod lexer;
