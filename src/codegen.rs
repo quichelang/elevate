@@ -1,6 +1,6 @@
 use crate::ir::lowered::{
-    RustConst, RustEnum, RustExpr, RustFunction, RustItem, RustModule, RustStatic, RustStmt,
-    RustStruct, RustUse,
+    RustConst, RustEnum, RustExpr, RustFunction, RustItem, RustModule, RustPattern, RustStatic,
+    RustStmt, RustStruct, RustUse,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -115,6 +115,33 @@ fn emit_expr(expr: &RustExpr) -> String {
             format!("{}({args})", emit_expr(callee))
         }
         RustExpr::Field { base, field } => format!("{}.{}", emit_expr(base), field),
+        RustExpr::Match { scrutinee, arms } => {
+            let mut text = String::new();
+            text.push_str("match ");
+            text.push_str(&emit_expr(scrutinee));
+            text.push_str(" { ");
+            for arm in arms {
+                text.push_str(&emit_pattern(&arm.pattern));
+                text.push_str(" => ");
+                text.push_str(&emit_expr(&arm.value));
+                text.push_str(", ");
+            }
+            text.push('}');
+            text
+        }
         RustExpr::Try(inner) => format!("{}?", emit_expr(inner)),
+    }
+}
+
+fn emit_pattern(pattern: &RustPattern) -> String {
+    match pattern {
+        RustPattern::Wildcard => "_".to_string(),
+        RustPattern::Variant { path, binding } => {
+            if let Some(binding) = binding {
+                format!("{}({binding})", path.join("::"))
+            } else {
+                path.join("::")
+            }
+        }
     }
 }

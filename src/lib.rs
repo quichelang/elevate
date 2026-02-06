@@ -200,6 +200,28 @@ mod tests {
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_match_on_enums() {
+        let source = r#"
+            enum Maybe {
+                Some(i64);
+                None;
+            }
+
+            fn unwrap_or_zero(value: Maybe) -> i64 {
+                return match value {
+                    Maybe::Some(inner) => inner;
+                    Maybe::None => 0;
+                    _ => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("match value"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {

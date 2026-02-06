@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
-use crate::ast::{Expr, Item, Module, Stmt, Type};
+use crate::ast::{Expr, Item, Module, Pattern, Stmt, Type};
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
-    RustConst, RustEnum, RustExpr, RustField, RustFunction, RustItem, RustModule, RustParam,
-    RustStatic, RustStmt, RustStruct, RustUse, RustVariant,
+    RustConst, RustEnum, RustExpr, RustField, RustFunction, RustItem, RustMatchArm, RustModule,
+    RustParam, RustPattern, RustStatic, RustStmt, RustStruct, RustUse, RustVariant,
 };
 use crate::ir::typed::{
     TypedConst, TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedItem,
-    TypedModule, TypedParam, TypedRustUse, TypedStatic, TypedStmt, TypedStruct, TypedVariant,
+    TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedRustUse, TypedStatic, TypedStmt,
+    TypedStruct, TypedVariant,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,6 +479,51 @@ fn infer_expr(
                 resolved,
             )
         }
+        Expr::Match { scrutinee, arms } => {
+            let (typed_scrutinee, scrutinee_ty) =
+                infer_expr(scrutinee, context, locals, return_ty, diagnostics);
+            let mut typed_arms = Vec::new();
+            let mut resolved_arm_ty: Option<SemType> = None;
+            for arm in arms {
+                let mut arm_locals = locals.clone();
+                let typed_pattern = lower_pattern(
+                    &arm.pattern,
+                    &scrutinee_ty,
+                    context,
+                    &mut arm_locals,
+                    diagnostics,
+                );
+                let (typed_value, arm_ty) =
+                    infer_expr(&arm.value, context, &mut arm_locals, return_ty, diagnostics);
+                resolved_arm_ty = match resolved_arm_ty {
+                    Some(existing) => Some(unify_types(existing, arm_ty, diagnostics)),
+                    None => Some(arm_ty),
+                };
+                typed_arms.push(TypedMatchArm {
+                    pattern: typed_pattern,
+                    value: typed_value,
+                });
+            }
+
+            let final_ty = resolved_arm_ty.unwrap_or_else(|| {
+                diagnostics.push(Diagnostic::new(
+                    "Match expression must have at least one arm",
+                    Span::new(0, 0),
+                ));
+                SemType::Unknown
+            });
+
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Match {
+                        scrutinee: Box::new(typed_scrutinee),
+                        arms: typed_arms,
+                    },
+                    ty: type_to_string(&final_ty),
+                },
+                final_ty,
+            )
+        }
         Expr::Try(inner) => {
             let (typed_inner, inner_ty) = infer_expr(inner, context, locals, return_ty, diagnostics);
             let resolved = resolve_try_type(&inner_ty, return_ty, diagnostics);
@@ -780,6 +826,16 @@ fn lower_expr(expr: &TypedExpr) -> RustExpr {
             base: Box::new(lower_expr(base)),
             field: field.clone(),
         },
+        TypedExprKind::Match { scrutinee, arms } => RustExpr::Match {
+            scrutinee: Box::new(lower_expr(scrutinee)),
+            arms: arms
+                .iter()
+                .map(|arm| RustMatchArm {
+                    pattern: lower_pattern_to_rust(&arm.pattern),
+                    value: lower_expr(&arm.value),
+                })
+                .collect(),
+        },
         TypedExprKind::Try(inner) => RustExpr::Try(Box::new(lower_expr(inner))),
     }
 }
@@ -870,6 +926,115 @@ fn result_parts(ty: &SemType) -> Option<(&SemType, &SemType)> {
         }
     }
     None
+}
+
+fn lower_pattern(
+    pattern: &Pattern,
+    scrutinee_ty: &SemType,
+    context: &Context,
+    locals: &mut HashMap<String, SemType>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> TypedPattern {
+    match pattern {
+        Pattern::Wildcard => TypedPattern::Wildcard,
+        Pattern::Variant { path, binding } => {
+            if path.len() != 2 {
+                diagnostics.push(Diagnostic::new(
+                    "Variant patterns must use `Enum::Variant` form",
+                    Span::new(0, 0),
+                ));
+                return TypedPattern::Variant {
+                    path: path.clone(),
+                    binding: binding.clone(),
+                };
+            }
+
+            let enum_name = &path[0];
+            let variant_name = &path[1];
+
+            if let SemType::Path { path: ty_path, .. } = scrutinee_ty
+                && ty_path.last() != Some(enum_name)
+                && *scrutinee_ty != SemType::Unknown
+            {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Pattern enum `{}` does not match scrutinee type `{}`",
+                        enum_name,
+                        type_to_string(scrutinee_ty)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+
+            if let Some(variants) = context.enums.get(enum_name) {
+                if let Some(payload) = variants.get(variant_name) {
+                    match payload {
+                        Some(payload_ty) => {
+                            if let Some(name) = binding {
+                                locals.insert(name.clone(), payload_ty.clone());
+                            }
+                        }
+                        None => {
+                            if binding.is_some() {
+                                diagnostics.push(Diagnostic::new(
+                                    format!(
+                                        "Pattern `{enum_name}::{variant_name}` has no payload binding"
+                                    ),
+                                    Span::new(0, 0),
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    diagnostics.push(Diagnostic::new(
+                        format!("Unknown variant `{enum_name}::{variant_name}` in pattern"),
+                        Span::new(0, 0),
+                    ));
+                }
+            } else {
+                diagnostics.push(Diagnostic::new(
+                    format!("Unknown enum `{enum_name}` in pattern"),
+                    Span::new(0, 0),
+                ));
+            }
+
+            TypedPattern::Variant {
+                path: path.clone(),
+                binding: binding.clone(),
+            }
+        }
+    }
+}
+
+fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
+    match pattern {
+        TypedPattern::Wildcard => RustPattern::Wildcard,
+        TypedPattern::Variant { path, binding } => RustPattern::Variant {
+            path: path.clone(),
+            binding: binding.clone(),
+        },
+    }
+}
+
+fn unify_types(existing: SemType, next: SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
+    if existing == SemType::Unknown {
+        return next;
+    }
+    if next == SemType::Unknown {
+        return existing;
+    }
+    if is_compatible(&existing, &next) && is_compatible(&next, &existing) {
+        return existing;
+    }
+    diagnostics.push(Diagnostic::new(
+        format!(
+            "Match arm type mismatch: `{}` vs `{}`",
+            type_to_string(&existing),
+            type_to_string(&next)
+        ),
+        Span::new(0, 0),
+    ));
+    SemType::Unknown
 }
 
 fn resolve_path_value(path: &[String], context: &Context) -> Option<SemType> {

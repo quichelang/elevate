@@ -289,7 +289,7 @@ Status as of 2026-02-05:
 Implemented language surface:
 - Top-level items: `rust use`, `struct`, `enum`, `fn`, `const`, `static`.
 - Statements: local `const`, `return`, expression statements.
-- Expressions: literals, path refs/calls, field access, postfix `?`.
+- Expressions: literals, path refs/calls, field access, `match`, postfix `?`.
 - Types: named paths + generic arguments (for forms like `Option<T>`, `Result<T, E>`).
 - `Option`/`Result` constructor and `?` semantics with compile-time validation.
 
@@ -301,6 +301,5 @@ Current command surface:
 
 What is intentionally incomplete:
 - Ownership lowering policy is not implemented yet.
-- Pattern matching is not implemented yet.
 - Generic function definitions and constrained generic bounds are not implemented yet.
 - Borrow/reference features remain intentionally unsupported.

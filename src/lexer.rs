@@ -16,8 +16,10 @@ pub enum TokenKind {
     Const,
     Static,
     Return,
+    Match,
     True,
     False,
+    Underscore,
     Identifier(String),
     IntLiteral(i64),
     StringLiteral(String),
@@ -31,6 +33,7 @@ pub enum TokenKind {
     Comma,
     Dot,
     Equal,
+    FatArrow,
     Arrow,
     Lt,
     Gt,
@@ -94,7 +97,17 @@ impl<'a> Lexer<'a> {
                 ';' => self.push_simple(TokenKind::Semicolon, start),
                 ',' => self.push_simple(TokenKind::Comma, start),
                 '.' => self.push_simple(TokenKind::Dot, start),
-                '=' => self.push_simple(TokenKind::Equal, start),
+                '=' => {
+                    if self.peek_char() == Some('>') {
+                        self.advance();
+                        self.tokens.push(Token {
+                            kind: TokenKind::FatArrow,
+                            span: Span::new(start, self.cursor),
+                        });
+                    } else {
+                        self.push_simple(TokenKind::Equal, start);
+                    }
+                }
                 '<' => self.push_simple(TokenKind::Lt, start),
                 '>' => self.push_simple(TokenKind::Gt, start),
                 '?' => self.push_simple(TokenKind::Question, start),
@@ -114,6 +127,7 @@ impl<'a> Lexer<'a> {
                 }
                 '"' => self.lex_string(start),
                 c if c.is_ascii_digit() => self.lex_number(start, c),
+                '_' => self.push_simple(TokenKind::Underscore, start),
                 c if is_identifier_start(c) => self.lex_identifier(start, c),
                 c => self.diagnostics.push(Diagnostic::new(
                     format!("Unexpected character '{c}'"),
@@ -192,6 +206,7 @@ impl<'a> Lexer<'a> {
             "const" => TokenKind::Const,
             "static" => TokenKind::Static,
             "return" => TokenKind::Return,
+            "match" => TokenKind::Match,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             _ => TokenKind::Identifier(ident),
@@ -282,5 +297,14 @@ mod tests {
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Use)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::ColonColon)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Question)));
+    }
+
+    #[test]
+    fn lex_match_tokens() {
+        let source = "match value { _ => 1; }";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Match)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Underscore)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::FatArrow)));
     }
 }

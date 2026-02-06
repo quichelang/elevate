@@ -1,0 +1,12 @@
+enum MaybeI64 {
+  Some(i64);
+  None;
+}
+
+fn unwrap_or_zero(value: MaybeI64) -> i64 {
+  return match value {
+    MaybeI64::Some(inner) => inner;
+    MaybeI64::None => 0;
+    _ => 0;
+  };
+}

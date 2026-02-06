@@ -91,5 +91,24 @@ pub enum RustExpr {
         base: Box<RustExpr>,
         field: String,
     },
+    Match {
+        scrutinee: Box<RustExpr>,
+        arms: Vec<RustMatchArm>,
+    },
     Try(Box<RustExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustMatchArm {
+    pub pattern: RustPattern,
+    pub value: RustExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustPattern {
+    Wildcard,
+    Variant {
+        path: Vec<String>,
+        binding: Option<String>,
+    },
 }

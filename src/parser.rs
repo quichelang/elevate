@@ -1,6 +1,6 @@
 use crate::ast::{
-    Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, Item, Module, Param, RustUse,
-    StaticDef, Stmt, StructDef, Type,
+    Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, Item, MatchArm, Module, Param,
+    Pattern, RustUse, StaticDef, Stmt, StructDef, Type,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -207,7 +207,43 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Option<Expr> {
+        if self.match_kind(TokenKind::Match) {
+            return self.parse_match_expr();
+        }
         self.parse_postfix_expr()
+    }
+
+    fn parse_match_expr(&mut self) -> Option<Expr> {
+        let scrutinee = self.parse_expr()?;
+        self.expect(TokenKind::LBrace, "Expected '{' after match expression")?;
+        let mut arms = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let pattern = self.parse_pattern()?;
+            self.expect(TokenKind::FatArrow, "Expected `=>` in match arm")?;
+            let value = self.parse_expr()?;
+            self.expect(TokenKind::Semicolon, "Expected ';' after match arm expression")?;
+            arms.push(MatchArm { pattern, value });
+        }
+        self.expect(TokenKind::RBrace, "Expected '}' after match arms")?;
+        Some(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+        })
+    }
+
+    fn parse_pattern(&mut self) -> Option<Pattern> {
+        if self.match_kind(TokenKind::Underscore) {
+            return Some(Pattern::Wildcard);
+        }
+        let path = self.parse_path("Expected pattern path")?;
+        let binding = if self.match_kind(TokenKind::LParen) {
+            let name = self.expect_ident("Expected binding name in variant pattern")?;
+            self.expect(TokenKind::RParen, "Expected ')' after variant binding")?;
+            Some(name)
+        } else {
+            None
+        };
+        Some(Pattern::Variant { path, binding })
     }
 
     fn parse_postfix_expr(&mut self) -> Option<Expr> {
@@ -388,8 +424,10 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Const, Const)
             | (Static, Static)
             | (Return, Return)
+            | (Match, Match)
             | (True, True)
             | (False, False)
+            | (Underscore, Underscore)
             | (Identifier(_), Identifier(_))
             | (IntLiteral(_), IntLiteral(_))
             | (StringLiteral(_), StringLiteral(_))
@@ -403,6 +441,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Comma, Comma)
             | (Dot, Dot)
             | (Equal, Equal)
+            | (FatArrow, FatArrow)
             | (Arrow, Arrow)
             | (Lt, Lt)
             | (Gt, Gt)
@@ -436,5 +475,26 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let diagnostics = parse_module(tokens).expect_err("expected parse error");
         assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parse_match_expression() {
+        let source = r#"
+            enum Maybe {
+                Some(i64);
+                None;
+            }
+
+            fn unwrap_or_zero(value: Maybe) -> i64 {
+                return match value {
+                    Maybe::Some(inner) => inner;
+                    Maybe::None => 0;
+                    _ => 0;
+                };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
     }
 }

@@ -102,5 +102,24 @@ pub enum Expr {
         base: Box<Expr>,
         field: String,
     },
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
     Try(Box<Expr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pattern {
+    Wildcard,
+    Variant {
+        path: Vec<String>,
+        binding: Option<String>,
+    },
 }

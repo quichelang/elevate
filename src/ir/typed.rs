@@ -97,5 +97,24 @@ pub enum TypedExprKind {
         base: Box<TypedExpr>,
         field: String,
     },
+    Match {
+        scrutinee: Box<TypedExpr>,
+        arms: Vec<TypedMatchArm>,
+    },
     Try(Box<TypedExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedMatchArm {
+    pub pattern: TypedPattern,
+    pub value: TypedExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedPattern {
+    Wildcard,
+    Variant {
+        path: Vec<String>,
+        binding: Option<String>,
+    },
 }
