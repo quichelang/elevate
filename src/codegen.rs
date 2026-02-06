@@ -300,6 +300,7 @@ fn emit_expr(expr: &RustExpr) -> String {
                 format!("&{inner_text}")
             }
         }
+        RustExpr::Cast { expr, ty } => format!("({} as {})", emit_expr(expr), ty),
         RustExpr::Call { callee, args } => {
             let args = args.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
             let callee_text = emit_expr(callee);
@@ -359,12 +360,16 @@ fn emit_expr(expr: &RustExpr) -> String {
         }
         RustExpr::Unary { op, expr } => match op {
             RustUnaryOp::Not => format!("!{}", emit_expr(expr)),
+            RustUnaryOp::Neg => format!("-{}", emit_expr(expr)),
         },
         RustExpr::Binary { op, left, right } => {
             let symbol = match op {
                 RustBinaryOp::And => "&&",
                 RustBinaryOp::Or => "||",
                 RustBinaryOp::Add => "+",
+                RustBinaryOp::Sub => "-",
+                RustBinaryOp::Mul => "*",
+                RustBinaryOp::Div => "/",
                 RustBinaryOp::Eq => "==",
                 RustBinaryOp::Ne => "!=",
                 RustBinaryOp::Lt => "<",
@@ -712,6 +717,7 @@ fn needs_parens_for_call(expr: &RustExpr) -> bool {
             | RustExpr::Match { .. }
             | RustExpr::Unary { .. }
             | RustExpr::Binary { .. }
+            | RustExpr::Cast { .. }
             | RustExpr::Range { .. }
     )
 }
@@ -723,6 +729,7 @@ fn needs_parens_for_borrow(expr: &RustExpr) -> bool {
             | RustExpr::Match { .. }
             | RustExpr::Unary { .. }
             | RustExpr::Binary { .. }
+            | RustExpr::Cast { .. }
             | RustExpr::Range { .. }
     )
 }

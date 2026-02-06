@@ -150,6 +150,10 @@ pub enum RustExpr {
     String(String),
     Path(Vec<String>),
     Borrow(Box<RustExpr>),
+    Cast {
+        expr: Box<RustExpr>,
+        ty: String,
+    },
     Call {
         callee: Box<RustExpr>,
         args: Vec<RustExpr>,
@@ -207,11 +211,15 @@ pub struct RustStructLiteralField {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustUnaryOp {
     Not,
+    Neg,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustBinaryOp {
     Add,
+    Sub,
+    Mul,
+    Div,
     And,
     Or,
     Eq,

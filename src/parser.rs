@@ -496,11 +496,44 @@ impl Parser {
     }
 
     fn parse_add_expr(&mut self) -> Option<Expr> {
+        let mut expr = self.parse_mul_expr()?;
+        loop {
+            let op = if self.match_kind(TokenKind::Plus) {
+                Some(BinaryOp::Add)
+            } else if self.match_kind(TokenKind::Minus) {
+                Some(BinaryOp::Sub)
+            } else {
+                None
+            };
+            let Some(op) = op else {
+                break;
+            };
+            let right = self.parse_mul_expr()?;
+            expr = Expr::Binary {
+                op,
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+        Some(expr)
+    }
+
+    fn parse_mul_expr(&mut self) -> Option<Expr> {
         let mut expr = self.parse_unary_expr()?;
-        while self.match_kind(TokenKind::Plus) {
+        loop {
+            let op = if self.match_kind(TokenKind::Star) {
+                Some(BinaryOp::Mul)
+            } else if self.match_kind(TokenKind::Slash) {
+                Some(BinaryOp::Div)
+            } else {
+                None
+            };
+            let Some(op) = op else {
+                break;
+            };
             let right = self.parse_unary_expr()?;
             expr = Expr::Binary {
-                op: BinaryOp::Add,
+                op,
                 left: Box::new(expr),
                 right: Box::new(right),
             };
@@ -513,6 +546,13 @@ impl Parser {
             let expr = self.parse_unary_expr()?;
             return Some(Expr::Unary {
                 op: UnaryOp::Not,
+                expr: Box::new(expr),
+            });
+        }
+        if self.match_kind(TokenKind::Minus) {
+            let expr = self.parse_unary_expr()?;
+            return Some(Expr::Unary {
+                op: UnaryOp::Neg,
                 expr: Box::new(expr),
             });
         }
@@ -1244,6 +1284,9 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Bang, Bang)
             | (Plus, Plus)
             | (PlusEqual, PlusEqual)
+            | (Minus, Minus)
+            | (Star, Star)
+            | (Slash, Slash)
             | (Equal, Equal)
             | (EqualEqual, EqualEqual)
             | (BangEqual, BangEqual)
@@ -1505,6 +1548,18 @@ mod tests {
                 n = n + 1;
                 n += 1;
                 return n;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_unary_neg_and_mul_div_expressions() {
+        let source = r#"
+            fn calc(a: i64, b: i64, c: i64) -> i64 {
+                return -a + b * c / 2 - 1;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

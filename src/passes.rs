@@ -1654,6 +1654,19 @@ fn infer_expr(
                         out_ty,
                     )
                 }
+                UnaryOp::Neg => {
+                    let out_ty = resolve_unary_neg_type(&expr_ty, diagnostics);
+                    (
+                        TypedExpr {
+                            kind: TypedExprKind::Unary {
+                                op: TypedUnaryOp::Neg,
+                                expr: Box::new(typed_expr),
+                            },
+                            ty: type_to_string(&out_ty),
+                        },
+                        out_ty,
+                    )
+                }
             }
         }
         Expr::Binary { op, left, right } => {
@@ -1664,6 +1677,18 @@ fn infer_expr(
                 BinaryOp::Add => {
                     let out_ty = resolve_add_type(&left_ty, &right_ty, diagnostics);
                     (TypedBinaryOp::Add, out_ty)
+                }
+                BinaryOp::Sub => {
+                    let out_ty = resolve_numeric_binary_type("-", &left_ty, &right_ty, diagnostics);
+                    (TypedBinaryOp::Sub, out_ty)
+                }
+                BinaryOp::Mul => {
+                    let out_ty = resolve_numeric_binary_type("*", &left_ty, &right_ty, diagnostics);
+                    (TypedBinaryOp::Mul, out_ty)
+                }
+                BinaryOp::Div => {
+                    let out_ty = resolve_numeric_binary_type("/", &left_ty, &right_ty, diagnostics);
+                    (TypedBinaryOp::Div, out_ty)
                 }
                 BinaryOp::And | BinaryOp::Or => {
                     if !is_compatible(&left_ty, &named_type("bool"))
@@ -3056,21 +3081,154 @@ fn resolve_try_type(
 }
 
 fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
-    if is_compatible(left, &named_type("i64")) && is_compatible(right, &named_type("i64")) {
-        return named_type("i64");
-    }
     if is_compatible(left, &named_type("String")) && is_compatible(right, &named_type("String")) {
         return named_type("String");
     }
+    if let Some(out_ty) = resolve_common_numeric_type(left, right) {
+        return out_ty;
+    }
     diagnostics.push(Diagnostic::new(
         format!(
-            "`+` expects `i64 + i64` or `String + String`, got `{}` and `{}`",
+            "`+` expects numeric operands or `String + String`, got `{}` and `{}`",
             type_to_string(left),
             type_to_string(right)
         ),
         Span::new(0, 0),
     ));
     SemType::Unknown
+}
+
+fn resolve_unary_neg_type(expr: &SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
+    let ty = normalize_numeric_unary_type(expr);
+    if ty != SemType::Unknown {
+        return ty;
+    }
+    diagnostics.push(Diagnostic::new(
+        format!(
+            "unary `-` expects a numeric operand, got `{}`",
+            type_to_string(expr)
+        ),
+        Span::new(0, 0),
+    ));
+    SemType::Unknown
+}
+
+fn resolve_numeric_binary_type(
+    op: &str,
+    left: &SemType,
+    right: &SemType,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> SemType {
+    if let Some(out_ty) = resolve_common_numeric_type(left, right) {
+        return out_ty;
+    }
+    diagnostics.push(Diagnostic::new(
+        format!(
+            "`{op}` expects numeric operands, got `{}` and `{}`",
+            type_to_string(left),
+            type_to_string(right)
+        ),
+        Span::new(0, 0),
+    ));
+    SemType::Unknown
+}
+
+fn resolve_common_numeric_type(left: &SemType, right: &SemType) -> Option<SemType> {
+    let left_name = canonical_numeric_name(left)?;
+    let right_name = canonical_numeric_name(right)?;
+    Some(named_type(promote_numeric_names(left_name, right_name)))
+}
+
+fn normalize_numeric_unary_type(expr: &SemType) -> SemType {
+    let Some(name) = canonical_numeric_name(expr) else {
+        return SemType::Unknown;
+    };
+    let promoted = if is_unsigned_numeric_name(name) {
+        "i64"
+    } else {
+        name
+    };
+    named_type(promoted)
+}
+
+fn canonical_numeric_name(ty: &SemType) -> Option<&str> {
+    if let SemType::Path { path, args } = ty
+        && args.is_empty()
+        && path.len() == 1
+    {
+        let name = path[0].as_str();
+        if is_numeric_type_name(name) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn is_numeric_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+    )
+}
+
+fn is_unsigned_numeric_name(name: &str) -> bool {
+    matches!(name, "u8" | "u16" | "u32" | "u64" | "u128" | "usize")
+}
+
+fn promote_numeric_names<'a>(left: &'a str, right: &'a str) -> &'static str {
+    if left == right {
+        return match left {
+            "i8" => "i8",
+            "i16" => "i16",
+            "i32" => "i32",
+            "i64" => "i64",
+            "i128" => "i128",
+            "isize" => "isize",
+            "u8" => "u8",
+            "u16" => "u16",
+            "u32" => "u32",
+            "u64" => "u64",
+            "u128" => "u128",
+            "usize" => "usize",
+            "f32" => "f32",
+            "f64" => "f64",
+            _ => "i64",
+        };
+    }
+    if left == "f64" || right == "f64" {
+        return "f64";
+    }
+    if left == "f32" || right == "f32" {
+        return "f32";
+    }
+    if left == "i128" || right == "i128" || left == "u128" || right == "u128" {
+        return "i128";
+    }
+    if left == "i64"
+        || right == "i64"
+        || left == "u64"
+        || right == "u64"
+        || left == "usize"
+        || right == "usize"
+        || left == "isize"
+        || right == "isize"
+    {
+        return "i64";
+    }
+    "i32"
 }
 
 fn infer_for_item_type(iter_expr: &TypedExpr, iter_ty: &SemType) -> SemType {
@@ -3272,42 +3430,74 @@ fn lower_expr_with_context(
                 })
                 .collect(),
         },
-        TypedExprKind::Unary { op, expr } => RustExpr::Unary {
-            op: match op {
-                TypedUnaryOp::Not => RustUnaryOp::Not,
-            },
-            expr: Box::new(lower_expr_with_context(
-                expr,
-                context,
-                ExprPosition::Value,
-                state,
-            )),
-        },
-        TypedExprKind::Binary { op, left, right } => RustExpr::Binary {
-            op: match op {
-                TypedBinaryOp::Add => RustBinaryOp::Add,
-                TypedBinaryOp::And => RustBinaryOp::And,
-                TypedBinaryOp::Or => RustBinaryOp::Or,
-                TypedBinaryOp::Eq => RustBinaryOp::Eq,
-                TypedBinaryOp::Ne => RustBinaryOp::Ne,
-                TypedBinaryOp::Lt => RustBinaryOp::Lt,
-                TypedBinaryOp::Le => RustBinaryOp::Le,
-                TypedBinaryOp::Gt => RustBinaryOp::Gt,
-                TypedBinaryOp::Ge => RustBinaryOp::Ge,
-            },
-            left: Box::new(lower_expr_with_context(
-                left,
-                context,
-                ExprPosition::Value,
-                state,
-            )),
-            right: Box::new(lower_expr_with_context(
-                right,
-                context,
-                ExprPosition::Value,
-                state,
-            )),
-        },
+        TypedExprKind::Unary { op, expr: inner } => {
+            let mut lowered_expr =
+                lower_expr_with_context(inner, context, ExprPosition::Value, state);
+            match op {
+                TypedUnaryOp::Not => RustExpr::Unary {
+                    op: RustUnaryOp::Not,
+                    expr: Box::new(lowered_expr),
+                },
+                TypedUnaryOp::Neg => {
+                    if is_numeric_type_name(&expr.ty) && inner.ty != expr.ty {
+                        lowered_expr = cast_expr(lowered_expr, expr.ty.clone());
+                    }
+                    RustExpr::Unary {
+                        op: RustUnaryOp::Neg,
+                        expr: Box::new(lowered_expr),
+                    }
+                }
+            }
+        }
+        TypedExprKind::Binary { op, left, right } => {
+            let mut lowered_left =
+                lower_expr_with_context(left, context, ExprPosition::Value, state);
+            let mut lowered_right =
+                lower_expr_with_context(right, context, ExprPosition::Value, state);
+
+            if matches!(
+                op,
+                TypedBinaryOp::Add | TypedBinaryOp::Sub | TypedBinaryOp::Mul | TypedBinaryOp::Div
+            ) && is_numeric_type_name(&expr.ty)
+            {
+                lowered_left = cast_expr_to_numeric_if_needed(lowered_left, &left.ty, &expr.ty);
+                lowered_right =
+                    cast_expr_to_numeric_if_needed(lowered_right, &right.ty, &expr.ty);
+            } else if matches!(
+                op,
+                TypedBinaryOp::Eq
+                    | TypedBinaryOp::Ne
+                    | TypedBinaryOp::Lt
+                    | TypedBinaryOp::Le
+                    | TypedBinaryOp::Gt
+                    | TypedBinaryOp::Ge
+            ) {
+                if let Some(cmp_ty) = resolve_common_numeric_output_name(&left.ty, &right.ty) {
+                    lowered_left = cast_expr_to_numeric_if_needed(lowered_left, &left.ty, &cmp_ty);
+                    lowered_right =
+                        cast_expr_to_numeric_if_needed(lowered_right, &right.ty, &cmp_ty);
+                }
+            }
+
+            RustExpr::Binary {
+                op: match op {
+                    TypedBinaryOp::Add => RustBinaryOp::Add,
+                    TypedBinaryOp::Sub => RustBinaryOp::Sub,
+                    TypedBinaryOp::Mul => RustBinaryOp::Mul,
+                    TypedBinaryOp::Div => RustBinaryOp::Div,
+                    TypedBinaryOp::And => RustBinaryOp::And,
+                    TypedBinaryOp::Or => RustBinaryOp::Or,
+                    TypedBinaryOp::Eq => RustBinaryOp::Eq,
+                    TypedBinaryOp::Ne => RustBinaryOp::Ne,
+                    TypedBinaryOp::Lt => RustBinaryOp::Lt,
+                    TypedBinaryOp::Le => RustBinaryOp::Le,
+                    TypedBinaryOp::Gt => RustBinaryOp::Gt,
+                    TypedBinaryOp::Ge => RustBinaryOp::Ge,
+                },
+                left: Box::new(lowered_left),
+                right: Box::new(lowered_right),
+            }
+        }
         TypedExprKind::Array(items) => RustExpr::Array(
             items
                 .iter()
@@ -3425,6 +3615,30 @@ fn lower_path_expr(
         return clone_expr(path_expr);
     }
     path_expr
+}
+
+fn cast_expr(expr: RustExpr, ty: String) -> RustExpr {
+    RustExpr::Cast {
+        expr: Box::new(expr),
+        ty,
+    }
+}
+
+fn cast_expr_to_numeric_if_needed(expr: RustExpr, from_ty: &str, to_ty: &str) -> RustExpr {
+    if from_ty == to_ty {
+        return expr;
+    }
+    if !is_numeric_type_name(from_ty) || !is_numeric_type_name(to_ty) {
+        return expr;
+    }
+    cast_expr(expr, to_ty.to_string())
+}
+
+fn resolve_common_numeric_output_name(left: &str, right: &str) -> Option<String> {
+    if !is_numeric_type_name(left) || !is_numeric_type_name(right) {
+        return None;
+    }
+    Some(promote_numeric_names(left, right).to_string())
 }
 
 fn should_clone_for_reuse(ty: &str, state: &LoweringState) -> bool {

@@ -55,6 +55,9 @@ pub enum TokenKind {
     Bang,
     Plus,
     PlusEqual,
+    Minus,
+    Star,
+    Slash,
     Equal,
     EqualEqual,
     BangEqual,
@@ -138,6 +141,8 @@ impl<'a> Lexer<'a> {
                         self.push_simple(TokenKind::Plus, start);
                     }
                 }
+                '*' => self.push_simple(TokenKind::Star, start),
+                '/' => self.push_simple(TokenKind::Slash, start),
                 '.' => {
                     if self.peek_char() == Some('.') {
                         self.advance();
@@ -216,10 +221,7 @@ impl<'a> Lexer<'a> {
                             span: Span::new(start, self.cursor),
                         });
                     } else {
-                        self.diagnostics.push(Diagnostic::new(
-                            "Unexpected '-' (did you mean '->'?)",
-                            Span::new(start, self.cursor),
-                        ));
+                        self.push_simple(TokenKind::Minus, start);
                     }
                 }
                 '"' => self.lex_string(start),
@@ -649,6 +651,15 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Plus)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::PlusEqual)));
+    }
+
+    #[test]
+    fn lex_arithmetic_operator_tokens() {
+        let source = "x = a - b * c / d;";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Minus)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Star)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Slash)));
     }
 
     #[test]

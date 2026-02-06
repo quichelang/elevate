@@ -211,11 +211,15 @@ pub struct TypedStructLiteralField {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedUnaryOp {
     Not,
+    Neg,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedBinaryOp {
     Add,
+    Sub,
+    Mul,
+    Div,
     And,
     Or,
     Eq,

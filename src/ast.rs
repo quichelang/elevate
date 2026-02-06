@@ -235,11 +235,15 @@ pub enum DestructurePattern {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOp {
     Not,
+    Neg,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryOp {
     Add,
+    Sub,
+    Mul,
+    Div,
     And,
     Or,
     Eq,

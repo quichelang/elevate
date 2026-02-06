@@ -1,0 +1,3 @@
+allow crate::runtime
+allow crate::runtime::KeyEvent
+allow neon_boardwalk::app::Game

@@ -1,0 +1,206 @@
+rust use crate::runtime;
+rust use crate::runtime::KeyEvent;
+
+pub struct Game {
+    runtime: i64;
+    board: i64;
+    puzzle_index: i64;
+    cursor_row: i64;
+    cursor_col: i64;
+    message: String;
+    running: bool;
+}
+
+impl Game {
+    pub fn new() -> Self {
+        const runtime_handle = runtime::runtime_start();
+        const board_handle = runtime::board_from_puzzle(0);
+        Game {
+            runtime: runtime_handle;
+            board: board_handle;
+            puzzle_index: 0;
+            cursor_row: 0;
+            cursor_col: 0;
+            message: String::from("Use arrows/WASD, 1-9, 0 clear, c check, n next, r reset, q quit");
+            running: true;
+        }
+    }
+
+    pub fn run(self) {
+        while self.running {
+            runtime::runtime_render(
+                self.board,
+                self.cursor_row,
+                self.cursor_col,
+                format!("{}", self.message),
+            );
+
+            const key = runtime::runtime_poll_key(self.runtime);
+            self = match key {
+                Option::Some(value) => Game::on_key(self, value);
+                Option::None => self;
+            };
+        }
+
+        runtime::runtime_shutdown(self.runtime);
+    }
+
+    fn on_key(self, key: KeyEvent) -> Self {
+        return match key {
+            KeyEvent::Quit => Game::stop(self);
+            KeyEvent::Up => Game::move_cursor(self, -1, 0);
+            KeyEvent::Down => Game::move_cursor(self, 1, 0);
+            KeyEvent::Left => Game::move_cursor(self, 0, -1);
+            KeyEvent::Right => Game::move_cursor(self, 0, 1);
+            KeyEvent::Digit(value) => Game::apply_digit(self, value);
+            KeyEvent::Clear => Game::clear_cell(self);
+            KeyEvent::Check => Game::check_status(self);
+            KeyEvent::Next => Game::load_next_puzzle(self);
+            KeyEvent::Reset => Game::reset_puzzle(self);
+            KeyEvent::Hint => Game::set_message(self, String::from("Hint engine pending in Neon Boardwalk"));
+            KeyEvent::Save => Game::set_message(self, String::from("Save pending in Neon Boardwalk"));
+            KeyEvent::Load => Game::set_message(self, String::from("Load pending in Neon Boardwalk"));
+        };
+    }
+
+    fn stop(self) -> Self {
+        self.running = false;
+        self
+    }
+
+    fn set_message(self, message: String) -> Self {
+        self.message = message;
+        self
+    }
+
+    fn move_cursor(self, dr: i64, dc: i64) -> Self {
+        self.cursor_row = wrap_0_to_8(self.cursor_row + dr);
+        self.cursor_col = wrap_0_to_8(self.cursor_col + dc);
+        self
+    }
+
+    fn apply_digit(self, value: i64) -> Self {
+        const ok = runtime::board_set(self.board, self.cursor_row, self.cursor_col, value);
+        if ok {
+            self.message = String::from("");
+            return self;
+        }
+        self.message = String::from("Cannot edit fixed cell");
+        self
+    }
+
+    fn clear_cell(self) -> Self {
+        const ok = runtime::board_clear(self.board, self.cursor_row, self.cursor_col);
+        if ok {
+            self.message = String::from("");
+            return self;
+        }
+        self.message = String::from("Cannot clear fixed cell");
+        self
+    }
+
+    fn check_status(self) -> Self {
+        if board_complete(self.board) {
+            self.message = String::from("Solved! Press n for next puzzle or q to quit");
+            return self;
+        }
+        if cell_conflict(self.board, self.cursor_row, self.cursor_col) {
+            self.message = String::from("Current cell conflicts with row/column/box");
+            return self;
+        }
+        self.message = String::from("No conflict in current cell. Keep going.");
+        self
+    }
+
+    fn load_next_puzzle(self) -> Self {
+        const total = runtime::puzzle_count();
+        self.puzzle_index += 1;
+        if self.puzzle_index >= total {
+            self.puzzle_index = 0;
+        }
+        self.board = runtime::board_from_puzzle(self.puzzle_index);
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        self.message = format!("Loaded puzzle {}", self.puzzle_index + 1);
+        self
+    }
+
+    fn reset_puzzle(self) -> Self {
+        self.board = runtime::board_from_puzzle(self.puzzle_index);
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        self.message = String::from("Puzzle reset");
+        self
+    }
+}
+
+fn wrap_0_to_8(value: i64) -> i64 {
+    if value < 0 {
+        return 8;
+    }
+    if value > 8 {
+        return 0;
+    }
+    value
+}
+
+fn cell_conflict(board: i64, row: i64, col: i64) -> bool {
+    const value = runtime::board_get(board, row, col);
+    if value == 0 {
+        return false;
+    }
+
+    for c in 0..9 {
+        if c != col {
+            if runtime::board_get(board, row, c) == value {
+                return true;
+            }
+        }
+    }
+
+    for r in 0..9 {
+        if r != row {
+            if runtime::board_get(board, r, col) == value {
+                return true;
+            }
+        }
+    }
+
+    const box_row = (row / 3) * 3;
+    const box_col = (col / 3) * 3;
+    for r in box_row..(box_row + 3) {
+        for c in box_col..(box_col + 3) {
+            if r == row {
+                if c == col {
+                    ()
+                } else {
+                    if runtime::board_get(board, r, c) == value {
+                        return true;
+                    }
+                }
+            } else {
+                if runtime::board_get(board, r, c) == value {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+fn board_complete(board: i64) -> bool {
+    for row in 0..9 {
+        for col in 0..9 {
+            const value = runtime::board_get(board, row, col);
+            if value == 0 {
+                return false;
+            }
+            if cell_conflict(board, row, col) {
+                return false;
+            }
+        }
+    }
+
+    true
+}

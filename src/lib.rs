@@ -204,6 +204,32 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_negative_and_mul_div_operators() {
+        let source = r#"
+            fn calc(a: i64, b: i64, c: i64) -> i64 {
+                return -a + b * c / 2 - 1;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("(-a + ((b * c) / 2)) - 1"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_coerces_numeric_types_in_arithmetic() {
+        let source = r#"
+            fn measure(base: usize, delta: i64) -> i64 {
+                return base + delta;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("((base as i64) + delta)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_assert_functions_without_macro_syntax() {
         let source = r#"
             fn test_asserts() {
