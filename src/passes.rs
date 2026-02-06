@@ -2088,7 +2088,7 @@ fn finite_tuple_domains(scrutinee_ty: &SemType, context: &Context) -> Option<Vec
             continue;
         }
         let enum_name = enum_name_from_type(item)?;
-        let variants = expected_enum_variants(&enum_name, context);
+        let variants = finite_enum_variants_for_tuple_domain(&enum_name, context)?;
         if variants.is_empty() {
             return None;
         }
@@ -2100,6 +2100,14 @@ fn finite_tuple_domains(scrutinee_ty: &SemType, context: &Context) -> Option<Vec
         );
     }
     Some(domains)
+}
+
+fn finite_enum_variants_for_tuple_domain(enum_name: &str, context: &Context) -> Option<Vec<String>> {
+    let variants = context.enums.get(enum_name)?;
+    if variants.values().any(|payload| !payload.is_empty()) {
+        return None;
+    }
+    Some(variants.keys().cloned().collect())
 }
 
 fn collect_finite_tuple_coverage(

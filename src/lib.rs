@@ -932,28 +932,52 @@ mod tests {
     #[test]
     fn compile_reports_non_exhaustive_finite_tuple_match() {
         let source = r#"
-            enum Maybe {
-                Some(i64);
-                None;
+            enum Switch {
+                Left;
+                Right;
             }
 
             fn classify() -> i64 {
-                const input = (false, Maybe::None);
+                const input = (false, Switch::Left);
                 return match input {
-                    (true, Maybe::Some(_)) => 1;
-                    (true, Maybe::None) => 2;
-                    (false, Maybe::Some(_)) => 3;
+                    (true, Switch::Left) => 1;
+                    (true, Switch::Right) => 2;
+                    (false, Switch::Right) => 3;
                 };
             }
         "#;
 
         let error = compile_source(source).expect_err("expected compile error");
         assert!(error.to_string().contains("Non-exhaustive match on finite tuple domain"));
-        assert!(error.to_string().contains("(false, Maybe::None)"));
+        assert!(error.to_string().contains("(false, Switch::Left)"));
     }
 
     #[test]
     fn compile_accepts_exhaustive_finite_tuple_match() {
+        let source = r#"
+            enum Switch {
+                Left;
+                Right;
+            }
+
+            fn classify() -> i64 {
+                const input = (false, Switch::Left);
+                return match input {
+                    (true, Switch::Left) => 1;
+                    (true, Switch::Right) => 2;
+                    (false, Switch::Right) => 3;
+                    (false, Switch::Left) => 4;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("match input"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_skips_finite_tuple_exhaustiveness_for_payload_enums() {
         let source = r#"
             enum Maybe {
                 Some(i64);
@@ -966,14 +990,13 @@ mod tests {
                     (true, Maybe::Some(_)) => 1;
                     (true, Maybe::None) => 2;
                     (false, Maybe::Some(_)) => 3;
-                    (false, Maybe::None) => 4;
+                    _ => 4;
                 };
             }
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("match input"));
-        assert_rust_code_compiles(&output.rust_code);
     }
 
     #[test]

@@ -178,7 +178,7 @@ Implemented:
 - Or-patterns (`p1 | p2`).
 - Slice/rest `match` patterns (`[a, ..tail]`, `[.., last]`, `[]`).
 - Imported Rust enum variant pattern matching when scrutinee type is known (for example `Ordering::Less`).
-- Baseline match exhaustiveness diagnostics for `bool`, finite tuple domains (bool/enum components), `Option`, `Result`, and known local enums.
+- Baseline match exhaustiveness diagnostics for `bool`, finite tuple domains (bool + payload-free enum components), `Option`, `Result`, and known local enums.
 - Closure expressions and closure calls with typed parameters.
 - Comment support (`//` and `/* ... */`) and raw multiline string literals.
 - `rust use` imports and external Rust path calls.
