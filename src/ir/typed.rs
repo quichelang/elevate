@@ -88,6 +88,11 @@ pub enum TypedStmt {
         condition: TypedExpr,
         body: Vec<TypedStmt>,
     },
+    For {
+        binding: String,
+        iter: TypedExpr,
+        body: Vec<TypedStmt>,
+    },
     Loop {
         body: Vec<TypedStmt>,
     },

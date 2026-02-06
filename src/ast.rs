@@ -99,6 +99,11 @@ pub enum Stmt {
         condition: Expr,
         body: Block,
     },
+    For {
+        binding: String,
+        iter: Expr,
+        body: Block,
+    },
     Loop {
         body: Block,
     },

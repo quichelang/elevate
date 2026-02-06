@@ -1134,6 +1134,32 @@ fn lower_stmt_with_types(
                 body: typed_body,
             })
         }
+        Stmt::For {
+            binding,
+            iter,
+            body,
+        } => {
+            let (typed_iter, iter_ty) = infer_expr(iter, context, locals, return_ty, diagnostics);
+            let item_ty = infer_for_item_type(&typed_iter, &iter_ty);
+            let mut loop_locals = locals.clone();
+            let mut loop_immutable_locals = immutable_locals.clone();
+            loop_locals.insert(binding.clone(), item_ty);
+            loop_immutable_locals.insert(binding.clone());
+            let typed_body = lower_block_with_types(
+                body,
+                context,
+                &loop_locals,
+                &loop_immutable_locals,
+                return_ty,
+                inferred_returns,
+                diagnostics,
+            );
+            Some(TypedStmt::For {
+                binding: binding.clone(),
+                iter: typed_iter,
+                body: typed_body,
+            })
+        }
         Stmt::Loop { body } => {
             let typed_body = lower_block_with_types(
                 body,
@@ -2313,6 +2339,18 @@ fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagn
     SemType::Unknown
 }
 
+fn infer_for_item_type(iter_expr: &TypedExpr, iter_ty: &SemType) -> SemType {
+    if matches!(iter_expr.kind, TypedExprKind::Range { .. }) {
+        return named_type("i64");
+    }
+    if let SemType::Path { path, args } = iter_ty {
+        if path.len() == 1 && path[0] == "Vec" && args.len() == 1 {
+            return args[0].clone();
+        }
+    }
+    SemType::Unknown
+}
+
 fn lower_stmt_with_context(
     stmt: &TypedStmt,
     context: &mut LoweringContext,
@@ -2361,6 +2399,18 @@ fn lower_stmt_with_context(
         },
         TypedStmt::While { condition, body } => RustStmt::While {
             condition: lower_expr_with_context(condition, context, ExprPosition::Value, state),
+            body: body
+                .iter()
+                .map(|stmt| lower_stmt_with_context(stmt, context, state))
+                .collect(),
+        },
+        TypedStmt::For {
+            binding,
+            iter,
+            body,
+        } => RustStmt::For {
+            binding: binding.clone(),
+            iter: lower_expr_with_context(iter, context, ExprPosition::Value, state),
             body: body
                 .iter()
                 .map(|stmt| lower_stmt_with_context(stmt, context, state))
@@ -2949,6 +2999,12 @@ fn collect_path_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<String, usize>
         }
         TypedStmt::While { condition, body } => {
             collect_path_uses_in_expr(condition, uses);
+            for stmt in body {
+                collect_path_uses_in_stmt(stmt, uses);
+            }
+        }
+        TypedStmt::For { iter, body, .. } => {
+            collect_path_uses_in_expr(iter, uses);
             for stmt in body {
                 collect_path_uses_in_stmt(stmt, uses);
             }

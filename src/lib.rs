@@ -805,6 +805,22 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_for_in_loops() {
+        let source = r#"
+            fn drive(n: i64) -> i64 {
+                for i in 0..n {
+                    std::mem::drop(i);
+                }
+                return n;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for i in 0..n"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_impl_methods() {
         let source = r#"
             pub struct Point { x: i64; }

@@ -89,6 +89,11 @@ pub enum RustStmt {
         condition: RustExpr,
         body: Vec<RustStmt>,
     },
+    For {
+        binding: String,
+        iter: RustExpr,
+        body: Vec<RustStmt>,
+    },
     Loop {
         body: Vec<RustStmt>,
     },

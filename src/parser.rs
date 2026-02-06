@@ -306,6 +306,17 @@ impl Parser {
             let body = self.parse_block()?;
             return Some(Stmt::While { condition, body });
         }
+        if self.match_kind(TokenKind::For) {
+            let binding = self.expect_ident("Expected loop binding after `for`")?;
+            self.expect(TokenKind::In, "Expected `in` after `for` loop binding")?;
+            let iter = self.parse_expr()?;
+            let body = self.parse_block()?;
+            return Some(Stmt::For {
+                binding,
+                iter,
+                body,
+            });
+        }
         if self.match_kind(TokenKind::Loop) {
             let body = self.parse_block()?;
             return Some(Stmt::Loop { body });
@@ -1006,6 +1017,8 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (If, If)
             | (Else, Else)
             | (While, While)
+            | (For, For)
+            | (In, In)
             | (Loop, Loop)
             | (Break, Break)
             | (Continue, Continue)
@@ -1132,6 +1145,22 @@ mod tests {
                     continue;
                 }
                 return 0;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_for_in_loop() {
+        let source = r#"
+            fn sum_to(n: i64) -> i64 {
+                const total = 0;
+                for i in 0..=n {
+                    total += i;
+                }
+                return total;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");
