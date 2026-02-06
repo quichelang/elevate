@@ -242,6 +242,10 @@ pub enum Pattern {
     String(String),
     Tuple(Vec<Pattern>),
     Or(Vec<Pattern>),
+    BindingAt {
+        name: String,
+        pattern: Box<Pattern>,
+    },
     Range {
         start: Option<i64>,
         end: Option<i64>,

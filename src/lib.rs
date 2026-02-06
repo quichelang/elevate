@@ -673,6 +673,22 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_match_binding_at_patterns() {
+        let source = r#"
+            fn classify(v: i64) -> i64 {
+                return match v {
+                    n @ 0..=10 => n;
+                    _ => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("n @ 0..=10"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_emits_multi_value_variant_payload_patterns() {
         let source = r#"
             rust use crate::Pair;

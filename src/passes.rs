@@ -3153,6 +3153,14 @@ fn lower_pattern(
 
             TypedPattern::Or(lowered)
         }
+        Pattern::BindingAt { name, pattern } => {
+            locals.insert(name.clone(), scrutinee_ty.clone());
+            let lowered = lower_pattern(pattern, scrutinee_ty, context, locals, diagnostics);
+            TypedPattern::BindingAt {
+                name: name.clone(),
+                pattern: Box::new(lowered),
+            }
+        }
         Pattern::Range {
             start,
             end,
@@ -3474,6 +3482,10 @@ fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
         TypedPattern::Or(items) => {
             RustPattern::Or(items.iter().map(lower_pattern_to_rust).collect())
         }
+        TypedPattern::BindingAt { name, pattern } => RustPattern::BindingAt {
+            name: name.clone(),
+            pattern: Box::new(lower_pattern_to_rust(pattern)),
+        },
         TypedPattern::Range {
             start,
             end,

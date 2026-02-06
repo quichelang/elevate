@@ -219,6 +219,10 @@ pub enum RustPattern {
     String(String),
     Tuple(Vec<RustPattern>),
     Or(Vec<RustPattern>),
+    BindingAt {
+        name: String,
+        pattern: Box<RustPattern>,
+    },
     Range {
         start: Option<i64>,
         end: Option<i64>,

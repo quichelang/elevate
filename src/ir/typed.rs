@@ -223,6 +223,10 @@ pub enum TypedPattern {
     String(String),
     Tuple(Vec<TypedPattern>),
     Or(Vec<TypedPattern>),
+    BindingAt {
+        name: String,
+        pattern: Box<TypedPattern>,
+    },
     Range {
         start: Option<i64>,
         end: Option<i64>,

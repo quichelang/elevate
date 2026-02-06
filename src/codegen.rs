@@ -389,6 +389,9 @@ fn emit_pattern(pattern: &RustPattern) -> String {
             format!("({inner})")
         }
         RustPattern::Or(items) => items.iter().map(emit_pattern).collect::<Vec<_>>().join(" | "),
+        RustPattern::BindingAt { name, pattern } => {
+            format!("{name} @ {}", emit_pattern(pattern))
+        }
         RustPattern::Range {
             start,
             end,

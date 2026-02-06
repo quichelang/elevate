@@ -615,6 +615,13 @@ impl Parser {
         } else {
             None
         };
+        if path.len() == 1 && payload.is_none() && self.match_kind(TokenKind::At) {
+            let inner = self.parse_pattern_atom()?;
+            return Some(Pattern::BindingAt {
+                name: path[0].clone(),
+                pattern: Box::new(inner),
+            });
+        }
         if path.len() == 1 && payload.is_none() {
             return Some(Pattern::Binding(path[0].clone()));
         }
@@ -1008,6 +1015,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (DotDot, DotDot)
             | (DotDotEq, DotDotEq)
             | (Pipe, Pipe)
+            | (At, At)
             | (Bang, Bang)
             | (Plus, Plus)
             | (PlusEqual, PlusEqual)
@@ -1255,6 +1263,21 @@ mod tests {
             fn f(v: i64) -> i64 {
                 return match v {
                     0 | 1 if v == 1 => 10;
+                    _ => 0;
+                };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_match_binding_at_patterns() {
+        let source = r#"
+            fn f(v: i64) -> i64 {
+                return match v {
+                    n @ 0..=10 => n;
                     _ => 0;
                 };
             }

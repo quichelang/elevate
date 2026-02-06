@@ -46,6 +46,7 @@ pub enum TokenKind {
     DotDot,
     DotDotEq,
     Pipe,
+    At,
     Bang,
     Plus,
     PlusEqual,
@@ -118,6 +119,7 @@ impl<'a> Lexer<'a> {
                 ';' => self.push_simple(TokenKind::Semicolon, start),
                 ',' => self.push_simple(TokenKind::Comma, start),
                 '|' => self.push_simple(TokenKind::Pipe, start),
+                '@' => self.push_simple(TokenKind::At, start),
                 '+' => {
                     if self.peek_char() == Some('=') {
                         self.advance();

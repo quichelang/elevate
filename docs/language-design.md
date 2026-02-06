@@ -280,7 +280,7 @@ Quality gates:
 - Slices are not complete.
 - Deep destructuring coverage (all contexts) is not complete.
 - Full exhaustiveness diagnostics are not complete.
-- Full Rust-pattern parity for match is not complete (remaining work includes struct patterns, slice/rest patterns, and binding-at patterns).
+- Full Rust-pattern parity for match is not complete (remaining work includes struct patterns and slice/rest patterns).
 - Inline `rust { ... }` escape blocks are not complete.
 - Interop contract signature verification currently validates declaration shape, but not full type-level callsite compatibility across all compiler phases.
 - Adapter routing currently targets direct path call expressions; broader rewrite coverage (for additional call shapes) is not complete.
