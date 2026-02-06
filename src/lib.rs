@@ -270,6 +270,43 @@ mod tests {
     }
 
     #[test]
+    fn compile_auto_borrows_string_option_result_associated_calls() {
+        let source = r#"
+            fn demo(text: String, v: Option<String>, r: Result<String, String>) -> bool {
+                std::mem::drop(String::len(text));
+                std::mem::drop(Option::is_some(v));
+                std::mem::drop(Result::is_ok(r));
+                return String::is_empty(text) and Option::is_none(v) and Result::is_err(r);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("String::len(&text)"));
+        assert!(output.rust_code.contains("Option::is_some(&v)"));
+        assert!(output.rust_code.contains("Result::is_ok(&r)"));
+        assert!(output.rust_code.contains("String::is_empty(&text)"));
+        assert!(output.rust_code.contains("Option::is_none(&v)"));
+        assert!(output.rust_code.contains("Result::is_err(&r)"));
+        assert!(!output.rust_code.contains("text.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_auto_borrows_vec_associated_calls() {
+        let source = r#"
+            fn demo(values: Vec<i64>) -> bool {
+                std::mem::drop(Vec::len(values));
+                return Vec::is_empty(values);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("Vec::len(&values)"));
+        assert!(output.rust_code.contains("Vec::is_empty(&values)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_rejects_unknown_inferred_return() {
         let source = r#"
             fn maybe_value() {

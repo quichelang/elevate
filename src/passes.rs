@@ -1623,6 +1623,12 @@ fn lower_call_callee(
             interop_arg_modes(shim, arg_count),
         );
     }
+    if let Some(modes) = resolve_direct_borrow_arg_modes(callee, state, arg_count) {
+        return (
+            lower_expr_with_context(callee, context, ExprPosition::Value, state),
+            modes,
+        );
+    }
     (
         lower_expr_with_context(callee, context, ExprPosition::Value, state),
         vec![CallArgMode::Owned; arg_count],
@@ -1659,6 +1665,50 @@ fn interop_arg_modes(shim: InteropShimKind, arg_count: usize) -> Vec<CallArgMode
         }
     }
     modes
+}
+
+fn resolve_direct_borrow_arg_modes(
+    callee: &TypedExpr,
+    state: &LoweringState,
+    arg_count: usize,
+) -> Option<Vec<CallArgMode>> {
+    let TypedExprKind::Path(path) = &callee.kind else {
+        return None;
+    };
+    let resolved = state.resolve_callee_path(path);
+    let joined = resolved.join("::");
+
+    let mut modes = vec![CallArgMode::Owned; arg_count];
+    match joined.as_str() {
+        "String::len"
+        | "String::is_empty"
+        | "std::string::String::len"
+        | "std::string::String::is_empty"
+        | "alloc::string::String::len"
+        | "alloc::string::String::is_empty"
+        | "Option::is_some"
+        | "Option::is_none"
+        | "std::option::Option::is_some"
+        | "std::option::Option::is_none"
+        | "core::option::Option::is_some"
+        | "core::option::Option::is_none"
+        | "Result::is_ok"
+        | "Result::is_err"
+        | "std::result::Result::is_ok"
+        | "std::result::Result::is_err"
+        | "core::result::Result::is_ok"
+        | "core::result::Result::is_err"
+        | "Vec::len"
+        | "Vec::is_empty"
+        | "std::vec::Vec::len"
+        | "std::vec::Vec::is_empty"
+        | "alloc::vec::Vec::len"
+        | "alloc::vec::Vec::is_empty" => {
+            set_borrowed(&mut modes, 0);
+            Some(modes)
+        }
+        _ => None,
+    }
 }
 
 fn interop_shim_name(shim: InteropShimKind) -> &'static str {
