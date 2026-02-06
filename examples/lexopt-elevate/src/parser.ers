@@ -7,12 +7,88 @@ pub struct LongWithValue {
     value: String;
 }
 
+impl LongWithValue {
+    fn new(name: String, value: String) -> Self {
+        LongWithValue {
+            name: name;
+            value: value;
+        }
+    }
+}
+
 pub enum RawArgClass {
     DashDash;
     Long(String);
     LongWithValue(LongWithValue);
     ShortCluster(String);
     Value(String);
+}
+
+impl RawArgClass {
+    fn classify(arg: String) -> RawArgClass {
+        const long_split = RawArgClass::split_long_prefix(arg);
+        match long_split {
+            LongPrefixSplit::Long(rest) => RawArgClass::classify_long_rest(rest);
+            LongPrefixSplit::Other(other) => RawArgClass::classify_short_or_value(other);
+        }
+    }
+
+    fn classify_long_rest(rest: String) -> RawArgClass {
+        const maybe_text = RawArgClass::nonempty_text(rest);
+        match maybe_text {
+            Option::Some(text) => RawArgClass::classify_nonempty_long(text);
+            Option::None => RawArgClass::DashDash;
+        }
+    }
+
+    fn classify_nonempty_long(text: String) -> RawArgClass {
+        const split = RawArgClass::split_long_eq(text);
+        match split {
+            LongEqSplit::WithValue(payload) => RawArgClass::LongWithValue(payload);
+            LongEqSplit::Plain(name) => RawArgClass::Long(name);
+        }
+    }
+
+    fn classify_short_or_value(arg: String) -> RawArgClass {
+        const short_split = RawArgClass::split_short_prefix(arg);
+        match short_split {
+            ShortPrefixSplit::ShortCluster(cluster) => RawArgClass::ShortCluster(cluster);
+            ShortPrefixSplit::Value(value) => RawArgClass::Value(value);
+        }
+    }
+
+    fn split_long_prefix(arg: String) -> LongPrefixSplit {
+        if arg.starts_with("--") {
+            return LongPrefixSplit::Long(str::strip_prefix_known(arg, "--"));
+        }
+        LongPrefixSplit::Other(arg)
+    }
+
+    fn nonempty_text(text: String) -> Option<String> {
+        if text.is_empty() {
+            return Option::None;
+        }
+        Option::Some(text)
+    }
+
+    fn split_long_eq(text: String) -> LongEqSplit {
+        if text.contains("=") {
+            const (name, value) = str::split_once_known(text, "=");
+            return LongEqSplit::WithValue(LongWithValue::new(name, value));
+        }
+        LongEqSplit::Plain(text)
+    }
+
+    fn split_short_prefix(arg: String) -> ShortPrefixSplit {
+        if arg == "-" {
+            return ShortPrefixSplit::Value(arg);
+        }
+
+        if arg.starts_with("-") {
+            return ShortPrefixSplit::ShortCluster(str::strip_prefix_known(arg, "-"));
+        }
+        ShortPrefixSplit::Value(arg)
+    }
 }
 
 pub enum LongPrefixSplit {
@@ -35,6 +111,15 @@ pub struct ClusterParts {
     rest: String;
 }
 
+impl ClusterParts {
+    fn new(short: String, rest: String) -> Self {
+        ClusterParts {
+            short: short;
+            rest: rest;
+        }
+    }
+}
+
 pub struct Parser {
     raw: i64;
 }
@@ -45,33 +130,17 @@ pub enum ClusterSplit {
     Short(ClusterParts);
 }
 
-pub fn from_env() -> i64 {
-    elevate_interop::from_env()
-}
-
-pub fn from_raw(raw: String) -> i64 {
-    elevate_interop::from_raw(raw)
-}
-
-pub fn from_env_handle() -> Parser {
-    Parser { raw: from_env() }
-}
-
-pub fn from_raw_handle(raw: String) -> Parser {
-    Parser { raw: from_raw(raw) }
-}
-
-pub fn handle_id(handle: Parser) -> i64 {
-    handle.raw
-}
-
 impl Parser {
     pub fn from_env() -> Self {
-        Parser { raw: from_env() }
+        Parser {
+            raw: elevate_interop::from_env();
+        }
     }
 
     pub fn from_raw(raw: String) -> Self {
-        Parser { raw: from_raw(raw) }
+        Parser {
+            raw: elevate_interop::from_raw(raw);
+        }
     }
 
     pub fn handle_id(self) -> i64 {
@@ -79,347 +148,293 @@ impl Parser {
     }
 
     pub fn next(handle: i64) -> Result<Option<Arg>, ParseError> {
-        next(handle)
+        Parser::next_internal(handle)
     }
 
     pub fn value(handle: i64) -> Result<String, ParseError> {
-        value(handle)
+        const maybe = Parser::optional_value_internal(handle);
+        match maybe {
+            Option::Some(value) => Result::Ok(value);
+            Option::None => Parser::value_from_stream_or_error(handle);
+        }
     }
 
     pub fn optional_value(handle: i64) -> Option<String> {
-        optional_value(handle)
+        Parser::optional_value_internal(handle)
     }
 
     pub fn values(handle: i64) -> Result<Option<String>, ParseError> {
-        values(handle)
+        const maybe = Parser::optional_value_internal(handle);
+        match maybe {
+            Option::Some(value) => Result::Ok(Option::Some(value));
+            Option::None => Parser::values_from_stream_or_error(handle);
+        }
     }
 
     pub fn reset(handle: i64) {
-        reset(handle)
+        elevate_interop::reset(handle);
     }
+
+    fn next_internal(handle: i64) -> Result<Option<Arg>, ParseError> {
+        const pending = elevate_interop::take_pending_value(handle);
+        match pending {
+            Option::Some(value) => Parser::pending_unexpected_value(handle, value);
+            Option::None => Parser::next_after_pending(handle);
+        }
+    }
+
+    fn pending_unexpected_value(handle: i64, value: String) -> Result<Option<Arg>, ParseError> {
+        Result::Err(ParseError::UnexpectedValue(
+            Parser::format_unexpected_value_for_last(handle, value),
+        ))
+    }
+
+    fn next_after_pending(handle: i64) -> Result<Option<Arg>, ParseError> {
+        const cluster = elevate_interop::take_short_cluster(handle);
+        match cluster {
+            Option::Some(cluster_text) => Parser::next_from_cluster(handle, cluster_text);
+            Option::None => Parser::next_from_stream(handle);
+        }
+    }
+
+    fn next_from_cluster(handle: i64, cluster: String) -> Result<Option<Arg>, ParseError> {
+        const split = Parser::split_cluster(cluster);
+        match split {
+            ClusterSplit::End => Parser::next_internal(handle);
+            ClusterSplit::UnexpectedValue(value) => Parser::pending_unexpected_value(handle, value);
+            ClusterSplit::Short(parts) => Parser::emit_short_from_parts(handle, parts);
+        }
+    }
+
+    fn emit_short_from_parts(handle: i64, parts: ClusterParts) -> Result<Option<Arg>, ParseError> {
+        elevate_interop::set_short_cluster(handle, parts.rest);
+        Parser::emit_short(handle, parts.short)
+    }
+
+    fn emit_short(handle: i64, short: String) -> Result<Option<Arg>, ParseError> {
+        elevate_interop::set_last_short_option(handle, short);
+        Result::Ok(Option::Some(Arg::Short(short)))
+    }
+
+    fn next_from_stream(handle: i64) -> Result<Option<Arg>, ParseError> {
+        const next_arg = elevate_interop::take_next_arg(handle);
+        match next_arg {
+            Option::Some(arg) => Parser::next_from_taken_arg(handle, arg);
+            Option::None => Result::Ok(Option::None);
+        }
+    }
+
+    fn next_from_taken_arg(handle: i64, arg: String) -> Result<Option<Arg>, ParseError> {
+        if elevate_interop::is_finished_opts(handle) {
+            elevate_interop::clear_last_option(handle);
+            return Result::Ok(Option::Some(Arg::Value(arg)));
+        }
+        Parser::next_from_classified_arg(handle, arg)
+    }
+
+    fn next_from_classified_arg(handle: i64, arg: String) -> Result<Option<Arg>, ParseError> {
+        const class = RawArgClass::classify(arg);
+        match class {
+            RawArgClass::DashDash => Parser::after_dashdash(handle);
+            RawArgClass::Long(name) => Parser::emit_long(handle, name);
+            RawArgClass::LongWithValue(payload) => Parser::emit_long_with_value(handle, payload);
+            RawArgClass::ShortCluster(cluster) => Parser::continue_short_cluster(handle, cluster);
+            RawArgClass::Value(value) => Parser::emit_value(handle, value);
+        }
+    }
+
+    fn after_dashdash(handle: i64) -> Result<Option<Arg>, ParseError> {
+        elevate_interop::set_finished_opts(handle);
+        Parser::next_internal(handle)
+    }
+
+    fn emit_long(handle: i64, name: String) -> Result<Option<Arg>, ParseError> {
+        elevate_interop::set_last_long_option(handle, name);
+        Result::Ok(Option::Some(Arg::Long(name)))
+    }
+
+    fn emit_long_with_value(handle: i64, payload: LongWithValue) -> Result<Option<Arg>, ParseError> {
+        const name = payload.name;
+        const value = payload.value;
+        elevate_interop::set_last_long_option(handle, name);
+        elevate_interop::set_pending_value(handle, value);
+        Result::Ok(Option::Some(Arg::Long(name)))
+    }
+
+    fn continue_short_cluster(handle: i64, cluster: String) -> Result<Option<Arg>, ParseError> {
+        elevate_interop::set_short_cluster(handle, cluster);
+        Parser::next_internal(handle)
+    }
+
+    fn emit_value(handle: i64, value: String) -> Result<Option<Arg>, ParseError> {
+        elevate_interop::clear_last_option(handle);
+        Result::Ok(Option::Some(Arg::Value(value)))
+    }
+
+    fn value_from_stream_or_error(handle: i64) -> Result<String, ParseError> {
+        const raw_next = elevate_interop::take_next_arg(handle);
+        match raw_next {
+            Option::Some(value) => Result::Ok(value);
+            Option::None => Result::Err(ParseError::MissingValue(
+                Parser::format_missing_value_for_last(handle),
+            ));
+        }
+    }
+
+    fn optional_value_internal(handle: i64) -> Option<String> {
+        const pending = elevate_interop::take_pending_value(handle);
+        match pending {
+            Option::Some(value) => Option::Some(value);
+            Option::None => Parser::optional_from_cluster(handle);
+        }
+    }
+
+    fn optional_from_cluster(handle: i64) -> Option<String> {
+        const cluster = elevate_interop::take_short_cluster(handle);
+        match cluster {
+            Option::Some(text) => Option::Some(Parser::cluster_optional_value(text));
+            Option::None => Option::None;
+        }
+    }
+
+    fn values_from_stream_or_error(handle: i64) -> Result<Option<String>, ParseError> {
+        const peeked = elevate_interop::peek_next_arg(handle);
+        match peeked {
+            Option::Some(candidate) => Parser::values_from_candidate(handle, candidate);
+            Option::None => Parser::missing_value_result(handle);
+        }
+    }
+
+    fn values_from_candidate(handle: i64, candidate: String) -> Result<Option<String>, ParseError> {
+        if elevate_interop::is_finished_opts(handle) {
+            elevate_interop::take_next_arg(handle);
+            return Result::Ok(Option::Some(candidate));
+        }
+
+        const class = RawArgClass::classify(candidate);
+        match class {
+            RawArgClass::Value(value) => Parser::consume_and_return_value(handle, value);
+            _ => Parser::missing_value_result(handle);
+        }
+    }
+
+    fn consume_and_return_value(handle: i64, value: String) -> Result<Option<String>, ParseError> {
+        elevate_interop::take_next_arg(handle);
+        Result::Ok(Option::Some(value))
+    }
+
+    fn missing_value_result(handle: i64) -> Result<Option<String>, ParseError> {
+        Result::Err(ParseError::MissingValue(
+            Parser::format_missing_value_for_last(handle),
+        ))
+    }
+
+    fn format_missing_value_for_last(handle: i64) -> String {
+        Parser::format_missing_value(elevate_interop::last_option(handle))
+    }
+
+    fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
+        Parser::format_unexpected_value(elevate_interop::last_option(handle), value)
+    }
+
+    fn format_missing_value(value: Option<String>) -> String {
+        match value {
+            Option::Some(option) => format!("missing value for option {}", option);
+            Option::None => "missing value";
+        }
+    }
+
+    fn format_unexpected_value(option: Option<String>, value: String) -> String {
+        match option {
+            Option::Some(option_name) => format!(
+                "unexpected argument for option '{}': {}",
+                option_name,
+                value,
+            );
+            Option::None => format!("unexpected argument: {}", value);
+        }
+    }
+
+    fn split_cluster(cluster: String) -> ClusterSplit {
+        if cluster.is_empty() {
+            return ClusterSplit::End;
+        }
+
+        if cluster.starts_with("=") {
+            return ClusterSplit::UnexpectedValue(str::strip_prefix_known(cluster, "="));
+        }
+        Parser::split_cluster_short(cluster)
+    }
+
+    fn split_cluster_short(cluster: String) -> ClusterSplit {
+        const (short, rest) = elevate_interop::drop_first_char_known(cluster);
+        ClusterSplit::Short(ClusterParts::new(short, rest))
+    }
+
+    fn cluster_optional_value(cluster: String) -> String {
+        if cluster.starts_with("=") {
+            return str::strip_prefix_known(cluster, "=");
+        }
+        cluster
+    }
+}
+
+pub fn from_env() -> i64 {
+    Parser::handle_id(Parser::from_env())
+}
+
+pub fn from_raw(raw: String) -> i64 {
+    Parser::handle_id(Parser::from_raw(raw))
+}
+
+pub fn from_env_handle() -> Parser {
+    Parser::from_env()
+}
+
+pub fn from_raw_handle(raw: String) -> Parser {
+    Parser::from_raw(raw)
+}
+
+pub fn handle_id(handle: Parser) -> i64 {
+    Parser::handle_id(handle)
 }
 
 pub fn next(handle: i64) -> Result<Option<Arg>, ParseError> {
-    next_internal(handle)
-}
-
-fn next_internal(handle: i64) -> Result<Option<Arg>, ParseError> {
-    const pending = elevate_interop::take_pending_value(handle);
-    match pending {
-        Option::Some(value) => pending_unexpected_value(handle, value);
-        Option::None => next_after_pending(handle);
-    }
-}
-
-fn pending_unexpected_value(handle: i64, value: String) -> Result<Option<Arg>, ParseError> {
-    Result::Err(ParseError::UnexpectedValue(
-        format_unexpected_value_for_last(handle, value),
-    ))
-}
-
-fn next_after_pending(handle: i64) -> Result<Option<Arg>, ParseError> {
-    const cluster = elevate_interop::take_short_cluster(handle);
-    match cluster {
-        Option::Some(cluster_text) => next_from_cluster(handle, cluster_text);
-        Option::None => next_from_stream(handle);
-    }
-}
-
-fn next_from_cluster(handle: i64, cluster: String) -> Result<Option<Arg>, ParseError> {
-    const split = split_cluster(cluster);
-    match split {
-        ClusterSplit::End => next_internal(handle);
-        ClusterSplit::UnexpectedValue(value) => pending_unexpected_value(handle, value);
-        ClusterSplit::Short(parts) => emit_short_from_parts(handle, parts);
-    }
-}
-
-fn emit_short_from_parts(handle: i64, parts: ClusterParts) -> Result<Option<Arg>, ParseError> {
-    elevate_interop::set_short_cluster(handle, parts.rest);
-    emit_short(handle, parts.short)
-}
-
-fn emit_short(handle: i64, short: String) -> Result<Option<Arg>, ParseError> {
-    elevate_interop::set_last_short_option(handle, short);
-    Result::Ok(Option::Some(Arg::Short(short)))
-}
-
-fn next_from_stream(handle: i64) -> Result<Option<Arg>, ParseError> {
-    const next_arg = elevate_interop::take_next_arg(handle);
-    match next_arg {
-        Option::Some(arg) => next_from_taken_arg(handle, arg);
-        Option::None => Result::Ok(Option::None);
-    }
-}
-
-fn next_from_taken_arg(handle: i64, arg: String) -> Result<Option<Arg>, ParseError> {
-    if elevate_interop::is_finished_opts(handle) {
-        elevate_interop::clear_last_option(handle);
-        return Result::Ok(Option::Some(Arg::Value(arg)));
-    }
-    next_from_classified_arg(handle, arg)
-}
-
-fn next_from_classified_arg(handle: i64, arg: String) -> Result<Option<Arg>, ParseError> {
-    const class = classify_arg(arg);
-    match class {
-        RawArgClass::DashDash => after_dashdash(handle);
-        RawArgClass::Long(name) => emit_long(handle, name);
-        RawArgClass::LongWithValue(payload) => emit_long_with_value(handle, payload);
-        RawArgClass::ShortCluster(cluster) => continue_short_cluster(handle, cluster);
-        RawArgClass::Value(value) => emit_value(handle, value);
-    }
-}
-
-fn classify_arg(arg: String) -> RawArgClass {
-    const long_split = split_long_prefix(arg);
-    match long_split {
-        LongPrefixSplit::Long(rest) => classify_long_rest(rest);
-        LongPrefixSplit::Other(other) => classify_short_or_value(other);
-    }
-}
-
-fn classify_long_rest(rest: String) -> RawArgClass {
-    const maybe_text = nonempty_text(rest);
-    match maybe_text {
-        Option::Some(text) => classify_nonempty_long(text);
-        Option::None => RawArgClass::DashDash;
-    }
-}
-
-fn classify_nonempty_long(text: String) -> RawArgClass {
-    const split = split_long_eq(text);
-    match split {
-        LongEqSplit::WithValue(payload) => RawArgClass::LongWithValue(payload);
-        LongEqSplit::Plain(name) => RawArgClass::Long(name);
-    }
-}
-
-fn classify_short_or_value(arg: String) -> RawArgClass {
-    const short_split = split_short_prefix(arg);
-    match short_split {
-        ShortPrefixSplit::ShortCluster(cluster) => RawArgClass::ShortCluster(cluster);
-        ShortPrefixSplit::Value(value) => RawArgClass::Value(value);
-    }
-}
-
-fn after_dashdash(handle: i64) -> Result<Option<Arg>, ParseError> {
-    elevate_interop::set_finished_opts(handle);
-    next_internal(handle)
-}
-
-fn emit_long(handle: i64, name: String) -> Result<Option<Arg>, ParseError> {
-    elevate_interop::set_last_long_option(handle, name);
-    Result::Ok(Option::Some(Arg::Long(name)))
-}
-
-fn emit_long_with_value(
-    handle: i64,
-    payload: LongWithValue,
-) -> Result<Option<Arg>, ParseError> {
-    const name = payload.name;
-    const value = payload.value;
-    elevate_interop::set_last_long_option(handle, name);
-    elevate_interop::set_pending_value(handle, value);
-    Result::Ok(Option::Some(Arg::Long(name)))
-}
-
-fn continue_short_cluster(handle: i64, cluster: String) -> Result<Option<Arg>, ParseError> {
-    elevate_interop::set_short_cluster(handle, cluster);
-    next_internal(handle)
-}
-
-fn emit_value(handle: i64, value: String) -> Result<Option<Arg>, ParseError> {
-    elevate_interop::clear_last_option(handle);
-    Result::Ok(Option::Some(Arg::Value(value)))
+    Parser::next(handle)
 }
 
 pub fn value(handle: i64) -> Result<String, ParseError> {
-    const maybe = optional_value_internal(handle);
-    match maybe {
-        Option::Some(value) => Result::Ok(value);
-        Option::None => value_from_stream_or_error(handle);
-    }
-}
-
-fn value_from_stream_or_error(handle: i64) -> Result<String, ParseError> {
-    const raw_next = elevate_interop::take_next_arg(handle);
-    match raw_next {
-        Option::Some(value) => Result::Ok(value);
-        Option::None => Result::Err(ParseError::MissingValue(
-            format_missing_value_for_last(handle),
-        ));
-    }
+    Parser::value(handle)
 }
 
 pub fn optional_value(handle: i64) -> Option<String> {
-    optional_value_internal(handle)
-}
-
-fn optional_value_internal(handle: i64) -> Option<String> {
-    const pending = elevate_interop::take_pending_value(handle);
-    match pending {
-        Option::Some(value) => Option::Some(value);
-        Option::None => optional_from_cluster(handle);
-    }
-}
-
-fn optional_from_cluster(handle: i64) -> Option<String> {
-    const cluster = elevate_interop::take_short_cluster(handle);
-    match cluster {
-        Option::Some(text) => Option::Some(cluster_optional_value(text));
-        Option::None => Option::None;
-    }
+    Parser::optional_value(handle)
 }
 
 pub fn values(handle: i64) -> Result<Option<String>, ParseError> {
-    const maybe = optional_value_internal(handle);
-    match maybe {
-        Option::Some(value) => Result::Ok(Option::Some(value));
-        Option::None => values_from_stream_or_error(handle);
-    }
-}
-
-fn values_from_stream_or_error(handle: i64) -> Result<Option<String>, ParseError> {
-    const peeked = elevate_interop::peek_next_arg(handle);
-    match peeked {
-        Option::Some(candidate) => values_from_candidate(handle, candidate);
-        Option::None => missing_value_result(handle);
-    }
-}
-
-fn values_from_candidate(handle: i64, candidate: String) -> Result<Option<String>, ParseError> {
-    if elevate_interop::is_finished_opts(handle) {
-        elevate_interop::take_next_arg(handle);
-        return Result::Ok(Option::Some(candidate));
-    }
-
-    const class = classify_arg(candidate);
-    match class {
-        RawArgClass::Value(value) => consume_and_return_value(handle, value);
-        _ => missing_value_result(handle);
-    }
-}
-
-fn consume_and_return_value(handle: i64, value: String) -> Result<Option<String>, ParseError> {
-    elevate_interop::take_next_arg(handle);
-    Result::Ok(Option::Some(value))
-}
-
-fn missing_value_result(handle: i64) -> Result<Option<String>, ParseError> {
-    Result::Err(ParseError::MissingValue(
-        format_missing_value_for_last(handle),
-    ))
-}
-
-fn format_missing_value_for_last(handle: i64) -> String {
-    format_missing_value(elevate_interop::last_option(handle))
-}
-
-fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
-    format_unexpected_value(elevate_interop::last_option(handle), value)
-}
-
-fn format_missing_value(value: Option<String>) -> String {
-    match value {
-        Option::Some(option) => format!("missing value for option {}", option);
-        Option::None => "missing value";
-    }
-}
-
-fn format_unexpected_value(option: Option<String>, value: String) -> String {
-    match option {
-        Option::Some(option_name) => format!(
-            "unexpected argument for option '{}': {}",
-            option_name,
-            value,
-        );
-        Option::None => format!("unexpected argument: {}", value);
-    }
+    Parser::values(handle)
 }
 
 pub fn reset(handle: i64) {
-    elevate_interop::reset(handle);
+    Parser::reset(handle)
 }
 
 pub fn reset_handle(handle: Parser) {
-    reset(handle.raw);
+    Parser::reset(handle.raw)
 }
 
 pub fn next_handle(handle: Parser) -> Result<Option<Arg>, ParseError> {
-    next(handle.raw)
+    Parser::next(handle.raw)
 }
 
 pub fn value_handle(handle: Parser) -> Result<String, ParseError> {
-    value(handle.raw)
+    Parser::value(handle.raw)
 }
 
 pub fn optional_value_handle(handle: Parser) -> Option<String> {
-    optional_value(handle.raw)
+    Parser::optional_value(handle.raw)
 }
 
 pub fn values_handle(handle: Parser) -> Result<Option<String>, ParseError> {
-    values(handle.raw)
-}
-
-fn split_long_prefix(arg: String) -> LongPrefixSplit {
-    if arg.starts_with("--") {
-        return LongPrefixSplit::Long(str::strip_prefix_known(arg, "--"));
-    }
-    LongPrefixSplit::Other(arg)
-}
-
-fn nonempty_text(text: String) -> Option<String> {
-    if text.is_empty() {
-        return Option::None;
-    }
-    Option::Some(text)
-}
-
-fn split_long_eq(text: String) -> LongEqSplit {
-    if text.contains("=") {
-        const (name, value) = str::split_once_known(text, "=");
-        return LongEqSplit::WithValue(LongWithValue {
-            name: name;
-            value: value;
-        });
-    }
-    LongEqSplit::Plain(text)
-}
-
-fn split_short_prefix(arg: String) -> ShortPrefixSplit {
-    if arg == "-" {
-        return ShortPrefixSplit::Value(arg);
-    }
-
-    if arg.starts_with("-") {
-        return ShortPrefixSplit::ShortCluster(str::strip_prefix_known(arg, "-"));
-    }
-    ShortPrefixSplit::Value(arg)
-}
-
-fn split_cluster(cluster: String) -> ClusterSplit {
-    if cluster.is_empty() {
-        return ClusterSplit::End;
-    }
-
-    if cluster.starts_with("=") {
-        return ClusterSplit::UnexpectedValue(str::strip_prefix_known(cluster, "="));
-    }
-    split_cluster_short(cluster)
-}
-
-fn split_cluster_short(cluster: String) -> ClusterSplit {
-    const (short, rest) = elevate_interop::drop_first_char_known(cluster);
-    ClusterSplit::Short(ClusterParts {
-        short: short;
-        rest: rest;
-    })
-}
-
-fn cluster_optional_value(cluster: String) -> String {
-    if cluster.starts_with("=") {
-        return str::strip_prefix_known(cluster, "=");
-    }
-    cluster
+    Parser::values(handle.raw)
 }
