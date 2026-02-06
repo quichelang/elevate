@@ -1,6 +1,6 @@
 # Lexopt Case Study
 
-Status: In Progress (Milestone 4)
+Status: In Progress (Milestone 5)
 Date: 2026-02-06
 Target: `examples/lexopt-elevate`
 Reference: `https://github.com/blyxxyz/lexopt`
@@ -29,6 +29,7 @@ Recreate lexopt semantics in Elevate, then compare generated Rust and behavior a
 - host argument ingestion (`from_env`, `from_raw`)
 - one low-level helper (`drop_first_char_known`)
 - constructor-style helpers previously in Rust have been migrated into native Elevate via struct literals.
+- Parser API now includes a preview host-handle wrapper (`ParserHandle`) while preserving existing `i64` entry points for compatibility.
 
 ## Current Deviations From Upstream lexopt
 

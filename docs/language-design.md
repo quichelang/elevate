@@ -175,6 +175,11 @@ Implemented:
 - String interop shims for owned-return helpers (`str::strip_prefix_known`, `str::split_once_known`) with borrow-safe lowering.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 - Crate build diagnostics now include line/column output (plus symbol declaration hints when span data is coarse).
+- Interop contract preview via crate-level `elevate.interop` file:
+- allow-list validation for `rust use` imports.
+- deterministic generated adapter module (`__elevate_interop.rs`) from declared adapter entries.
+- adapter module auto-injection into generated crate root (`lib.rs`/`main.rs`) when present.
+- Host-handle abstraction preview for lexopt via `ParserHandle` wrapper API in Elevate source.
 
 Quality status:
 - Unit tests cover lexer, parser, semantic checks, and codegen behavior.
@@ -209,6 +214,9 @@ Behavior:
 - `<crate>/target/debug`
 - `<crate>/target/release`
 - Compilation failures in `.ers` crate builds are reported with source-relative line/column context.
+- Optional interop contract file: `<crate-root>/elevate.interop`.
+- `allow` directives gate which `rust use` imports are permitted.
+- `adapter` directives generate deterministic Rust adapter functions in `target/elevate-gen/src/__elevate_interop.rs`.
 
 Safety:
 - Path collisions between generated `.rs` outputs and copied files are treated as errors.
@@ -258,4 +266,7 @@ Quality gates:
 - Deep destructuring coverage (all contexts) is not complete.
 - Match guards and full exhaustiveness diagnostics are not complete.
 - Inline `rust { ... }` escape blocks are not complete.
+- Interop contract signature verification currently validates declaration shape, but not full type-level callsite compatibility across all compiler phases.
+- Generated adapter functions are currently contract-driven and emitted at crate-build time; compiler-level automatic routing to those adapters is not complete.
+- Host-handle abstractions are in preview form (lexopt case study) and are not yet generalized as a standard library pattern.
 - Borrow/reference features remain intentionally unsupported.
