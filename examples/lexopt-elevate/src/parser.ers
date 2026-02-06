@@ -35,7 +35,7 @@ pub struct ClusterParts {
     rest: String;
 }
 
-pub struct ParserHandle {
+pub struct Parser {
     raw: i64;
 }
 
@@ -53,16 +53,50 @@ pub fn from_raw(raw: String) -> i64 {
     elevate_interop::from_raw(raw)
 }
 
-pub fn from_env_handle() -> ParserHandle {
-    ParserHandle { raw: from_env() }
+pub fn from_env_handle() -> Parser {
+    Parser { raw: from_env() }
 }
 
-pub fn from_raw_handle(raw: String) -> ParserHandle {
-    ParserHandle { raw: from_raw(raw) }
+pub fn from_raw_handle(raw: String) -> Parser {
+    Parser { raw: from_raw(raw) }
 }
 
-pub fn handle_id(handle: ParserHandle) -> i64 {
+pub fn handle_id(handle: Parser) -> i64 {
     handle.raw
+}
+
+impl Parser {
+    pub fn from_env() -> Self {
+        Parser { raw: from_env() }
+    }
+
+    pub fn from_raw(raw: String) -> Self {
+        Parser { raw: from_raw(raw) }
+    }
+
+    pub fn handle_id(self) -> i64 {
+        self.raw
+    }
+
+    pub fn next(handle: i64) -> Result<Option<Arg>, ParseError> {
+        next(handle)
+    }
+
+    pub fn value(handle: i64) -> Result<String, ParseError> {
+        value(handle)
+    }
+
+    pub fn optional_value(handle: i64) -> Option<String> {
+        optional_value(handle)
+    }
+
+    pub fn values(handle: i64) -> Result<Option<String>, ParseError> {
+        values(handle)
+    }
+
+    pub fn reset(handle: i64) {
+        reset(handle)
+    }
 }
 
 pub fn next(handle: i64) -> Result<Option<Arg>, ParseError> {
@@ -308,23 +342,23 @@ pub fn reset(handle: i64) {
     elevate_interop::reset(handle);
 }
 
-pub fn reset_handle(handle: ParserHandle) {
+pub fn reset_handle(handle: Parser) {
     reset(handle.raw);
 }
 
-pub fn next_handle(handle: ParserHandle) -> Result<Option<Arg>, ParseError> {
+pub fn next_handle(handle: Parser) -> Result<Option<Arg>, ParseError> {
     next(handle.raw)
 }
 
-pub fn value_handle(handle: ParserHandle) -> Result<String, ParseError> {
+pub fn value_handle(handle: Parser) -> Result<String, ParseError> {
     value(handle.raw)
 }
 
-pub fn optional_value_handle(handle: ParserHandle) -> Option<String> {
+pub fn optional_value_handle(handle: Parser) -> Option<String> {
     optional_value(handle.raw)
 }
 
-pub fn values_handle(handle: ParserHandle) -> Result<Option<String>, ParseError> {
+pub fn values_handle(handle: Parser) -> Result<Option<String>, ParseError> {
     values(handle.raw)
 }
 
