@@ -132,7 +132,13 @@ struct LoweringContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExprPosition {
     Value,
-    CallArg,
+    CallArgOwned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallArgMode {
+    Owned,
+    Borrowed,
 }
 
 fn lower_function(def: &TypedFunction) -> RustFunction {
@@ -1383,13 +1389,25 @@ fn lower_expr_with_context(
         TypedExprKind::Bool(value) => RustExpr::Bool(*value),
         TypedExprKind::String(value) => RustExpr::String(value.clone()),
         TypedExprKind::Path(path) => lower_path_expr(path, &expr.ty, position, context),
-        TypedExprKind::Call { callee, args } => RustExpr::Call {
-            callee: Box::new(lower_expr_with_context(callee, context, ExprPosition::Value)),
-            args: args
-                .iter()
-                .map(|arg| lower_expr_with_context(arg, context, ExprPosition::CallArg))
-                .collect(),
-        },
+        TypedExprKind::Call { callee, args } => {
+            let arg_modes = infer_call_arg_modes(callee, args.len());
+            RustExpr::Call {
+                callee: Box::new(lower_expr_with_context(callee, context, ExprPosition::Value)),
+                args: args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        if arg_modes.get(index) == Some(&CallArgMode::Borrowed) {
+                            let lowered =
+                                lower_expr_with_context(arg, context, ExprPosition::Value);
+                            borrow_expr(lowered)
+                        } else {
+                            lower_expr_with_context(arg, context, ExprPosition::CallArgOwned)
+                        }
+                    })
+                    .collect(),
+            }
+        }
         TypedExprKind::Field { base, field } => RustExpr::Field {
             base: Box::new(lower_expr_with_context(base, context, ExprPosition::Value)),
             field: field.clone(),
@@ -1495,7 +1513,7 @@ fn lower_path_expr(
     }
 
     let path_expr = RustExpr::Path(path.to_vec());
-    if position == ExprPosition::CallArg && remaining > 1 && should_clone_for_reuse(ty) {
+    if position == ExprPosition::CallArgOwned && remaining > 1 && should_clone_for_reuse(ty) {
         return clone_expr(path_expr);
     }
     path_expr
@@ -1512,6 +1530,40 @@ fn clone_expr(expr: RustExpr) -> RustExpr {
             field: "clone".to_string(),
         }),
         args: Vec::new(),
+    }
+}
+
+fn borrow_expr(expr: RustExpr) -> RustExpr {
+    RustExpr::Borrow(Box::new(expr))
+}
+
+fn infer_call_arg_modes(callee: &TypedExpr, arg_count: usize) -> Vec<CallArgMode> {
+    let mut modes = vec![CallArgMode::Owned; arg_count];
+    let TypedExprKind::Path(path) = &callee.kind else {
+        return modes;
+    };
+    let joined = path.join("::");
+    match joined.as_str() {
+        "str::len" | "str::is_empty" | "std::str::len" | "std::str::is_empty" => {
+            set_borrowed(&mut modes, 0);
+        }
+        "str::contains"
+        | "str::starts_with"
+        | "str::ends_with"
+        | "std::str::contains"
+        | "std::str::starts_with"
+        | "std::str::ends_with" => {
+            set_borrowed(&mut modes, 0);
+            set_borrowed(&mut modes, 1);
+        }
+        _ => {}
+    }
+    modes
+}
+
+fn set_borrowed(modes: &mut [CallArgMode], index: usize) {
+    if let Some(slot) = modes.get_mut(index) {
+        *slot = CallArgMode::Borrowed;
     }
 }
 

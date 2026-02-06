@@ -207,6 +207,45 @@ mod tests {
     }
 
     #[test]
+    fn compile_auto_borrows_for_str_len_calls() {
+        let source = r#"
+            fn demo(text: String) {
+                std::mem::drop(str::len(text));
+                std::mem::drop(str::len(text));
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("str::len(&text)"));
+        assert!(!output.rust_code.contains("str::len(text)"));
+        assert!(!output.rust_code.contains("text.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_borrow_then_consume_keeps_final_move() {
+        let source = r#"
+            fn consume(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn demo(text: String) {
+                std::mem::drop(str::len(text));
+                consume(text);
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("str::len(&text)"));
+        assert!(output.rust_code.contains("consume(text);"));
+        assert!(!output.rust_code.contains("consume(text.clone());"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_rejects_unknown_inferred_return() {
         let source = r#"
             fn maybe_value() {

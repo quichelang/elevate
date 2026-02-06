@@ -170,6 +170,14 @@ fn emit_expr(expr: &RustExpr) -> String {
         RustExpr::Bool(value) => value.to_string(),
         RustExpr::String(value) => format!("::std::string::String::from({value:?})"),
         RustExpr::Path(path) => path.join("::"),
+        RustExpr::Borrow(inner) => {
+            let inner_text = emit_expr(inner);
+            if needs_parens_for_borrow(inner) {
+                format!("&({inner_text})")
+            } else {
+                format!("&{inner_text}")
+            }
+        }
         RustExpr::Call { callee, args } => {
             let args = args.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
             let callee_text = emit_expr(callee);
@@ -352,6 +360,17 @@ fn should_annotate_local_binding(ty: &str, value: &RustExpr) -> bool {
 }
 
 fn needs_parens_for_call(expr: &RustExpr) -> bool {
+    matches!(
+        expr,
+        RustExpr::Closure { .. }
+            | RustExpr::Match { .. }
+            | RustExpr::Unary { .. }
+            | RustExpr::Binary { .. }
+            | RustExpr::Range { .. }
+    )
+}
+
+fn needs_parens_for_borrow(expr: &RustExpr) -> bool {
     matches!(
         expr,
         RustExpr::Closure { .. }

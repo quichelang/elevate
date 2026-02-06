@@ -108,6 +108,7 @@ pub enum RustExpr {
     Bool(bool),
     String(String),
     Path(Vec<String>),
+    Borrow(Box<RustExpr>),
     Call {
         callee: Box<RustExpr>,
         args: Vec<RustExpr>,
