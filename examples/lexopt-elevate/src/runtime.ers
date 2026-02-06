@@ -1,0 +1,139 @@
+rust use crate::runtime_core;
+rust use crate::model::Arg;
+rust use crate::parser::ClusterSplit;
+rust use crate::parser::LongEqSplit;
+rust use crate::parser::LongPrefixSplit;
+rust use crate::parser::LongWithValue;
+rust use crate::parser::MaybeString;
+rust use crate::parser::ShortPrefixSplit;
+
+pub fn from_env() -> i64 {
+    runtime_core::from_env()
+}
+
+pub fn from_raw(raw: String) -> i64 {
+    runtime_core::from_raw(raw)
+}
+
+pub fn reset(handle: i64) {
+    runtime_core::reset(handle);
+    return;
+}
+
+pub fn take_pending_value(handle: i64) -> MaybeString {
+    runtime_core::take_pending_value(handle)
+}
+
+pub fn set_pending_value(handle: i64, value: String) {
+    runtime_core::set_pending_value(handle, value);
+    return;
+}
+
+pub fn take_short_cluster(handle: i64) -> MaybeString {
+    runtime_core::take_short_cluster(handle)
+}
+
+pub fn set_short_cluster(handle: i64, cluster: String) {
+    runtime_core::set_short_cluster(handle, cluster);
+    return;
+}
+
+pub fn take_next_arg(handle: i64) -> MaybeString {
+    runtime_core::take_next_arg(handle)
+}
+
+pub fn peek_next_arg(handle: i64) -> MaybeString {
+    runtime_core::peek_next_arg(handle)
+}
+
+pub fn is_finished_opts(handle: i64) -> bool {
+    runtime_core::is_finished_opts(handle)
+}
+
+pub fn set_finished_opts(handle: i64) {
+    runtime_core::set_finished_opts(handle);
+    return;
+}
+
+pub fn clear_last_option(handle: i64) {
+    runtime_core::clear_last_option(handle);
+    return;
+}
+
+pub fn finalize_short(handle: i64, short: String) -> Arg {
+    runtime_core::finalize_short(handle, short)
+}
+
+pub fn finalize_long(handle: i64, name: String) -> Arg {
+    runtime_core::finalize_long(handle, name)
+}
+
+pub fn finalize_long_with_value(handle: i64, payload: LongWithValue) -> Arg {
+    runtime_core::finalize_long_with_value(handle, payload)
+}
+
+pub fn format_missing_value_for_last(handle: i64) -> String {
+    runtime_core::format_missing_value_for_last(handle)
+}
+
+pub fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
+    runtime_core::format_unexpected_value_for_last(handle, value)
+}
+
+pub fn split_long_prefix(arg: String) -> LongPrefixSplit {
+    if runtime_core::starts_with_text(arg, "--") {
+        return LongPrefixSplit::Long(runtime_core::strip_prefix_known(arg, "--"));
+    }
+    LongPrefixSplit::Other(arg)
+}
+
+pub fn nonempty_text(text: String) -> MaybeString {
+    if runtime_core::is_empty_text(text) {
+        return MaybeString::None;
+    }
+    MaybeString::Some(text)
+}
+
+pub fn split_long_eq(text: String) -> LongEqSplit {
+    if runtime_core::has_separator(text, "=") {
+        return LongEqSplit::WithValue(runtime_core::make_long_with_value(
+            runtime_core::split_once_known(text, "="),
+        ));
+    }
+    LongEqSplit::Plain(text)
+}
+
+pub fn split_short_prefix(arg: String) -> ShortPrefixSplit {
+    if arg == "-" {
+        return ShortPrefixSplit::Value(arg);
+    }
+
+    if runtime_core::starts_with_text(arg, "-") {
+        return ShortPrefixSplit::ShortCluster(runtime_core::strip_prefix_known(arg, "-"));
+    }
+    ShortPrefixSplit::Value(arg)
+}
+
+pub fn split_cluster(cluster: String) -> ClusterSplit {
+    if runtime_core::is_empty_text(cluster) {
+        return ClusterSplit::End;
+    }
+
+    if runtime_core::starts_with_text(cluster, "=") {
+        return ClusterSplit::UnexpectedValue(runtime_core::strip_prefix_known(cluster, "="));
+    }
+    split_cluster_short(cluster)
+}
+
+fn split_cluster_short(cluster: String) -> ClusterSplit {
+    ClusterSplit::Short(runtime_core::make_cluster_parts(
+        runtime_core::drop_first_char_known(cluster),
+    ))
+}
+
+pub fn cluster_optional_value(cluster: String) -> String {
+    if runtime_core::starts_with_text(cluster, "=") {
+        return runtime_core::strip_prefix_known(cluster, "=");
+    }
+    cluster
+}
