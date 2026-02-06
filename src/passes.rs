@@ -576,12 +576,12 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                         params: method
                             .params
                             .iter()
-                            .map(|param| type_from_ast(&param.ty))
+                            .map(|param| type_from_ast_with_impl_self(&param.ty, &def.target))
                             .collect(),
                         return_type: method
                             .return_type
                             .as_ref()
-                            .map(type_from_ast)
+                            .map(|ty| type_from_ast_with_impl_self(ty, &def.target))
                             .unwrap_or(SemType::Unit),
                     };
                     context
@@ -650,9 +650,15 @@ fn lower_item(
                 let mut locals = HashMap::new();
                 let mut immutable_locals = HashSet::new();
                 for param in &method.params {
-                    locals.insert(param.name.clone(), type_from_ast(&param.ty));
+                    locals.insert(
+                        param.name.clone(),
+                        type_from_ast_with_impl_self(&param.ty, &def.target),
+                    );
                 }
-                let declared_return_ty = method.return_type.as_ref().map(type_from_ast);
+                let declared_return_ty = method
+                    .return_type
+                    .as_ref()
+                    .map(|ty| type_from_ast_with_impl_self(ty, &def.target));
                 let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
                 let mut body = Vec::new();
                 let mut inferred_returns = Vec::new();
@@ -724,7 +730,7 @@ fn lower_item(
                         .iter()
                         .map(|param| TypedParam {
                             name: param.name.clone(),
-                            ty: type_to_string(&type_from_ast(&param.ty)),
+                            ty: type_to_string(&type_from_ast_with_impl_self(&param.ty, &def.target)),
                         })
                         .collect(),
                     return_type: type_to_string(&final_return_ty),
@@ -2708,6 +2714,24 @@ fn type_from_ast(ty: &Type) -> SemType {
     SemType::Path {
         path: ty.path.clone(),
         args: ty.args.iter().map(type_from_ast).collect(),
+    }
+}
+
+fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str) -> SemType {
+    let head = ty.path.first().map(|part| part.as_str());
+    if ty.path.len() == 1 && head == Some("Self") {
+        return SemType::Path {
+            path: vec![impl_target.to_string()],
+            args: Vec::new(),
+        };
+    }
+    SemType::Path {
+        path: ty.path.clone(),
+        args: ty
+            .args
+            .iter()
+            .map(|arg| type_from_ast_with_impl_self(arg, impl_target))
+            .collect(),
     }
 }
 

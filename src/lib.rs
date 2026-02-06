@@ -660,6 +660,28 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_impl_self_return_alias() {
+        let source = r#"
+            pub struct Point { x: i64; }
+
+            impl Point {
+                pub fn new(x: i64) -> Self {
+                    Point { x: x; }
+                }
+            }
+
+            pub fn make() -> Point {
+                Point::new(7)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("pub fn new(x: i64) -> Point"));
+        assert!(output.rust_code.contains("Point::new(7)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_struct_literals() {
         let source = r#"
             pub struct Pair { left: i64; right: i64; }
