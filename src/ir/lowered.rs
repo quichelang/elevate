@@ -223,6 +223,10 @@ pub enum RustPattern {
         name: String,
         pattern: Box<RustPattern>,
     },
+    Struct {
+        path: Vec<String>,
+        fields: Vec<RustPatternField>,
+    },
     Range {
         start: Option<i64>,
         end: Option<i64>,
@@ -232,6 +236,12 @@ pub enum RustPattern {
         path: Vec<String>,
         payload: Option<Box<RustPattern>>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustPatternField {
+    pub name: String,
+    pub pattern: RustPattern,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

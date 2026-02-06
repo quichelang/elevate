@@ -227,6 +227,10 @@ pub enum TypedPattern {
         name: String,
         pattern: Box<TypedPattern>,
     },
+    Struct {
+        path: Vec<String>,
+        fields: Vec<TypedPatternField>,
+    },
     Range {
         start: Option<i64>,
         end: Option<i64>,
@@ -236,6 +240,12 @@ pub enum TypedPattern {
         path: Vec<String>,
         payload: Option<Box<TypedPattern>>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedPatternField {
+    pub name: String,
+    pub pattern: TypedPattern,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

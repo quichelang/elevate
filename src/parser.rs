@@ -1,7 +1,7 @@
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, ConstDef, DestructurePattern, EnumDef, EnumVariant,
-    Expr, Field, FunctionDef, ImplBlock, Item, MatchArm, Module, Param, Pattern, RustUse, StaticDef, Stmt,
-    StructLiteralField, StructDef, Type, UnaryOp, Visibility,
+    Expr, Field, FunctionDef, ImplBlock, Item, MatchArm, Module, Param, Pattern, PatternField,
+    RustUse, StaticDef, Stmt, StructLiteralField, StructDef, Type, UnaryOp, Visibility,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -615,6 +615,23 @@ impl Parser {
         } else {
             None
         };
+        if self.match_kind(TokenKind::LBrace) {
+            let mut fields = Vec::new();
+            while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+                let name = self.expect_ident("Expected struct pattern field name")?;
+                let pattern = if self.match_kind(TokenKind::Colon) {
+                    self.parse_pattern()?
+                } else {
+                    Pattern::Binding(name.clone())
+                };
+                fields.push(PatternField { name, pattern });
+                if !self.match_kind(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBrace, "Expected '}' after struct pattern fields")?;
+            return Some(Pattern::Struct { path, fields });
+        }
         if path.len() == 1 && payload.is_none() && self.match_kind(TokenKind::At) {
             let inner = self.parse_pattern_atom()?;
             return Some(Pattern::BindingAt {
@@ -1285,6 +1302,22 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_match_struct_patterns() {
+        let source = r#"
+            struct Point { x: i64; y: i64; }
+            fn f(p: Point) -> i64 {
+                return match p {
+                    Point { x, y: 0 } => x;
+                    _ => 0;
+                };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
     }
 
     #[test]

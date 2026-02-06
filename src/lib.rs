@@ -689,6 +689,23 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_match_struct_patterns() {
+        let source = r#"
+            struct Point { x: i64; y: i64; }
+            fn classify(p: Point) -> i64 {
+                return match p {
+                    Point { x, y: 0 } => x;
+                    _ => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("Point { x, y: 0 }"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_emits_multi_value_variant_payload_patterns() {
         let source = r#"
             rust use crate::Pair;

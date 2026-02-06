@@ -8,14 +8,15 @@ use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
     RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
     RustExpr, RustField, RustFunction, RustImpl, RustItem, RustMatchArm, RustModule, RustParam,
-    RustPattern, RustStatic, RustStmt, RustStruct, RustStructLiteralField, RustUnaryOp, RustUse,
+    RustPattern, RustPatternField, RustStatic, RustStmt, RustStruct, RustStructLiteralField,
+    RustUnaryOp, RustUse,
     RustVariant,
 };
 use crate::ir::typed::{
     TypedAssignOp, TypedAssignTarget, TypedBinaryOp, TypedConst, TypedDestructurePattern,
     TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedItem,
     TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedRustUse, TypedStatic, TypedStmt,
-    TypedStruct, TypedStructLiteralField, TypedUnaryOp, TypedVariant,
+    TypedStruct, TypedStructLiteralField, TypedUnaryOp, TypedVariant, TypedPatternField,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3161,6 +3162,73 @@ fn lower_pattern(
                 pattern: Box::new(lowered),
             }
         }
+        Pattern::Struct { path, fields } => {
+            let struct_name = path.last().cloned().unwrap_or_default();
+            let struct_fields = context.structs.get(&struct_name);
+            if struct_fields.is_none() {
+                diagnostics.push(Diagnostic::new(
+                    format!("Unknown struct `{}` in pattern", path.join("::")),
+                    Span::new(0, 0),
+                ));
+            } else if let SemType::Path {
+                path: scrutinee_path,
+                ..
+            } = scrutinee_ty
+            {
+                if scrutinee_path.last() != Some(&struct_name) && *scrutinee_ty != SemType::Unknown
+                {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Pattern struct `{}` does not match scrutinee type `{}`",
+                            struct_name,
+                            type_to_string(scrutinee_ty)
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+            } else if *scrutinee_ty != SemType::Unknown {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Struct pattern requires struct scrutinee, got `{}`",
+                        type_to_string(scrutinee_ty)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+
+            let lowered_fields = fields
+                .iter()
+                .map(|field| {
+                    let field_ty = struct_fields
+                        .and_then(|map| map.get(&field.name))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            diagnostics.push(Diagnostic::new(
+                                format!(
+                                    "Unknown field `{}` in struct pattern `{}`",
+                                    field.name, struct_name
+                                ),
+                                Span::new(0, 0),
+                            ));
+                            SemType::Unknown
+                        });
+                    TypedPatternField {
+                        name: field.name.clone(),
+                        pattern: lower_pattern(
+                            &field.pattern,
+                            &field_ty,
+                            context,
+                            locals,
+                            diagnostics,
+                        ),
+                    }
+                })
+                .collect();
+            TypedPattern::Struct {
+                path: path.clone(),
+                fields: lowered_fields,
+            }
+        }
         Pattern::Range {
             start,
             end,
@@ -3485,6 +3553,16 @@ fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
         TypedPattern::BindingAt { name, pattern } => RustPattern::BindingAt {
             name: name.clone(),
             pattern: Box::new(lower_pattern_to_rust(pattern)),
+        },
+        TypedPattern::Struct { path, fields } => RustPattern::Struct {
+            path: path.clone(),
+            fields: fields
+                .iter()
+                .map(|field| RustPatternField {
+                    name: field.name.clone(),
+                    pattern: lower_pattern_to_rust(&field.pattern),
+                })
+                .collect(),
         },
         TypedPattern::Range {
             start,

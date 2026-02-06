@@ -1,7 +1,7 @@
 use crate::ir::lowered::{
     RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
-    RustExpr, RustFunction, RustImpl, RustItem, RustModule, RustPattern, RustStatic, RustStmt,
-    RustStruct, RustStructLiteralField, RustUnaryOp, RustUse,
+    RustExpr, RustFunction, RustImpl, RustItem, RustModule, RustPattern, RustPatternField,
+    RustStatic, RustStmt, RustStruct, RustStructLiteralField, RustUnaryOp, RustUse,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -392,6 +392,14 @@ fn emit_pattern(pattern: &RustPattern) -> String {
         RustPattern::BindingAt { name, pattern } => {
             format!("{name} @ {}", emit_pattern(pattern))
         }
+        RustPattern::Struct { path, fields } => {
+            let inner = fields
+                .iter()
+                .map(emit_pattern_field)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} {{ {} }}", path.join("::"), inner)
+        }
         RustPattern::Range {
             start,
             end,
@@ -414,6 +422,13 @@ fn emit_pattern(pattern: &RustPattern) -> String {
                 path.join("::")
             }
         }
+    }
+}
+
+fn emit_pattern_field(field: &RustPatternField) -> String {
+    match &field.pattern {
+        RustPattern::Binding(name) if name == &field.name => field.name.clone(),
+        pattern => format!("{}: {}", field.name, emit_pattern(pattern)),
     }
 }
 
