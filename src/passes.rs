@@ -19,6 +19,7 @@ use crate::ir::typed::{
     TypedStruct, TypedStructLiteralField, TypedTypeParam, TypedUnaryOp, TypedVariant,
     TypedPatternField,
 };
+use crate::DirectBorrowHint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SemType {
@@ -76,7 +77,16 @@ pub fn lower_to_typed(module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
 }
 
 pub fn lower_to_rust(module: &TypedModule) -> RustModule {
+    lower_to_rust_with_hints(module, &[])
+}
+
+pub fn lower_to_rust_with_hints(module: &TypedModule, hints: &[DirectBorrowHint]) -> RustModule {
     let mut state = LoweringState::from_module(module);
+    for hint in hints {
+        state
+            .registry
+            .register_direct_borrow_policy(&hint.path, &hint.borrowed_arg_indexes);
+    }
     let mut items = Vec::new();
     for item in &module.items {
         let lowered = match item {

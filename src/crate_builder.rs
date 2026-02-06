@@ -57,9 +57,33 @@ pub fn build_ers_crate_with_options(
     release: bool,
     options: &CompileOptions,
 ) -> Result<BuildSummary, String> {
-    let summary = transpile_ers_crate_with_options(crate_root, options)?;
-    run_generated_cargo_build(&summary.source_root, &summary.generated_root, release)?;
-    Ok(summary)
+    const MAX_BUILD_FEEDBACK_RETRIES: usize = 2;
+
+    let mut adaptive_options = options.clone();
+    let mut summary = transpile_ers_crate_with_options(crate_root, &adaptive_options)?;
+    let mut retries_left = MAX_BUILD_FEEDBACK_RETRIES;
+    loop {
+        match run_generated_cargo_build(&summary.source_root, &summary.generated_root, release) {
+            Ok(()) => return Ok(summary),
+            Err(error) => {
+                let inferred = infer_direct_borrow_hints_from_cargo_error(
+                    &error.stderr,
+                    &summary.generated_root,
+                );
+                let added = merge_direct_borrow_hints(&mut adaptive_options, inferred);
+                if added == 0 || retries_left == 0 {
+                    return Err(format!(
+                        "cargo build failed for generated crate {} (status: {})\n{}",
+                        error.manifest.display(),
+                        error.status,
+                        error.stderr.trim()
+                    ));
+                }
+                retries_left -= 1;
+                summary = transpile_ers_crate_with_options(crate_root, &adaptive_options)?;
+            }
+        }
+    }
 }
 
 pub fn transpile_ers_crate(crate_root: &Path) -> Result<BuildSummary, String> {
@@ -130,11 +154,18 @@ pub fn transpile_ers_crate_with_options(
     Ok(summary)
 }
 
+#[derive(Debug, Clone)]
+struct CargoBuildError {
+    manifest: PathBuf,
+    status: i32,
+    stderr: String,
+}
+
 fn run_generated_cargo_build(
     source_root: &Path,
     generated_root: &Path,
     release: bool,
-) -> Result<(), String> {
+) -> Result<(), CargoBuildError> {
     let manifest = generated_root.join("Cargo.toml");
     let mut cmd = Command::new("cargo");
     cmd.arg("build")
@@ -146,19 +177,309 @@ fn run_generated_cargo_build(
         cmd.arg("--release");
     }
 
-    let status = cmd.status().map_err(|error| {
-        format!(
+    let output = cmd.output().map_err(|error| CargoBuildError {
+        manifest: manifest.clone(),
+        status: -1,
+        stderr: format!(
             "failed to run cargo build for generated crate {}: {error}",
             manifest.display()
-        )
+        ),
     })?;
-    if !status.success() {
-        return Err(format!(
-            "cargo build failed for generated crate {}",
-            manifest.display()
-        ));
+    if !output.status.success() {
+        return Err(CargoBuildError {
+            manifest,
+            status: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
     }
     Ok(())
+}
+
+fn merge_direct_borrow_hints(
+    options: &mut CompileOptions,
+    hints: Vec<crate::DirectBorrowHint>,
+) -> usize {
+    let mut merged = options
+        .direct_borrow_hints
+        .iter()
+        .map(|hint| {
+            (
+                hint.path.clone(),
+                hint.borrowed_arg_indexes.iter().copied().collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut added = 0usize;
+    for hint in hints {
+        let entry = merged.entry(hint.path).or_default();
+        for index in hint.borrowed_arg_indexes {
+            if entry.insert(index) {
+                added += 1;
+            }
+        }
+    }
+    let mut flattened = merged
+        .into_iter()
+        .map(|(path, indexes)| crate::DirectBorrowHint {
+            path,
+            borrowed_arg_indexes: indexes.into_iter().collect(),
+        })
+        .collect::<Vec<_>>();
+    flattened.sort_by(|left, right| left.path.cmp(&right.path));
+    options.direct_borrow_hints = flattened;
+    added
+}
+
+fn infer_direct_borrow_hints_from_cargo_error(
+    stderr: &str,
+    generated_root: &Path,
+) -> Vec<crate::DirectBorrowHint> {
+    let mut source_cache = HashMap::<PathBuf, Vec<String>>::new();
+    let mut current_location: Option<(PathBuf, usize)> = None;
+    let mut hinted = HashMap::<String, BTreeSet<usize>>::new();
+    let lines = stderr.lines().collect::<Vec<_>>();
+    let mut index = 0usize;
+    while index < lines.len() {
+        let line = strip_ansi(lines[index]);
+        if let Some(location) = parse_diagnostic_location(&line, generated_root) {
+            current_location = Some(location);
+        }
+        if line.contains("help: consider borrowing here") {
+            let mut probe = index + 1;
+            while probe < lines.len() {
+                let candidate = strip_ansi(lines[probe]);
+                if let Some((snippet_line, suggested_code)) = parse_snippet_line(&candidate) {
+                    if let Some((path, fallback_line)) = &current_location {
+                        let line_no = if snippet_line > 0 { snippet_line } else { *fallback_line };
+                        if let Some(original) =
+                            source_line(path, line_no, &mut source_cache)
+                            && let Some((callee, borrowed_indexes)) =
+                                infer_borrow_indexes_from_suggestion(&original, &suggested_code)
+                        {
+                            let entry = hinted.entry(callee).or_default();
+                            for borrow_index in borrowed_indexes {
+                                entry.insert(borrow_index);
+                            }
+                        }
+                    }
+                    break;
+                }
+                if candidate.trim_start().starts_with("-->")
+                    || candidate.trim_start().starts_with("error")
+                    || candidate.trim_start().starts_with("warning")
+                    || candidate.trim_start().starts_with("note")
+                    || candidate.trim_start().starts_with("help:")
+                {
+                    break;
+                }
+                probe += 1;
+            }
+            index = probe;
+            continue;
+        }
+        index += 1;
+    }
+
+    hinted
+        .into_iter()
+        .filter_map(|(path, indexes)| {
+            if path.contains('.') || !path.contains("::") {
+                return None;
+            }
+            Some(crate::DirectBorrowHint {
+                path,
+                borrowed_arg_indexes: indexes.into_iter().collect(),
+            })
+        })
+        .collect()
+}
+
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            while let Some(next) = chars.next() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn parse_diagnostic_location(line: &str, generated_root: &Path) -> Option<(PathBuf, usize)> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("-->") {
+        return None;
+    }
+    let rest = trimmed.trim_start_matches("-->").trim();
+    let mut parts = rest.rsplitn(3, ':');
+    let _col = parts.next()?;
+    let line_no = parts.next()?.parse::<usize>().ok()?;
+    let path_part = parts.next()?.trim();
+    let path = PathBuf::from(path_part);
+    let normalized = if path.is_absolute() {
+        path
+    } else {
+        generated_root.join(path)
+    };
+    Some((normalized, line_no))
+}
+
+fn parse_snippet_line(line: &str) -> Option<(usize, String)> {
+    let trimmed = line.trim_start();
+    let mut cursor = 0usize;
+    let bytes = trimmed.as_bytes();
+    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+        cursor += 1;
+    }
+    if cursor == 0 {
+        return None;
+    }
+    let line_no = trimmed[..cursor].parse::<usize>().ok()?;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    if cursor >= bytes.len() || bytes[cursor] != b'|' {
+        return None;
+    }
+    let code = trimmed[cursor + 1..].trim().to_string();
+    Some((line_no, code))
+}
+
+fn source_line(
+    path: &Path,
+    line_no: usize,
+    cache: &mut HashMap<PathBuf, Vec<String>>,
+) -> Option<String> {
+    if line_no == 0 {
+        return None;
+    }
+    if !cache.contains_key(path) {
+        let content = fs::read_to_string(path).ok()?;
+        let lines = content.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+        cache.insert(path.to_path_buf(), lines);
+    }
+    cache
+        .get(path)
+        .and_then(|lines| lines.get(line_no - 1))
+        .cloned()
+}
+
+fn infer_borrow_indexes_from_suggestion(
+    original_line: &str,
+    suggested_line: &str,
+) -> Option<(String, Vec<usize>)> {
+    let (orig_callee, orig_args) = parse_first_call(original_line)?;
+    let (suggested_callee, suggested_args) = parse_first_call(suggested_line)?;
+    if orig_callee != suggested_callee || orig_args.len() != suggested_args.len() {
+        return None;
+    }
+
+    let mut borrowed_indexes = Vec::new();
+    for (index, (orig_arg, suggested_arg)) in orig_args.iter().zip(suggested_args.iter()).enumerate()
+    {
+        let orig_trimmed = orig_arg.trim();
+        let suggested_trimmed = suggested_arg.trim();
+        if suggested_trimmed.starts_with('&')
+            && !orig_trimmed.starts_with('&')
+            && suggested_trimmed.trim_start_matches('&').trim() == orig_trimmed
+        {
+            borrowed_indexes.push(index);
+        }
+    }
+    if borrowed_indexes.is_empty() {
+        None
+    } else {
+        Some((orig_callee, borrowed_indexes))
+    }
+}
+
+fn parse_first_call(line: &str) -> Option<(String, Vec<String>)> {
+    let chars = line.char_indices().collect::<Vec<_>>();
+    for (offset, ch) in chars {
+        if ch != '(' {
+            continue;
+        }
+        let mut end = offset;
+        while end > 0 && line[..end].chars().last().is_some_and(|c| c.is_ascii_whitespace()) {
+            end -= line[..end].chars().last()?.len_utf8();
+        }
+        let mut start = end;
+        while start > 0 {
+            let prev = line[..start].chars().last()?;
+            if prev.is_ascii_alphanumeric() || matches!(prev, '_' | ':' | '.') {
+                start -= prev.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if start == end {
+            continue;
+        }
+        let callee = line[start..end].trim().to_string();
+        if callee.is_empty() {
+            continue;
+        }
+        let mut depth = 1usize;
+        let mut close = None;
+        for (idx, c) in line[offset + 1..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        close = Some(offset + 1 + idx);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close?;
+        let args = split_top_level_call_args(&line[offset + 1..close])
+            .into_iter()
+            .map(|arg| arg.trim().to_string())
+            .collect::<Vec<_>>();
+        return Some((callee, args));
+    }
+    None
+}
+
+fn split_top_level_call_args(input: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut start = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut angle_depth = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '<' => angle_depth += 1,
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            ',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 && angle_depth == 0 => {
+                args.push(input[start..idx].trim());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        args.push(tail);
+    }
+    args
 }
 
 fn process_src_dir(
@@ -1260,7 +1581,11 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::transpile_ers_crate;
+    use super::{
+        infer_borrow_indexes_from_suggestion, merge_direct_borrow_hints, parse_diagnostic_location,
+        transpile_ers_crate,
+    };
+    use crate::{CompileOptions, DirectBorrowHint};
 
     #[test]
     fn transpile_multi_file_crate_preserves_layout() {
@@ -1570,6 +1895,64 @@ mod tests {
             output.status.success(),
             "rustc compile failed: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn parse_location_supports_relative_generated_paths() {
+        let generated_root = PathBuf::from("/tmp/generated");
+        let line = " --> src/lib.rs:13:12";
+        let (path, line_no) =
+            parse_diagnostic_location(line, &generated_root).expect("location should parse");
+        assert_eq!(path, generated_root.join("src/lib.rs"));
+        assert_eq!(line_no, 13);
+    }
+
+    #[test]
+    fn infer_borrow_indexes_detects_new_ampersands() {
+        let original = "return Foreign::has_prefix(text, prefix);";
+        let suggested = "return Foreign::has_prefix(&text, &prefix);";
+        let (callee, indexes) = infer_borrow_indexes_from_suggestion(original, suggested)
+            .expect("borrow suggestion should be inferred");
+        assert_eq!(callee, "Foreign::has_prefix");
+        assert_eq!(indexes, vec![0, 1]);
+    }
+
+    #[test]
+    fn merge_borrow_hints_unions_indexes_per_path() {
+        let mut options = CompileOptions {
+            direct_borrow_hints: vec![DirectBorrowHint {
+                path: "Foreign::has_prefix".to_string(),
+                borrowed_arg_indexes: vec![0],
+            }],
+            ..CompileOptions::default()
+        };
+        let added = merge_direct_borrow_hints(
+            &mut options,
+            vec![
+                DirectBorrowHint {
+                    path: "Foreign::has_prefix".to_string(),
+                    borrowed_arg_indexes: vec![1],
+                },
+                DirectBorrowHint {
+                    path: "Other::query".to_string(),
+                    borrowed_arg_indexes: vec![0],
+                },
+            ],
+        );
+        assert_eq!(added, 2);
+        assert!(
+            options
+                .direct_borrow_hints
+                .iter()
+                .any(|hint| hint.path == "Foreign::has_prefix"
+                    && hint.borrowed_arg_indexes == vec![0, 1])
+        );
+        assert!(
+            options
+                .direct_borrow_hints
+                .iter()
+                .any(|hint| hint.path == "Other::query" && hint.borrowed_arg_indexes == vec![0])
         );
     }
 

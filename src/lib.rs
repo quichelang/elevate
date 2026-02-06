@@ -46,6 +46,13 @@ impl ExperimentFlags {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompileOptions {
     pub experiments: ExperimentFlags,
+    pub direct_borrow_hints: Vec<DirectBorrowHint>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DirectBorrowHint {
+    pub path: String,
+    pub borrowed_arg_indexes: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +104,7 @@ pub fn compile_ast_with_options(
 ) -> Result<CompilerOutput, CompileError> {
     let typed =
         passes::lower_to_typed(module).map_err(|diagnostics| CompileError { diagnostics })?;
-    let mut lowered = passes::lower_to_rust(&typed);
+    let mut lowered = passes::lower_to_rust_with_hints(&typed, &options.direct_borrow_hints);
     for name in options.experiments.active_names() {
         lowered
             .ownership_notes
