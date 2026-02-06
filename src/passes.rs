@@ -370,6 +370,10 @@ impl InteropPolicyRegistry {
             "std::collections::HashMap::contains_key",
             "BTreeMap::contains_key",
             "std::collections::BTreeMap::contains_key",
+            "HashSet::contains",
+            "std::collections::HashSet::contains",
+            "BTreeSet::contains",
+            "std::collections::BTreeSet::contains",
         ] {
             self.register_direct_borrow_policy(path, &[0, 1]);
         }

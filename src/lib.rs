@@ -462,6 +462,25 @@ mod tests {
     }
 
     #[test]
+    fn compile_auto_borrows_hashset_btreeset_contains_calls() {
+        let source = r#"
+            rust use std::collections::HashSet;
+            rust use std::collections::BTreeSet;
+
+            fn demo(hs: HashSet<String>, bs: BTreeSet<String>, key: String) -> bool {
+                std::mem::drop(HashSet::contains(hs, key));
+                return BTreeSet::contains(bs, key);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("HashSet::contains(&hs, &key)"));
+        assert!(output.rust_code.contains("BTreeSet::contains(&bs, &key)"));
+        assert!(!output.rust_code.contains("key.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_rejects_unknown_inferred_return() {
         let source = r#"
             fn maybe_value() {
