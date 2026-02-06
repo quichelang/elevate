@@ -589,6 +589,24 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_struct_literals() {
+        let source = r#"
+            pub struct Pair { left: i64; right: i64; }
+
+            fn make_pair(v: i64) -> Pair {
+                return Pair {
+                    left: v;
+                    right: v;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("Pair { left: v, right: v }"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_boolean_comparisons_and_tail_return() {
         let source = r#"
             pub fn check(a: bool, b: bool, x: i64, y: i64) -> bool {

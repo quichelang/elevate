@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::model::Arg;
-use crate::parser::{ClusterParts, LongWithValue, MaybeString};
+use crate::parser::{LongWithValue, MaybeString};
 
 #[derive(Debug, Clone)]
 struct ParserState {
@@ -145,16 +145,6 @@ pub fn drop_first_char_known(text: String) -> (String, String) {
         .next()
         .expect("text must be non-empty before dropping first char");
     (first.to_string(), chars.collect::<String>())
-}
-
-pub fn make_long_with_value(parts: (String, String)) -> LongWithValue {
-    let (name, value) = parts;
-    LongWithValue { name, value }
-}
-
-pub fn make_cluster_parts(parts: (String, String)) -> ClusterParts {
-    let (short, rest) = parts;
-    ClusterParts { short, rest }
 }
 
 fn from_option(value: Option<String>) -> MaybeString {

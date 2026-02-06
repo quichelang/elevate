@@ -1,6 +1,7 @@
 rust use crate::runtime_core;
 rust use crate::model::Arg;
 rust use crate::parser::ClusterSplit;
+rust use crate::parser::ClusterParts;
 rust use crate::parser::LongEqSplit;
 rust use crate::parser::LongPrefixSplit;
 rust use crate::parser::LongWithValue;
@@ -96,9 +97,11 @@ pub fn nonempty_text(text: String) -> MaybeString {
 
 pub fn split_long_eq(text: String) -> LongEqSplit {
     if text.contains("=") {
-        return LongEqSplit::WithValue(runtime_core::make_long_with_value(
-            str::split_once_known(text, "="),
-        ));
+        const (name, value) = str::split_once_known(text, "=");
+        return LongEqSplit::WithValue(LongWithValue {
+            name: name;
+            value: value;
+        });
     }
     LongEqSplit::Plain(text)
 }
@@ -126,9 +129,11 @@ pub fn split_cluster(cluster: String) -> ClusterSplit {
 }
 
 fn split_cluster_short(cluster: String) -> ClusterSplit {
-    ClusterSplit::Short(runtime_core::make_cluster_parts(
-        runtime_core::drop_first_char_known(cluster),
-    ))
+    const (short, rest) = runtime_core::drop_first_char_known(cluster);
+    ClusterSplit::Short(ClusterParts {
+        short: short;
+        rest: rest;
+    })
 }
 
 pub fn cluster_optional_value(cluster: String) -> String {

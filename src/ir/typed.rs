@@ -136,6 +136,10 @@ pub enum TypedExprKind {
         right: Box<TypedExpr>,
     },
     Tuple(Vec<TypedExpr>),
+    StructLiteral {
+        path: Vec<String>,
+        fields: Vec<TypedStructLiteralField>,
+    },
     Closure {
         params: Vec<TypedParam>,
         return_type: String,
@@ -147,6 +151,12 @@ pub enum TypedExprKind {
         inclusive: bool,
     },
     Try(Box<TypedExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedStructLiteralField {
+    pub name: String,
+    pub value: TypedExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

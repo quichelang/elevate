@@ -148,6 +148,10 @@ pub enum Expr {
         right: Box<Expr>,
     },
     Tuple(Vec<Expr>),
+    StructLiteral {
+        path: Vec<String>,
+        fields: Vec<StructLiteralField>,
+    },
     Closure {
         params: Vec<Param>,
         return_type: Option<Type>,
@@ -159,6 +163,12 @@ pub enum Expr {
         inclusive: bool,
     },
     Try(Box<Expr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructLiteralField {
+    pub name: String,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

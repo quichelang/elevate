@@ -1,6 +1,7 @@
 use crate::ir::lowered::{
     RustBinaryOp, RustConst, RustDestructurePattern, RustEnum, RustExpr, RustFunction, RustImpl,
-    RustItem, RustModule, RustPattern, RustStatic, RustStmt, RustStruct, RustUnaryOp, RustUse,
+    RustItem, RustModule, RustPattern, RustStatic, RustStmt, RustStruct, RustStructLiteralField,
+    RustUnaryOp, RustUse,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -240,6 +241,14 @@ fn emit_expr(expr: &RustExpr) -> String {
                 format!("({body})")
             }
         }
+        RustExpr::StructLiteral { path, fields } => {
+            let body = fields
+                .iter()
+                .map(emit_struct_literal_field)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} {{ {} }}", path.join("::"), body)
+        }
         RustExpr::Closure {
             params,
             return_type,
@@ -269,6 +278,10 @@ fn emit_expr(expr: &RustExpr) -> String {
         }
         RustExpr::Try(inner) => format!("{}?", emit_expr(inner)),
     }
+}
+
+fn emit_struct_literal_field(field: &RustStructLiteralField) -> String {
+    format!("{}: {}", field.name, emit_expr(&field.value))
 }
 
 fn emit_pattern(pattern: &RustPattern) -> String {

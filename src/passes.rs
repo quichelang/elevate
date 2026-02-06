@@ -1,19 +1,20 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::ast::{
-    BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern, Stmt, Type, UnaryOp,
-    Visibility,
+    BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern, Stmt, StructLiteralField,
+    Type, UnaryOp, Visibility,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
     RustBinaryOp, RustConst, RustDestructurePattern, RustEnum, RustExpr, RustField, RustFunction,
     RustImpl, RustItem, RustMatchArm, RustModule, RustParam, RustPattern, RustStatic, RustStmt,
-    RustStruct, RustUnaryOp, RustUse, RustVariant,
+    RustStruct, RustStructLiteralField, RustUnaryOp, RustUse, RustVariant,
 };
 use crate::ir::typed::{
     TypedBinaryOp, TypedConst, TypedDestructurePattern, TypedEnum, TypedExpr, TypedExprKind,
     TypedField, TypedFunction, TypedImpl, TypedItem, TypedMatchArm, TypedModule, TypedParam,
-    TypedPattern, TypedRustUse, TypedStatic, TypedStmt, TypedStruct, TypedUnaryOp, TypedVariant,
+    TypedPattern, TypedRustUse, TypedStatic, TypedStmt, TypedStruct, TypedStructLiteralField,
+    TypedUnaryOp, TypedVariant,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1099,6 +1100,77 @@ fn infer_expr(
                 ty,
             )
         }
+        Expr::StructLiteral { path, fields } => {
+            let mut typed_fields = Vec::new();
+            let mut seen = HashSet::new();
+            let mut resolved_ty = SemType::Path {
+                path: path.clone(),
+                args: Vec::new(),
+            };
+            let mut expected_fields: Option<&HashMap<String, SemType>> = None;
+
+            if let Some(struct_name) = path.last() {
+                if let Some(struct_fields) = context.structs.get(struct_name) {
+                    expected_fields = Some(struct_fields);
+                }
+            } else {
+                resolved_ty = SemType::Unknown;
+            }
+
+            for StructLiteralField { name, value } in fields {
+                let (typed_value, value_ty) =
+                    infer_expr(value, context, locals, return_ty, diagnostics);
+                if !seen.insert(name.clone()) {
+                    diagnostics.push(Diagnostic::new(
+                        format!("Duplicate struct literal field `{name}`"),
+                        Span::new(0, 0),
+                    ));
+                }
+                if let Some(expected) = expected_fields.and_then(|map| map.get(name)) {
+                    if !is_compatible(&value_ty, expected) {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Struct field `{name}` expected `{}`, got `{}`",
+                                type_to_string(expected),
+                                type_to_string(&value_ty)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                } else if expected_fields.is_some() {
+                    diagnostics.push(Diagnostic::new(
+                        format!("Unknown struct field `{name}` in literal"),
+                        Span::new(0, 0),
+                    ));
+                }
+                typed_fields.push(TypedStructLiteralField {
+                    name: name.clone(),
+                    value: typed_value,
+                });
+            }
+
+            if let Some(struct_fields) = expected_fields {
+                for field_name in struct_fields.keys() {
+                    if !seen.contains(field_name) {
+                        diagnostics.push(Diagnostic::new(
+                            format!("Missing struct literal field `{field_name}`"),
+                            Span::new(0, 0),
+                        ));
+                    }
+                }
+            }
+
+            (
+                TypedExpr {
+                    kind: TypedExprKind::StructLiteral {
+                        path: path.clone(),
+                        fields: typed_fields,
+                    },
+                    ty: type_to_string(&resolved_ty),
+                },
+                resolved_ty,
+            )
+        }
         Expr::Field { base, field } => {
             let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
             let resolved = resolve_field_type(&base_ty, field, context, diagnostics);
@@ -1965,6 +2037,21 @@ fn lower_expr_with_context(
                 .map(|item| lower_expr_with_context(item, context, ExprPosition::Value, state))
                 .collect(),
         ),
+        TypedExprKind::StructLiteral { path, fields } => RustExpr::StructLiteral {
+            path: path.clone(),
+            fields: fields
+                .iter()
+                .map(|field| RustStructLiteralField {
+                    name: field.name.clone(),
+                    value: lower_expr_with_context(
+                        &field.value,
+                        context,
+                        ExprPosition::Value,
+                        state,
+                    ),
+                })
+                .collect(),
+        },
         TypedExprKind::Closure {
             params,
             return_type,
@@ -2418,6 +2505,11 @@ fn collect_path_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<String, usize>
                 collect_path_uses_in_expr(item, uses);
             }
         }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                collect_path_uses_in_expr(&field.value, uses);
+            }
+        }
         TypedExprKind::Closure { .. } => {}
         TypedExprKind::Range { start, end, .. } => {
             if let Some(start) = start {
@@ -2811,6 +2903,12 @@ fn bind_destructure_pattern(
         }
         DestructurePattern::Ignore => {}
         DestructurePattern::Tuple(items) => {
+            if *value_ty == SemType::Unknown {
+                for item_pattern in items {
+                    bind_destructure_pattern(item_pattern, &SemType::Unknown, locals, diagnostics);
+                }
+                return;
+            }
             if let SemType::Tuple(value_items) = value_ty {
                 if items.len() != value_items.len() {
                     diagnostics.push(Diagnostic::new(

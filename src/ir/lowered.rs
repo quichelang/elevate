@@ -132,6 +132,10 @@ pub enum RustExpr {
         right: Box<RustExpr>,
     },
     Tuple(Vec<RustExpr>),
+    StructLiteral {
+        path: Vec<String>,
+        fields: Vec<RustStructLiteralField>,
+    },
     Closure {
         params: Vec<RustParam>,
         return_type: String,
@@ -143,6 +147,12 @@ pub enum RustExpr {
         inclusive: bool,
     },
     Try(Box<RustExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustStructLiteralField {
+    pub name: String,
+    pub value: RustExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

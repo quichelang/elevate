@@ -1,7 +1,7 @@
 use crate::ast::{
     BinaryOp, Block, ConstDef, DestructurePattern, EnumDef, EnumVariant, Expr, Field, FunctionDef,
-    ImplBlock, Item, MatchArm, Module, Param, Pattern, RustUse, StaticDef, Stmt, StructDef, Type,
-    UnaryOp, Visibility,
+    ImplBlock, Item, MatchArm, Module, Param, Pattern, RustUse, StaticDef, Stmt,
+    StructLiteralField, StructDef, Type, UnaryOp, Visibility,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -553,6 +553,13 @@ impl Parser {
             }
             TokenKind::Identifier(_) => {
                 let path = self.parse_path("Expected identifier path")?;
+                if self.at(TokenKind::LBrace)
+                    && path_looks_like_type_name(&path)
+                    && self.looks_like_struct_literal_body()
+                {
+                    self.advance();
+                    return self.parse_struct_literal_expr(path);
+                }
                 Some(Expr::Path(path))
             }
             TokenKind::LParen => {
@@ -599,6 +606,40 @@ impl Parser {
             self.expect(TokenKind::Gt, "Expected '>' to close generic arguments")?;
         }
         Some(Type { path, args })
+    }
+
+    fn parse_struct_literal_expr(&mut self, path: Vec<String>) -> Option<Expr> {
+        let mut fields = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let name = self.expect_ident("Expected field name in struct literal")?;
+            self.expect(TokenKind::Colon, "Expected ':' after struct literal field name")?;
+            let value = self.parse_expr()?;
+            fields.push(StructLiteralField { name, value });
+
+            if self.match_kind(TokenKind::Comma) || self.match_kind(TokenKind::Semicolon) {
+                continue;
+            }
+            if !self.at(TokenKind::RBrace) {
+                self.error_current("Expected ',' or ';' between struct literal fields");
+                return None;
+            }
+        }
+        self.expect(TokenKind::RBrace, "Expected '}' after struct literal")?;
+        Some(Expr::StructLiteral { path, fields })
+    }
+
+    fn looks_like_struct_literal_body(&self) -> bool {
+        let Some(next) = self.tokens.get(self.cursor + 1) else {
+            return false;
+        };
+        match &next.kind {
+            TokenKind::RBrace => true,
+            TokenKind::Identifier(_) => matches!(
+                self.tokens.get(self.cursor + 2).map(|tok| &tok.kind),
+                Some(TokenKind::Colon)
+            ),
+            _ => false,
+        }
     }
 
     fn parse_closure_expr(&mut self) -> Option<Expr> {
@@ -743,6 +784,12 @@ impl Parser {
             self.advance();
         }
     }
+}
+
+fn path_looks_like_type_name(path: &[String]) -> bool {
+    path.last()
+        .and_then(|segment| segment.chars().next())
+        .is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
 fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
