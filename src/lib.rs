@@ -1092,6 +1092,7 @@ mod tests {
                 .contains("let [first, rest @ ..] = values.as_slice() else")
         );
         assert!(output.rust_code.contains("let first = (*first).clone();"));
+        assert!(output.rust_code.contains("let rest = rest.to_vec();"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

@@ -823,6 +823,9 @@ fn emit_slice_element_rebinds(pattern: &RustDestructurePattern, out: &mut String
     for name in names {
         out.push_str(&format!("{pad}let {name} = (*{name}).clone();\n"));
     }
+    if let Some(rest) = rest_name {
+        out.push_str(&format!("{pad}let {rest} = {rest}.to_vec();\n"));
+    }
 }
 
 fn slice_rest_binding_name(pattern: &RustDestructurePattern) -> Option<&str> {

@@ -4678,7 +4678,13 @@ fn bind_destructure_pattern(
                 bind_destructure_pattern(item, &item_ty, locals, diagnostics);
             }
             if let Some(name) = rest {
-                locals.insert(name.clone(), SemType::Unknown);
+                locals.insert(
+                    name.clone(),
+                    SemType::Path {
+                        path: vec!["Vec".to_string()],
+                        args: vec![item_ty],
+                    },
+                );
             }
         }
     }
