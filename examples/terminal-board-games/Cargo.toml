@@ -1,6 +1,8 @@
 [workspace]
 members = [
   "crates/game-core",
+  "crates/game-loop",
+  "crates/game-ui-term",
   "crates/renderer-terminal",
   "crates/platform-macos",
   "crates/game-sudoku",

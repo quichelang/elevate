@@ -1,4 +1,5 @@
 use game_core::{App, AppCommand, Frame, Key, Style};
+use game_ui_term::{Rect, draw_panel, draw_text};
 
 const PUZZLES: [&str; 3] = [
     "530070000600195000098000060800060003400803001700020006060000280000419005000080079",
@@ -251,9 +252,67 @@ impl App for SudokuGame {
             bold: true,
             inverted: false,
         };
-        frame.write_text(2, 1, "Elevate Terminal Board Engine :: Sudoku", title_style);
+        draw_text(
+            frame,
+            2,
+            1,
+            "Elevate Terminal Board Engine :: Sudoku",
+            title_style,
+        );
+
+        draw_panel(
+            frame,
+            Rect {
+                x: 1,
+                y: 2,
+                width: 27,
+                height: 21,
+            },
+            Some("Grid"),
+            Style::default(),
+        );
         self.draw_board(frame, 2, 3);
-        frame.write_text(2, 23, &self.message, Style::default());
+
+        let side_width = frame.width().saturating_sub(30);
+        if side_width >= 24 {
+            draw_panel(
+                frame,
+                Rect {
+                    x: 30,
+                    y: 2,
+                    width: side_width,
+                    height: 12,
+                },
+                Some("Controls"),
+                Style::default(),
+            );
+            draw_text(frame, 32, 4, "Move: arrows / WASD / HJKL", Style::default());
+            draw_text(frame, 32, 5, "Set: 1..9", Style::default());
+            draw_text(
+                frame,
+                32,
+                6,
+                "Clear: 0 / Space / Backspace",
+                Style::default(),
+            );
+            draw_text(frame, 32, 7, "Check: c", Style::default());
+            draw_text(frame, 32, 8, "Next puzzle: n", Style::default());
+            draw_text(frame, 32, 9, "Reset puzzle: r", Style::default());
+            draw_text(frame, 32, 10, "Quit: q / Esc / Ctrl+C", Style::default());
+        }
+
+        draw_panel(
+            frame,
+            Rect {
+                x: 1,
+                y: 23,
+                width: frame.width().saturating_sub(2),
+                height: 3,
+            },
+            Some("Status"),
+            Style::default(),
+        );
+        draw_text(frame, 3, 24, &self.message, Style::default());
     }
 }
 
