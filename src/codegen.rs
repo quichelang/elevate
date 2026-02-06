@@ -131,7 +131,7 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
             then_body,
             else_body,
         } => {
-            out.push_str(&format!("    if {} {{\n", emit_expr(condition)));
+            out.push_str(&format!("    if {} {{\n", emit_condition_expr(condition)));
             for stmt in then_body {
                 emit_stmt_with_indent(stmt, out, 2);
             }
@@ -146,7 +146,7 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
             out.push('\n');
         }
         RustStmt::While { condition, body } => {
-            out.push_str(&format!("    while {} {{\n", emit_expr(condition)));
+            out.push_str(&format!("    while {} {{\n", emit_condition_expr(condition)));
             for stmt in body {
                 emit_stmt_with_indent(stmt, out, 2);
             }
@@ -351,7 +351,7 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
             then_body,
             else_body,
         } => {
-            out.push_str(&format!("{pad}if {} {{\n", emit_expr(condition)));
+            out.push_str(&format!("{pad}if {} {{\n", emit_condition_expr(condition)));
             for nested in then_body {
                 emit_stmt_with_indent(nested, out, indent + 1);
             }
@@ -366,7 +366,7 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
             out.push('\n');
         }
         RustStmt::While { condition, body } => {
-            out.push_str(&format!("{pad}while {} {{\n", emit_expr(condition)));
+            out.push_str(&format!("{pad}while {} {{\n", emit_condition_expr(condition)));
             for nested in body {
                 emit_stmt_with_indent(nested, out, indent + 1);
             }
@@ -407,4 +407,48 @@ fn needs_parens_for_borrow(expr: &RustExpr) -> bool {
             | RustExpr::Binary { .. }
             | RustExpr::Range { .. }
     )
+}
+
+fn emit_condition_expr(expr: &RustExpr) -> String {
+    let rendered = emit_expr(expr);
+    if condition_clause_count(expr) == 1 {
+        strip_outer_parens(&rendered).to_string()
+    } else {
+        rendered
+    }
+}
+
+fn condition_clause_count(expr: &RustExpr) -> usize {
+    match expr {
+        RustExpr::Binary { op, left, right } if matches!(op, RustBinaryOp::And | RustBinaryOp::Or) => {
+            condition_clause_count(left) + condition_clause_count(right)
+        }
+        _ => 1,
+    }
+}
+
+fn strip_outer_parens(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && bytes[0] == b'(' && bytes[bytes.len() - 1] == b')' {
+        let mut depth = 0usize;
+        for (index, ch) in bytes.iter().enumerate() {
+            match *ch {
+                b'(' => depth += 1,
+                b')' => {
+                    if depth == 0 {
+                        return text;
+                    }
+                    depth -= 1;
+                    if depth == 0 && index + 1 != bytes.len() {
+                        return text;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth == 0 {
+            return &text[1..text.len() - 1];
+        }
+    }
+    text
 }
