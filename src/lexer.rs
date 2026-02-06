@@ -198,6 +198,13 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '"' => self.lex_string(start),
+                'r' => {
+                    if self.peek_char() == Some('"') || self.peek_char() == Some('#') {
+                        self.lex_raw_string(start);
+                    } else {
+                        self.lex_identifier(start, 'r');
+                    }
+                }
                 c if c.is_ascii_digit() => self.lex_number(start, c),
                 '_' => self.push_simple(TokenKind::Underscore, start),
                 c if is_identifier_start(c) => self.lex_identifier(start, c),
@@ -231,6 +238,47 @@ impl<'a> Lexer<'a> {
 
         self.diagnostics.push(Diagnostic::new(
             "Unterminated string literal",
+            Span::new(start, self.cursor),
+        ));
+    }
+
+    fn lex_raw_string(&mut self, start: usize) {
+        let mut hashes = 0usize;
+        if self.peek_char() == Some('"') {
+            self.advance();
+        } else {
+            while self.peek_char() == Some('#') {
+                hashes += 1;
+                self.advance();
+            }
+            if self.peek_char() != Some('"') {
+                self.diagnostics.push(Diagnostic::new(
+                    "Invalid raw string literal prefix; expected '\"' after `r` and `#` markers",
+                    Span::new(start, self.cursor),
+                ));
+                return;
+            }
+            self.advance();
+        }
+
+        let mut value = String::new();
+        while let Some(c) = self.peek_char() {
+            self.advance();
+            if c == '"' && self.has_hash_terminator(hashes) {
+                for _ in 0..hashes {
+                    self.advance();
+                }
+                self.tokens.push(Token {
+                    kind: TokenKind::StringLiteral(value),
+                    span: Span::new(start, self.cursor),
+                });
+                return;
+            }
+            value.push(c);
+        }
+
+        self.diagnostics.push(Diagnostic::new(
+            "Unterminated raw string literal",
             Span::new(start, self.cursor),
         ));
     }
@@ -316,6 +364,37 @@ impl<'a> Lexer<'a> {
                 }
                 continue;
             }
+            if self.peek_char() == Some('/') && self.peek_next_char() == Some('*') {
+                let start = self.cursor;
+                self.advance();
+                self.advance();
+                let mut depth = 1usize;
+                while let Some(c) = self.peek_char() {
+                    if c == '/' && self.peek_next_char() == Some('*') {
+                        self.advance();
+                        self.advance();
+                        depth += 1;
+                        continue;
+                    }
+                    if c == '*' && self.peek_next_char() == Some('/') {
+                        self.advance();
+                        self.advance();
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        continue;
+                    }
+                    self.advance();
+                }
+                if depth != 0 {
+                    self.diagnostics.push(Diagnostic::new(
+                        "Unterminated block comment",
+                        Span::new(start, self.cursor),
+                    ));
+                }
+                continue;
+            }
             break;
         }
     }
@@ -343,6 +422,19 @@ impl<'a> Lexer<'a> {
 
     fn peek_next_char(&self) -> Option<char> {
         self.chars.get(self.cursor + 1).copied()
+    }
+
+    fn peek_n_char(&self, offset: usize) -> Option<char> {
+        self.chars.get(self.cursor + offset).copied()
+    }
+
+    fn has_hash_terminator(&self, hashes: usize) -> bool {
+        for offset in 0..hashes {
+            if self.peek_n_char(offset) != Some('#') {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -434,5 +526,39 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Pipe)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Arrow)));
+    }
+
+    #[test]
+    fn lex_block_comments() {
+        let source = "const x = 1; /* comment */ const y = 2;";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::Identifier(ref name) if name == "x"))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::Identifier(ref name) if name == "y"))
+        );
+    }
+
+    #[test]
+    fn lex_raw_multiline_string_literal() {
+        let source = r##"const text = r#"first line
+"quoted"
+last line"#;"##;
+        let tokens = lex(source).expect("expected lex success");
+        let literal = tokens
+            .iter()
+            .find_map(|token| match &token.kind {
+                TokenKind::StringLiteral(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .expect("expected a string literal token");
+        assert!(literal.contains('\n'));
+        assert!(literal.contains("\"quoted\""));
+        assert!(literal.contains("last line"));
     }
 }

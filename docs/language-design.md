@@ -1,6 +1,6 @@
 # Language Design (Single Source of Truth)
 
-Status: Draft v0.5  
+Status: Draft v0.6  
 Owner: Language team  
 Last updated: 2026-02-06
 
@@ -97,6 +97,8 @@ Expressions/statements:
 - Logical boolean ops: `and`, `or`, and negation via both `!` and `not`.
 - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
 - Automatic return of the last value in a block/function when trailing semicolon is omitted (Rust-like tail expression behavior).
+- Comments: `//` line comments and `/* ... */` block comments.
+- Raw multiline string literals using Rust-style raw syntax (for example `r#"line1\nline2"#` without escape processing).
 
 Type policy:
 - Local inference is enabled.
@@ -165,6 +167,7 @@ Implemented:
 - Tuple literals and local tuple destructuring bindings.
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
 - Closure expressions and closure calls with typed parameters.
+- Comment support (`//` and `/* ... */`) and raw multiline string literals.
 - `rust use` imports and external Rust path calls.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 

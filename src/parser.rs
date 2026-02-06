@@ -920,4 +920,21 @@ mod tests {
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 1);
     }
+
+    #[test]
+    fn parse_comments_and_raw_multiline_strings() {
+        let source = r##"
+            /* block comment */
+            fn banner() -> String {
+                // line comment
+                const msg = r#"hello
+"elevate"
+world"#;
+                return msg;
+            }
+        "##;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
 }

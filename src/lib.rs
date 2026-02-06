@@ -363,6 +363,26 @@ mod tests {
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_comments_and_raw_multiline_strings() {
+        let source = r##"
+            /* docs-like block comment */
+            pub fn banner() -> String {
+                // runtime banner text
+                const msg = r#"hello
+"elevate"
+world"#;
+                return msg;
+            }
+        "##;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("pub fn banner() -> String"));
+        assert!(output.rust_code.contains("\\n"));
+        assert!(output.rust_code.contains("\\\"elevate\\\""));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {
