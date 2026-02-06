@@ -359,6 +359,46 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_string_known_shims_with_owned_returns() {
+        let source = r#"
+            fn demo(text: String) -> String {
+                const rest = str::strip_prefix_known(text, "--");
+                std::mem::drop(str::split_once_known(rest, "="));
+                return rest;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(
+            output
+                .rust_code
+                .contains("__elevate_shim_str_strip_prefix_known(&text")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("__elevate_shim_str_split_once_known(&rest")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("fn __elevate_shim_str_strip_prefix_known(__arg0: &str, __arg1: &str) -> String")
+        );
+        assert!(output.rust_code.contains("str::strip_prefix(__arg0, __arg1)"));
+        assert!(output.rust_code.contains(".unwrap().to_string()"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn __elevate_shim_str_split_once_known(__arg0: &str, __arg1: &str) -> (String, String)")
+        );
+        assert!(output.rust_code.contains("str::split_once(__arg0, __arg1)"));
+        assert!(output.rust_code.contains("let (__left, __right) ="));
+        assert!(!output.rust_code.contains("text.clone()"));
+        assert!(!output.rust_code.contains("rest.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_auto_borrows_string_option_result_associated_calls() {
         let source = r#"
             fn demo(text: String, v: Option<String>, r: Result<String, String>) -> bool {

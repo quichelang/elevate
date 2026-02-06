@@ -139,19 +139,6 @@ pub fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
     .unwrap_or_else(|| format!("unexpected argument: {value}"))
 }
 
-pub fn strip_prefix_known(text: String, prefix: String) -> String {
-    text.strip_prefix(&prefix)
-        .expect("prefix must exist before stripping")
-        .to_string()
-}
-
-pub fn split_once_known(text: String, sep: String) -> (String, String) {
-    let (left, right) = text
-        .split_once(&sep)
-        .expect("separator must exist before splitting");
-    (left.to_string(), right.to_string())
-}
-
 pub fn drop_first_char_known(text: String) -> (String, String) {
     let mut chars = text.chars();
     let first = chars

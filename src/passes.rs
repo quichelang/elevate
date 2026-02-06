@@ -179,6 +179,14 @@ struct InteropShimDef {
     param_types: Vec<String>,
     return_type: String,
     borrowed_arg_indexes: Vec<usize>,
+    body: InteropShimBody,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteropShimBody {
+    DirectCall,
+    StrStripPrefixKnown,
+    StrSplitOnceKnown,
 }
 
 #[derive(Debug, Default)]
@@ -290,6 +298,34 @@ impl InteropPolicyRegistry {
             "bool",
             &[0, 1],
         );
+        self.register_custom_shim(
+            &[
+                "str::strip_prefix_known",
+                "std::str::strip_prefix_known",
+                "str::strip_prefix_or_panic",
+                "std::str::strip_prefix_or_panic",
+            ],
+            "__elevate_shim_str_strip_prefix_known",
+            &["str", "strip_prefix"],
+            &["&str", "&str"],
+            "String",
+            &[0, 1],
+            InteropShimBody::StrStripPrefixKnown,
+        );
+        self.register_custom_shim(
+            &[
+                "str::split_once_known",
+                "std::str::split_once_known",
+                "str::split_once_or_panic",
+                "std::str::split_once_or_panic",
+            ],
+            "__elevate_shim_str_split_once_known",
+            &["str", "split_once"],
+            &["&str", "&str"],
+            "(String, String)",
+            &[0, 1],
+            InteropShimBody::StrSplitOnceKnown,
+        );
     }
 
     fn register_builtin_direct_borrows(&mut self) {
@@ -358,6 +394,32 @@ impl InteropPolicyRegistry {
             param_types: param_types.iter().map(|ty| (*ty).to_string()).collect(),
             return_type: return_type.to_string(),
             borrowed_arg_indexes: borrowed_arg_indexes.to_vec(),
+            body: InteropShimBody::DirectCall,
+        };
+        self.shim_defs.insert(shim_name.to_string(), def);
+        for path in source_paths {
+            self.shim_policies
+                .insert((*path).to_string(), shim_name.to_string());
+        }
+    }
+
+    fn register_custom_shim(
+        &mut self,
+        source_paths: &[&str],
+        shim_name: &str,
+        target_path: &[&str],
+        param_types: &[&str],
+        return_type: &str,
+        borrowed_arg_indexes: &[usize],
+        body: InteropShimBody,
+    ) {
+        let def = InteropShimDef {
+            name: shim_name.to_string(),
+            target_path: target_path.iter().map(|part| (*part).to_string()).collect(),
+            param_types: param_types.iter().map(|ty| (*ty).to_string()).collect(),
+            return_type: return_type.to_string(),
+            borrowed_arg_indexes: borrowed_arg_indexes.to_vec(),
+            body,
         };
         self.shim_defs.insert(shim_name.to_string(), def);
         for path in source_paths {
@@ -2105,15 +2167,77 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
         .iter()
         .map(|param| RustExpr::Path(vec![param.name.clone()]))
         .collect::<Vec<_>>();
+    let body = match shim.body {
+        InteropShimBody::DirectCall => vec![RustStmt::Return(Some(RustExpr::Call {
+            callee: Box::new(RustExpr::Path(shim.target_path.clone())),
+            args,
+        }))],
+        InteropShimBody::StrStripPrefixKnown => {
+            let strip_call = RustExpr::Call {
+                callee: Box::new(RustExpr::Path(shim.target_path.clone())),
+                args,
+            };
+            let unwrap_call = RustExpr::Call {
+                callee: Box::new(RustExpr::Field {
+                    base: Box::new(strip_call),
+                    field: "unwrap".to_string(),
+                }),
+                args: Vec::new(),
+            };
+            let to_string_call = RustExpr::Call {
+                callee: Box::new(RustExpr::Field {
+                    base: Box::new(unwrap_call),
+                    field: "to_string".to_string(),
+                }),
+                args: Vec::new(),
+            };
+            vec![RustStmt::Return(Some(to_string_call))]
+        }
+        InteropShimBody::StrSplitOnceKnown => {
+            let split_call = RustExpr::Call {
+                callee: Box::new(RustExpr::Path(shim.target_path.clone())),
+                args,
+            };
+            let unwrap_call = RustExpr::Call {
+                callee: Box::new(RustExpr::Field {
+                    base: Box::new(split_call),
+                    field: "unwrap".to_string(),
+                }),
+                args: Vec::new(),
+            };
+            vec![
+                RustStmt::DestructureConst {
+                    pattern: RustDestructurePattern::Tuple(vec![
+                        RustDestructurePattern::Name("__left".to_string()),
+                        RustDestructurePattern::Name("__right".to_string()),
+                    ]),
+                    value: unwrap_call,
+                },
+                RustStmt::Return(Some(RustExpr::Tuple(vec![
+                    RustExpr::Call {
+                        callee: Box::new(RustExpr::Field {
+                            base: Box::new(RustExpr::Path(vec!["__left".to_string()])),
+                            field: "to_string".to_string(),
+                        }),
+                        args: Vec::new(),
+                    },
+                    RustExpr::Call {
+                        callee: Box::new(RustExpr::Field {
+                            base: Box::new(RustExpr::Path(vec!["__right".to_string()])),
+                            field: "to_string".to_string(),
+                        }),
+                        args: Vec::new(),
+                    },
+                ]))),
+            ]
+        }
+    };
     RustFunction {
         is_public: false,
         name: shim.name.clone(),
         params,
         return_type: shim.return_type.clone(),
-        body: vec![RustStmt::Return(Some(RustExpr::Call {
-            callee: Box::new(RustExpr::Path(shim.target_path.clone())),
-            args,
-        }))],
+        body,
     }
 }
 

@@ -82,7 +82,7 @@ pub fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
 
 pub fn split_long_prefix(arg: String) -> LongPrefixSplit {
     if arg.starts_with("--") {
-        return LongPrefixSplit::Long(runtime_core::strip_prefix_known(arg, "--"));
+        return LongPrefixSplit::Long(str::strip_prefix_known(arg, "--"));
     }
     LongPrefixSplit::Other(arg)
 }
@@ -97,7 +97,7 @@ pub fn nonempty_text(text: String) -> MaybeString {
 pub fn split_long_eq(text: String) -> LongEqSplit {
     if text.contains("=") {
         return LongEqSplit::WithValue(runtime_core::make_long_with_value(
-            runtime_core::split_once_known(text, "="),
+            str::split_once_known(text, "="),
         ));
     }
     LongEqSplit::Plain(text)
@@ -109,7 +109,7 @@ pub fn split_short_prefix(arg: String) -> ShortPrefixSplit {
     }
 
     if arg.starts_with("-") {
-        return ShortPrefixSplit::ShortCluster(runtime_core::strip_prefix_known(arg, "-"));
+        return ShortPrefixSplit::ShortCluster(str::strip_prefix_known(arg, "-"));
     }
     ShortPrefixSplit::Value(arg)
 }
@@ -120,7 +120,7 @@ pub fn split_cluster(cluster: String) -> ClusterSplit {
     }
 
     if cluster.starts_with("=") {
-        return ClusterSplit::UnexpectedValue(runtime_core::strip_prefix_known(cluster, "="));
+        return ClusterSplit::UnexpectedValue(str::strip_prefix_known(cluster, "="));
     }
     split_cluster_short(cluster)
 }
@@ -133,7 +133,7 @@ fn split_cluster_short(cluster: String) -> ClusterSplit {
 
 pub fn cluster_optional_value(cluster: String) -> String {
     if cluster.starts_with("=") {
-        return runtime_core::strip_prefix_known(cluster, "=");
+        return str::strip_prefix_known(cluster, "=");
     }
     cluster
 }
