@@ -635,6 +635,31 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_impl_self_param_and_infers_mut_self() {
+        let source = r#"
+            pub struct Point { x: i64; }
+
+            impl Point {
+                pub fn bump(self, n: i64) -> Point {
+                    self.x += n;
+                    self
+                }
+            }
+
+            pub fn run(p: Point) -> Point {
+                Point::bump(p, 1)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("impl Point"));
+        assert!(output.rust_code.contains("pub fn bump(mut self: Point, n: i64) -> Point"));
+        assert!(output.rust_code.contains("self.x += n;"));
+        assert!(output.rust_code.contains("Point::bump(p, 1)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_struct_literals() {
         let source = r#"
             pub struct Pair { left: i64; right: i64; }

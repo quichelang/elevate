@@ -69,7 +69,7 @@ impl Parser {
             return self.parse_impl().map(Item::Impl);
         }
         if self.match_kind(TokenKind::Fn) {
-            return self.parse_function(visibility).map(Item::Function);
+            return self.parse_function(visibility, None).map(Item::Function);
         }
         if self.match_kind(TokenKind::Const) {
             return self.parse_const_item(visibility).map(Item::Const);
@@ -144,14 +144,25 @@ impl Parser {
         })
     }
 
-    fn parse_function(&mut self, visibility: Visibility) -> Option<FunctionDef> {
+    fn parse_function(
+        &mut self,
+        visibility: Visibility,
+        impl_target: Option<&str>,
+    ) -> Option<FunctionDef> {
         let name = self.expect_ident("Expected function name")?;
         self.expect(TokenKind::LParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
         while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
             let param_name = self.expect_ident("Expected parameter name")?;
-            self.expect(TokenKind::Colon, "Expected ':' after parameter name")?;
-            let param_ty = self.parse_type()?;
+            let param_ty = if param_name == "self" && impl_target.is_some() && !self.at(TokenKind::Colon) {
+                Type {
+                    path: vec![impl_target.expect("impl target checked above").to_string()],
+                    args: Vec::new(),
+                }
+            } else {
+                self.expect(TokenKind::Colon, "Expected ':' after parameter name")?;
+                self.parse_type()?
+            };
             params.push(Param {
                 name: param_name,
                 ty: param_ty,
@@ -187,7 +198,7 @@ impl Parser {
                 Visibility::Private
             };
             self.expect(TokenKind::Fn, "Expected `fn` in impl block")?;
-            methods.push(self.parse_function(method_visibility)?);
+            methods.push(self.parse_function(method_visibility, Some(&target))?);
         }
         self.expect(TokenKind::RBrace, "Expected '}' after impl block")?;
         Some(ImplBlock { target, methods })
@@ -988,6 +999,22 @@ mod tests {
             impl Point {
                 pub fn get_x(p: Point) -> i64 {
                     return p.x;
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
+    }
+
+    #[test]
+    fn parse_impl_methods_with_self_param() {
+        let source = r#"
+            struct Point { x: i64; }
+            impl Point {
+                pub fn bump(self, n: i64) -> Point {
+                    self.x += n;
+                    self
                 }
             }
         "#;
