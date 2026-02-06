@@ -1,23 +1,50 @@
 # Language Design (Single Source of Truth)
 
-Status: Draft v0.1  
+Status: Draft v0.2  
 Owner: Language team  
-Last updated: 2026-02-05
+Last updated: 2026-02-06
 
-## 1. Purpose
+## How To Read This Document
 
-This document defines the language we are building and how we compile it to Rust.
-
-Goals of this doc:
-- Be the source of truth for language behavior and compiler decisions.
-- Prioritize practical, predictable implementation over theory-heavy design.
-- Keep user-facing concepts Rust-aligned where possible (`struct`, `enum`, `const`, `static`).
+This document is split by decision category:
+- `Requires Your Input`: items blocked on product/language decisions.
+- `Stable (Unlikely To Change Frequently)`: core constraints and contracts we should avoid changing casually.
+- `Informational (Implementation + Progress)`: status, roadmap, and operational notes.
 
 Process note:
 - Feedback about team workflow goes in `AGENTS.md`.
 - Language and compiler behavior changes go in this document.
 
-## 2. Product Direction
+## Requires Your Input
+
+### Open Language Decisions
+
+1. **Constrained generic syntax**
+- Decide final user syntax for field-based constraints.
+- Placeholder today: `where T has { x: f64, y: f64 }`.
+
+2. **String model**
+- Decide whether source `String` maps to owned Rust `String` always, or if we introduce a source-level distinction later.
+
+3. **Specialization overflow policy**
+- Decide default behavior when specialization budget is exceeded:
+- Option A: hard compile error.
+- Option B: fallback to boxed/internal representation.
+
+4. **Closure scope in MVP**
+- Decide: no closures vs restricted closures.
+
+5. **Shared ownership fallback policy**
+- Decide preferred default where sharing is required: `Rc` or `Arc`.
+
+### Immediate Product Input Needed
+
+1. Confirm `.ers` as the canonical source file extension (current implementation now uses `.ers` examples).
+2. Confirm whether generic function definitions are required for MVP completion or can ship in MVP+1.
+
+## Stable (Unlikely To Change Frequently)
+
+### Product Direction
 
 We are building a compiled language that transpiles to Rust with strong static typing and automatic compile-time decisions.
 
@@ -27,279 +54,139 @@ Guiding principles:
 - Clear errors over magical inference.
 - Small MVP surface before advanced features.
 
-## 3. Locked MVP Constraints
-
-These are intentionally strict for v0:
+### Locked MVP Constraints
 
 1. No traits in user language.
 2. No references in user language (`&`, `&mut` not exposed).
 3. No user-provided mutability hints.
 4. Explicit immutability supported via `const` and `static`.
-5. `struct` and `enum` are first-class and named like Rust.
+5. `struct` and `enum` are first-class and Rust-aligned in naming.
 6. Static typing with local type inference.
-7. Compiler makes automatic ownership/memory decisions for lowered Rust code.
+7. Compiler makes automatic ownership/memory decisions in lowered Rust.
 8. Generics compile by monomorphization with explicit safety limits.
 
-## 4. Non-Goals (MVP)
+### Non-Goals (MVP)
 
 - Reproducing Rust semantics exactly.
 - Full trait system.
-- Full borrow checker model in source language.
+- Full source-level borrow checker model.
 - Macro system.
 - Async runtime design.
-- Full-blown type-theory row-polymorphism implementation.
+- Full research-style row-polymorphism implementation.
 
-## 5. User-Facing Language Model
+### Language Contract (Current)
 
-## 5.1 Declarations
+Declarations:
+- `const`, `static`, `struct`, `enum`, `fn`, `rust use`.
 
-- `const`: immutable local/global bindings.
-- `static`: module-level static values.
-- `struct`: nominal product types.
-- `enum`: tagged unions.
-- `fn`: functions with optional type annotations.
+Expressions/statements:
+- Literals, path refs/calls, field access, `match`, postfix `?`, local `const`, `return`.
 
-## 5.2 Types
-
-Supported in MVP:
-- Primitive scalars (`i64`, `f64`, `bool`, `str`/`string` as finalized later).
-- Struct types.
-- Enum types.
-- Function types (as needed for first-order + limited closure support).
-- Parametric generics.
-
-## 5.3 Inference Policy
-
+Type policy:
 - Local inference is enabled.
 - Public API boundaries should prefer explicit return types.
-- Type errors must name concrete fields/types and expected vs actual.
+- Errors must include concrete expected vs actual details.
 
-## 5.4 Structural Capability Without Traits
+### Core Compiler Architecture
 
-We keep `struct` as the user model, but permit constrained generics using field requirements.
-
-Example (illustrative syntax, not final):
-
-```txt
-fn norm<T where T has { x: f64, y: f64 }>(p: T) -> f64 {
-  sqrt(p.x * p.x + p.y * p.y)
-}
-```
-
-Notes:
-- This is not exposed as a trait system.
-- This is a compiler-level capability check against concrete `struct` shapes.
-- Syntax can evolve; behavior intent is locked.
-
-## 6. Practical Polymorphism Strategy
-
-We use a practical hybrid:
-- Prefer monomorphized specialized code for performance.
-- Limit specialization to prevent compile-time/code-size explosions.
-- Use controlled fallback representation when limits are exceeded.
-
-Initial limits (tunable):
-- Max specializations per function: `16`.
-- Max specialization depth chain: `4`.
-
-When limit is exceeded:
-- Option A: compile error with actionable message.
-- Option B: fallback path using boxed internal representation.
-
-MVP default: start with Option A (simpler, more predictable), add Option B later if needed.
-
-## 7. Ownership and Memory Lowering Policy
-
-Type inference alone does not solve ownership. We define explicit lowering rules.
-
-MVP ownership policy:
-1. Values are immutable by default.
-2. Lowered Rust uses move semantics by default.
-3. Insert `clone` only at predefined boundary cases.
-4. Avoid generating borrowed references in emitted Rust unless internal and proven safe.
-
-Clone insertion boundary cases (initial):
-- Value reused after move point.
-- Captured by closure and also used outside capture path.
-- Shared insertion into multiple owning containers.
-
-Fallback strategy:
-- If analysis cannot choose safely within rules, choose deterministic safe fallback:
-  - Prefer clone.
-  - If clone unavailable/too expensive and feature allows: use `Rc`/`Arc` wrapper policy.
-
-This policy must be deterministic and test-covered.
-
-## 8. Compiler Architecture
-
-Pipeline:
+Pipeline contract:
 1. Parse source -> untyped AST.
 2. Name resolution + symbol table.
 3. Type inference/checking -> typed core IR.
 4. Ownership decision pass -> ownership-annotated IR.
-5. Specialization/monomorphization planning.
+5. Specialization planning.
 6. Lower to Rust-oriented IR.
 7. Emit Rust source.
-8. (Optional) run `rustfmt` and compile checks in toolchain integration mode.
 
-Two core IR layers are required:
+IR boundary contract:
+- Typed Core IR: language-centric and type-checked.
+- Rust Lowered IR: Rust-close representation with explicit lowered operations.
+- No direct AST -> Rust source shortcut.
 
-1. Typed Core IR
-- Language-centric, type-checked.
-- Contains struct/enum/function semantics and field constraints.
-
-2. Rust Lowered IR
-- Close to Rust constructs.
-- Explicit ownership operations (move/clone/wrap) and concrete generic specializations.
-
-Rule: no pass may skip directly from AST to emitted Rust.
-
-## 9. Data Model (Initial)
-
-Required typed IR nodes:
-- `Module`
-- `StructDef`
-- `EnumDef`
-- `FnDef`
-- `LetConst`
-- `StaticDef`
-- `Call`
-- `FieldGet`
-- `Match`
-- `If`
-- `Literal`
-- `VarRef`
-
-Required type nodes:
-- `TyPrimitive`
-- `TyStruct`
-- `TyEnum`
-- `TyGenericParam`
-- `TyFn`
-- `TyApplied`
-
-Required ownership metadata:
-- `OwnershipClass` (`Move`, `Copy`, `Clone`, `SharedRc`, `SharedArc`)
-- `UseCount`
-- `EscapeInfo`
-
-## 10. Error Model
-
-Compiler errors must be practical and fix-oriented.
+### Error Model Contract
 
 Minimum standards:
-- Point to source span.
-- State expected vs actual.
+- Include source location.
+- Show expected vs actual.
 - Explain which automatic decision failed.
 - Provide one direct fix hint.
 
-Examples:
-- "Function `foo` exceeded specialization budget (16). Add explicit type annotation or simplify call shape."
-- "Missing required field `x: f64` for call to `norm`."
+### Change Management Contract
 
-## 11. MVP Feature Set
-
-In:
-- `const`, `static`
-- `struct`, `enum`
-- `fn`
-- pattern matching on enums
-- local type inference
-- generic functions
-- constrained generics by required fields
-- deterministic ownership lowering
-- Rust code generation
-
-Out (defer):
-- traits
-- references/borrowing in source syntax
-- mutation syntax
-- macros
-- async/await
-- advanced effect system
-
-## 12. Implementation Plan
-
-Phase 0: Skeleton
-- Parser + AST + module loader.
-- Golden tests for parsing.
-
-Phase 1: Types
-- Name resolution and typed core IR.
-- Inference/checking with clear diagnostics.
-
-Phase 2: Ownership pass
-- Implement deterministic move/clone policy.
-- Add pass-level tests on ownership decisions.
-
-Phase 3: Specialization
-- Monomorphization planner + specialization cache.
-- Enforce specialization budget.
-
-Phase 4: Rust lowering/emission
-- Emit compilable Rust for supported features.
-- Snapshot tests from source -> Rust output.
-
-Phase 5: Hardening
-- Compile generated Rust in CI.
-- Benchmark compile time and code size on sample workloads.
-
-## 13. Testing Strategy
-
-Must-have test categories:
-- Parse tests.
-- Type inference and type error tests.
-- Ownership decision tests.
-- Specialization budget tests.
-- Codegen snapshot tests.
-- End-to-end compile tests (source -> Rust -> binary/library check).
-
-Quality gates before expanding language features:
-- Deterministic output for same input.
-- No panic on invalid user programs.
-- Error messages include actionable hints.
-
-## 14. Open Decisions
-
-1. Exact source syntax for constrained generics (`where T has { ... }` equivalent).
-2. String type model and runtime representation.
-3. Whether specialization overflow defaults to error forever or gets fallback mode.
-4. Closure support scope in MVP (none vs limited).
-5. `Rc` vs `Arc` policy for shared fallback in single-thread vs multi-thread targets.
-
-## 15. Change Management
-
-For every semantic change:
+For semantic changes:
 1. Update this document first.
-2. Add/adjust tests that lock behavior.
+2. Add/adjust tests to lock behavior.
 3. Implement compiler change.
-4. Record version bump in the header.
+4. Bump version in this document header.
 
-This file is authoritative for language behavior unless explicitly superseded by a newer version entry.
+## Informational (Implementation + Progress)
 
-## 16. Current Implementation Status
+### Current Implementation Status (As of 2026-02-06)
 
-Status as of 2026-02-05:
-- Rust compiler project initialized in this repository.
-- Working pipeline exists: lex -> parse -> typed IR/type checks -> lowered Rust IR -> Rust emission.
-- CLI entrypoint reads source and prints or writes generated Rust.
-- Unit tests cover lexer, parser, type checks, and codegen behavior.
-- Generated Rust is validated in tests via `rustc --crate-type=lib`.
+Implemented:
+- Rust compiler project initialized.
+- End-to-end pipeline exists: lex -> parse -> typed checks -> lowered Rust IR -> emit.
+- Rust emission includes full function bodies (no `todo!` stubs for supported features).
+- `Option`/`Result` constructors plus `?` validation.
+- Enum `match` expressions.
+- `rust use` imports and external Rust path calls.
 
-Implemented language surface:
-- Top-level items: `rust use`, `struct`, `enum`, `fn`, `const`, `static`.
-- Statements: local `const`, `return`, expression statements.
-- Expressions: literals, path refs/calls, field access, `match`, postfix `?`.
-- Types: named paths + generic arguments (for forms like `Option<T>`, `Result<T, E>`).
-- `Option`/`Result` constructor and `?` semantics with compile-time validation.
+Quality status:
+- Unit tests cover lexer, parser, semantic checks, and codegen behavior.
+- Generated Rust is validated via `rustc --crate-type=lib` in tests.
 
-Current command surface:
+### Command Surface
+
 - Build: `cargo build`
 - Test: `cargo test`
 - Run compiler: `cargo run -- <input-file>`
 - Emit to file: `cargo run -- <input-file> --emit-rust <output-file>`
 
-What is intentionally incomplete:
-- Ownership lowering policy is not implemented yet.
-- Generic function definitions and constrained generic bounds are not implemented yet.
+### Current Source Extension
+
+- Canonical examples now use `.ers`:
+- `examples/point.ers`
+- `examples/result_flow.ers`
+- `examples/match.ers`
+
+### Implementation Plan (Roadmap)
+
+Phase 0: Skeleton
+- Parser + AST + module loader.
+
+Phase 1: Types
+- Name resolution and typed core IR.
+- Inference/checking with diagnostics.
+
+Phase 2: Ownership pass
+- Deterministic move/clone policy.
+
+Phase 3: Specialization
+- Planner + specialization cache.
+
+Phase 4: Rust lowering/emission hardening
+- Stable, compilable Rust output for all MVP features.
+
+Phase 5: Performance hardening
+- Compile-time and code-size benchmarking.
+
+### Testing Strategy (Operational)
+
+Must-have categories:
+- Parse tests.
+- Type inference and type error tests.
+- Ownership decision tests.
+- Specialization budget tests.
+- Codegen snapshot tests.
+- End-to-end compile tests.
+
+Quality gates:
+- Deterministic output for same input.
+- No panic on invalid programs.
+- Actionable diagnostics.
+
+### Known Incomplete Areas
+
+- Ownership lowering policy implementation is not complete.
+- Generic function definitions and constrained bounds are not complete.
 - Borrow/reference features remain intentionally unsupported.
