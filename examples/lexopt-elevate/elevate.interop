@@ -1,3 +1,8 @@
 # Allowed Rust imports for lexopt Elevate sources.
 allow crate::runtime_core
 allow crate::model::*
+
+# Runtime bootstrap: process-global registry lives in interop support.
+runtime use std::sync::{Mutex, OnceLock};
+runtime pub(crate) static REGISTRY: OnceLock<Mutex<crate::runtime_core::Registry>> = OnceLock::new();
+runtime pub(crate) fn registry() -> &'static Mutex<crate::runtime_core::Registry> { REGISTRY.get_or_init(|| Mutex::new(crate::runtime_core::Registry::default())) }

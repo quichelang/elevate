@@ -671,7 +671,7 @@ fn emit_interop_adapter_module(generated_src: &Path, contract: &InteropContract)
     out.push_str("#![allow(dead_code)]\n\n");
     for line in &contract.runtime_lines {
         out.push_str(line);
-        if !line.ends_with(';') {
+        if !line.ends_with(';') && !line.ends_with('}') {
             out.push(';');
         }
         out.push('\n');
@@ -937,7 +937,7 @@ mod tests {
         .expect("write lib.ers should succeed");
         fs::write(
             root.join("elevate.interop"),
-            "runtime use std::sync::OnceLock;\nruntime static REGISTRY: OnceLock<i64> = OnceLock::new();\n",
+            "runtime use std::sync::OnceLock;\nruntime static REGISTRY: OnceLock<i64> = OnceLock::new();\nruntime pub fn registry() -> &'static OnceLock<i64> { &REGISTRY }\n",
         )
         .expect("write interop contract should succeed");
 
@@ -947,6 +947,7 @@ mod tests {
             .expect("interop module should exist");
         assert!(interop_module.contains("use std::sync::OnceLock;"));
         assert!(interop_module.contains("static REGISTRY: OnceLock<i64> = OnceLock::new();"));
+        assert!(interop_module.contains("pub fn registry() -> &'static OnceLock<i64> { &REGISTRY }"));
 
         let generated_lib =
             fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone)]
 struct ParserState {
@@ -12,12 +11,10 @@ struct ParserState {
 }
 
 #[derive(Debug, Default)]
-struct Registry {
+pub(crate) struct Registry {
     next_id: i64,
     states: HashMap<i64, ParserState>,
 }
-
-static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 
 pub fn from_env() -> i64 {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -118,7 +115,9 @@ pub fn drop_first_char_known(text: String) -> (String, String) {
 }
 
 fn insert_state(args: Vec<String>) -> i64 {
-    let mut registry = registry().lock().expect("registry mutex poisoned");
+    let mut registry = crate::__elevate_interop::registry()
+        .lock()
+        .expect("registry mutex poisoned");
     registry.next_id += 1;
     let handle = registry.next_id;
     registry.states.insert(
@@ -136,11 +135,9 @@ fn insert_state(args: Vec<String>) -> i64 {
 }
 
 fn with_state_mut<T>(handle: i64, f: impl FnOnce(&mut ParserState) -> T) -> Option<T> {
-    let mut registry = registry().lock().expect("registry mutex poisoned");
+    let mut registry = crate::__elevate_interop::registry()
+        .lock()
+        .expect("registry mutex poisoned");
     let state = registry.states.get_mut(&handle)?;
     Some(f(state))
-}
-
-fn registry() -> &'static Mutex<Registry> {
-    REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
 }
