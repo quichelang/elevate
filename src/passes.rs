@@ -1739,6 +1739,10 @@ fn resolve_call_type(
     }
 
     if let TypedExprKind::Path(path) = &callee.kind {
+        if let Some(ty) = resolve_builtin_assert_call(path, args, diagnostics) {
+            return ty;
+        }
+
         let lookup_name = path.join("::");
         if let Some(sig) = context.functions.get(&lookup_name) {
             let name = lookup_name;
@@ -1811,6 +1815,56 @@ fn resolve_call_type(
 
     diagnostics.push(Diagnostic::new("Unsupported call target", Span::new(0, 0)));
     SemType::Unknown
+}
+
+fn resolve_builtin_assert_call(
+    path: &[String],
+    args: &[SemType],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<SemType> {
+    if path.len() != 1 {
+        return None;
+    }
+    let name = path[0].as_str();
+    match name {
+        "assert" => {
+            if args.len() != 1 {
+                diagnostics.push(Diagnostic::new(
+                    "assert(...) expects exactly one boolean argument",
+                    Span::new(0, 0),
+                ));
+                return Some(SemType::Unit);
+            }
+            if !is_compatible(&args[0], &named_type("bool")) {
+                diagnostics.push(Diagnostic::new(
+                    format!("assert(...) expects `bool`, got `{}`", type_to_string(&args[0])),
+                    Span::new(0, 0),
+                ));
+            }
+            Some(SemType::Unit)
+        }
+        "assert_eq" | "assert_ne" => {
+            if args.len() != 2 {
+                diagnostics.push(Diagnostic::new(
+                    format!("{name}(...) expects exactly two arguments"),
+                    Span::new(0, 0),
+                ));
+                return Some(SemType::Unit);
+            }
+            if !is_compatible(&args[0], &args[1]) && !is_compatible(&args[1], &args[0]) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "{name}(...) arguments must have compatible types, got `{}` and `{}`",
+                        type_to_string(&args[0]),
+                        type_to_string(&args[1])
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+            Some(SemType::Unit)
+        }
+        _ => None,
+    }
 }
 
 fn resolve_method_call_type(
@@ -2141,6 +2195,20 @@ fn lower_expr_with_context(
         TypedExprKind::String(value) => RustExpr::String(value.clone()),
         TypedExprKind::Path(path) => lower_path_expr(path, &expr.ty, position, context, state),
         TypedExprKind::Call { callee, args } => {
+            if let TypedExprKind::Path(path) = &callee.kind
+                && path.len() == 1
+                && matches!(path[0].as_str(), "assert" | "assert_eq" | "assert_ne")
+            {
+                return RustExpr::MacroCall {
+                    path: vec![path[0].clone()],
+                    args: args
+                        .iter()
+                        .map(|arg| {
+                            lower_expr_with_context(arg, context, ExprPosition::Value, state)
+                        })
+                        .collect(),
+                };
+            }
             let (lowered_callee, arg_modes) = lower_call_callee(callee, args.len(), context, state);
             RustExpr::Call {
                 callee: Box::new(lowered_callee),

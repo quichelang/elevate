@@ -7,6 +7,7 @@ pub mod lexer;
 pub mod parser;
 pub mod passes;
 pub mod source;
+pub mod test_runner;
 
 use std::fmt;
 
@@ -14,6 +15,38 @@ use ast::Module;
 use diag::Diagnostic;
 use ir::lowered::RustModule;
 use ir::typed::TypedModule;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExperimentFlags {
+    pub move_mut_args: bool,
+    pub infer_local_bidi: bool,
+    pub effect_rows_internal: bool,
+    pub infer_principal_fallback: bool,
+}
+
+impl ExperimentFlags {
+    fn active_names(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.move_mut_args {
+            out.push("exp_move_mut_args");
+        }
+        if self.infer_local_bidi {
+            out.push("exp_infer_local_bidi");
+        }
+        if self.effect_rows_internal {
+            out.push("exp_effect_rows_internal");
+        }
+        if self.infer_principal_fallback {
+            out.push("exp_infer_principal_fallback");
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompileOptions {
+    pub experiments: ExperimentFlags,
+}
 
 #[derive(Debug, Clone)]
 pub struct CompilerOutput {
@@ -41,16 +74,35 @@ impl fmt::Display for CompileError {
 }
 
 pub fn compile_source(source: &str) -> Result<CompilerOutput, CompileError> {
+    compile_source_with_options(source, &CompileOptions::default())
+}
+
+pub fn compile_source_with_options(
+    source: &str,
+    options: &CompileOptions,
+) -> Result<CompilerOutput, CompileError> {
     let tokens = lexer::lex(source).map_err(|diagnostics| CompileError { diagnostics })?;
     let module =
         parser::parse_module(tokens).map_err(|diagnostics| CompileError { diagnostics })?;
-    compile_ast(&module)
+    compile_ast_with_options(&module, options)
 }
 
 pub fn compile_ast(module: &Module) -> Result<CompilerOutput, CompileError> {
+    compile_ast_with_options(module, &CompileOptions::default())
+}
+
+pub fn compile_ast_with_options(
+    module: &Module,
+    options: &CompileOptions,
+) -> Result<CompilerOutput, CompileError> {
     let typed =
         passes::lower_to_typed(module).map_err(|diagnostics| CompileError { diagnostics })?;
-    let lowered = passes::lower_to_rust(&typed);
+    let mut lowered = passes::lower_to_rust(&typed);
+    for name in options.experiments.active_names() {
+        lowered
+            .ownership_notes
+            .push(format!("experimental flag enabled: {name}"));
+    }
     let ownership_notes = lowered.ownership_notes.clone();
     let rust_code = codegen::emit_rust_module(&lowered);
 
@@ -149,6 +201,23 @@ mod tests {
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("n += 1;"));
         assert!(output.rust_code.contains("counter.value = (n + 1);"));
+    }
+
+    #[test]
+    fn compile_supports_assert_functions_without_macro_syntax() {
+        let source = r#"
+            fn test_asserts() {
+                assert(true);
+                assert_eq(1 + 1, 2);
+                assert_ne(1, 2);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("assert!(true);"));
+        assert!(output.rust_code.contains("assert_eq!((1 + 1), 2);"));
+        assert!(output.rust_code.contains("assert_ne!(1, 2);"));
+        assert_rust_code_compiles(&output.rust_code);
     }
 
     #[test]

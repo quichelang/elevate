@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{collections::BTreeSet, fmt::Write as _};
 use crate::ast::{Block, Expr, Item, Module, Stmt, StructLiteralField};
+use crate::CompileOptions;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildSummary {
@@ -39,12 +40,27 @@ enum InteropTransform {
 }
 
 pub fn build_ers_crate(crate_root: &Path, release: bool) -> Result<BuildSummary, String> {
-    let summary = transpile_ers_crate(crate_root)?;
+    build_ers_crate_with_options(crate_root, release, &CompileOptions::default())
+}
+
+pub fn build_ers_crate_with_options(
+    crate_root: &Path,
+    release: bool,
+    options: &CompileOptions,
+) -> Result<BuildSummary, String> {
+    let summary = transpile_ers_crate_with_options(crate_root, options)?;
     run_generated_cargo_build(&summary.source_root, &summary.generated_root, release)?;
     Ok(summary)
 }
 
 pub fn transpile_ers_crate(crate_root: &Path) -> Result<BuildSummary, String> {
+    transpile_ers_crate_with_options(crate_root, &CompileOptions::default())
+}
+
+pub fn transpile_ers_crate_with_options(
+    crate_root: &Path,
+    options: &CompileOptions,
+) -> Result<BuildSummary, String> {
     let source_root = canonicalize(crate_root)?;
     let source_manifest = source_root.join("Cargo.toml");
     let source_src = source_root.join("src");
@@ -99,6 +115,7 @@ pub fn transpile_ers_crate(crate_root: &Path) -> Result<BuildSummary, String> {
         &generated_root.join("src"),
         &mut summary,
         &interop_contract,
+        options,
     )?;
     emit_interop_adapter_module(&generated_root.join("src"), &interop_contract)?;
     Ok(summary)
@@ -141,6 +158,7 @@ fn process_src_dir(
     generated_src: &Path,
     summary: &mut BuildSummary,
     interop_contract: &InteropContract,
+    options: &CompileOptions,
 ) -> Result<(), String> {
     let entries = fs::read_dir(current)
         .map_err(|error| format!("failed to read directory {}: {error}", current.display()))?;
@@ -165,7 +183,7 @@ fn process_src_dir(
                     target.display()
                 )
             })?;
-            process_src_dir(root_src, &path, generated_src, summary, interop_contract)?;
+            process_src_dir(root_src, &path, generated_src, summary, interop_contract, options)?;
             continue;
         }
 
@@ -173,7 +191,7 @@ fn process_src_dir(
             let source = fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
             validate_interop_contract_for_source(&source, &path, interop_contract)?;
-            let output = compile_source_with_interop_contract(&source, interop_contract).map_err(|error| {
+            let output = compile_source_with_interop_contract(&source, interop_contract, options).map_err(|error| {
                 format_compile_error_with_context(&path, &source, &error)
             })?;
             let mut out_path = target.clone();
@@ -216,16 +234,17 @@ fn process_src_dir(
 fn compile_source_with_interop_contract(
     source: &str,
     contract: &InteropContract,
+    options: &CompileOptions,
 ) -> Result<crate::CompilerOutput, crate::CompileError> {
     if contract.adapters.is_empty() {
-        return crate::compile_source(source);
+        return crate::compile_source_with_options(source, options);
     }
 
     let tokens = crate::lexer::lex(source).map_err(|diagnostics| crate::CompileError { diagnostics })?;
     let mut module = crate::parser::parse_module(tokens)
         .map_err(|diagnostics| crate::CompileError { diagnostics })?;
     rewrite_module_adapter_calls(&mut module, contract);
-    crate::compile_ast(&module)
+    crate::compile_ast_with_options(&module, options)
 }
 
 fn rewrite_module_adapter_calls(module: &mut Module, contract: &InteropContract) {
@@ -352,8 +371,14 @@ fn rewrite_assign_target_adapter_calls(
     target: &mut crate::ast::AssignTarget,
     adapter_map: &HashMap<String, Vec<String>>,
 ) {
-    if let crate::ast::AssignTarget::Field { base, .. } = target {
-        rewrite_expr_adapter_calls(base, adapter_map);
+    match target {
+        crate::ast::AssignTarget::Path(_) => {}
+        crate::ast::AssignTarget::Field { base, .. } => rewrite_expr_adapter_calls(base, adapter_map),
+        crate::ast::AssignTarget::Tuple(items) => {
+            for item in items {
+                rewrite_assign_target_adapter_calls(item, adapter_map);
+            }
+        }
     }
 }
 
