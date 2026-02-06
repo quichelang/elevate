@@ -200,6 +200,7 @@ Implemented:
 - adapter module auto-injection into generated crate root (`lib.rs`/`main.rs`) when present.
 - contract-declared adapter aliases are automatically rewritten at crate transpile time to generated adapter calls.
 - adapter callsites are validated during crate transpile for arity plus lightweight literal argument type compatibility.
+- generated interop adapters normalize `&str` parameters to owned `String` wrapper params and borrow internally when calling Rust targets.
 - Object-native parser API preview for lexopt via `Parser` impl methods that thread `self`.
 - Native test framework pipeline for `.ers` crates:
 - discovers `test_*` functions,
@@ -291,7 +292,7 @@ Quality gates:
 
 ### Known Incomplete Areas
 
-- Ownership lowering policy implementation is not complete.
+- Ownership lowering policy is improved for several core/interoperability paths, but a globally optimal move/clone/borrow planner is not complete.
 - Generic constrained bounds are partially complete (syntax + Rust emission + initial compile-time checks for `Clone`/`Copy` are implemented; broader trait-bound enforcement remains pending).
 - Full iterator-model ergonomics for `for` loops are not complete beyond current lowering support.
 - Slices are not complete (current support focuses on `Vec` literals/index/range expressions and slice-style match patterns).

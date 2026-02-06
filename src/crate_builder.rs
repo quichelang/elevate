@@ -1093,11 +1093,14 @@ fn emit_adapter_fn(adapter: &InteropAdapter, out: &mut String) {
         .params
         .iter()
         .enumerate()
-        .map(|(index, ty)| format!("__arg{index}: {ty}"))
+        .map(|(index, ty)| format!("__arg{index}: {}", emitted_adapter_param_type(ty)))
         .collect::<Vec<_>>()
         .join(", ");
-    let args = (0..adapter.params.len())
-        .map(|index| format!("__arg{index}"))
+    let args = adapter
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| emitted_adapter_call_arg(index, ty))
         .collect::<Vec<_>>()
         .join(", ");
     let _ = writeln!(out, "// adapter {} => {}", adapter.alias, adapter.target);
@@ -1130,6 +1133,20 @@ fn emit_adapter_fn(adapter: &InteropAdapter, out: &mut String) {
         }
     }
     out.push_str("}\n");
+}
+
+fn emitted_adapter_param_type(param: &str) -> String {
+    match param.trim() {
+        "&str" => "String".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn emitted_adapter_call_arg(index: usize, param: &str) -> String {
+    match param.trim() {
+        "&str" => format!("&__arg{index}"),
+        _ => format!("__arg{index}"),
+    }
 }
 
 fn adapter_fn_name(alias: &str) -> String {
@@ -1314,7 +1331,8 @@ mod tests {
         let adapter_module = fs::read_to_string(generated_src.join("elevate_interop.rs"))
             .expect("adapter module should exist");
         assert!(adapter_module.contains("pub fn __elevate_adapter_str__len_alias"));
-        assert!(adapter_module.contains("std::str::len(__arg0)"));
+        assert!(adapter_module.contains("__arg0: String"));
+        assert!(adapter_module.contains("std::str::len(&__arg0)"));
 
         let generated_lib =
             fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");
