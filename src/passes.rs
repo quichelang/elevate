@@ -1784,6 +1784,33 @@ fn check_match_exhaustiveness(
         return;
     }
 
+    if let Some(arity) = bool_tuple_arity(scrutinee_ty) {
+        let mut covered = HashSet::new();
+        for arm in arms {
+            if arm.guard.is_some() {
+                continue;
+            }
+            collect_bool_tuple_coverage(&arm.pattern, arity, &mut covered);
+        }
+        let total = 1usize << arity;
+        if covered.len() != total {
+            let mut missing = Vec::new();
+            for mask in 0..total {
+                if !covered.contains(&mask) {
+                    missing.push(format_bool_tuple_mask(mask, arity));
+                }
+            }
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Non-exhaustive match on tuple bool pattern; missing: {}",
+                    missing.join(", ")
+                ),
+                Span::new(0, 0),
+            ));
+        }
+        return;
+    }
+
     let Some(enum_name) = enum_name_from_type(scrutinee_ty) else {
         return;
     };
@@ -1814,6 +1841,94 @@ fn check_match_exhaustiveness(
             Span::new(0, 0),
         ));
     }
+}
+
+fn bool_tuple_arity(ty: &SemType) -> Option<usize> {
+    let SemType::Tuple(items) = ty else {
+        return None;
+    };
+    if items.is_empty() || items.iter().any(|item| !is_concrete_named_type(item, "bool")) {
+        return None;
+    }
+    Some(items.len())
+}
+
+fn collect_bool_tuple_coverage(pattern: &TypedPattern, arity: usize, covered: &mut HashSet<usize>) {
+    match pattern {
+        TypedPattern::Wildcard | TypedPattern::Binding(_) => {
+            let total = 1usize << arity;
+            for mask in 0..total {
+                covered.insert(mask);
+            }
+        }
+        TypedPattern::BindingAt { pattern, .. } => {
+            collect_bool_tuple_coverage(pattern, arity, covered);
+        }
+        TypedPattern::Or(items) => {
+            for item in items {
+                collect_bool_tuple_coverage(item, arity, covered);
+            }
+        }
+        TypedPattern::Tuple(items) if items.len() == arity => {
+            let choices = items
+                .iter()
+                .map(bool_pattern_values)
+                .collect::<Option<Vec<_>>>();
+            let Some(choices) = choices else {
+                return;
+            };
+            let mut masks = vec![0usize];
+            for (index, values) in choices.iter().enumerate() {
+                let bit = arity - index - 1;
+                let mut next = Vec::new();
+                for mask in &masks {
+                    for value in values {
+                        let updated = if *value {
+                            *mask | (1usize << bit)
+                        } else {
+                            *mask
+                        };
+                        next.push(updated);
+                    }
+                }
+                masks = next;
+            }
+            for mask in masks {
+                covered.insert(mask);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn bool_pattern_values(pattern: &TypedPattern) -> Option<Vec<bool>> {
+    match pattern {
+        TypedPattern::Bool(value) => Some(vec![*value]),
+        TypedPattern::Wildcard | TypedPattern::Binding(_) => Some(vec![false, true]),
+        TypedPattern::BindingAt { pattern, .. } => bool_pattern_values(pattern),
+        TypedPattern::Or(items) => {
+            let mut out = Vec::new();
+            for item in items {
+                for value in bool_pattern_values(item)? {
+                    if !out.contains(&value) {
+                        out.push(value);
+                    }
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+fn format_bool_tuple_mask(mask: usize, arity: usize) -> String {
+    let mut items = Vec::new();
+    for index in 0..arity {
+        let bit = arity - index - 1;
+        let value = ((mask >> bit) & 1usize) == 1usize;
+        items.push(if value { "true" } else { "false" });
+    }
+    format!("({})", items.join(", "))
 }
 
 fn match_has_total_pattern(arms: &[TypedMatchArm]) -> bool {

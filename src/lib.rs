@@ -739,6 +739,43 @@ mod tests {
     }
 
     #[test]
+    fn compile_reports_non_exhaustive_bool_tuple_match() {
+        let source = r#"
+            fn classify() -> i64 {
+                const flags = (true, false);
+                return match flags {
+                    (true, true) => 1;
+                    (false, false) => 0;
+                };
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(error.to_string().contains("Non-exhaustive match on tuple bool pattern"));
+        assert!(error.to_string().contains("(true, false)"));
+        assert!(error.to_string().contains("(false, true)"));
+    }
+
+    #[test]
+    fn compile_accepts_exhaustive_bool_tuple_match() {
+        let source = r#"
+            fn classify() -> i64 {
+                const flags = (true, false);
+                return match flags {
+                    (true, true) => 3;
+                    (true, false) => 2;
+                    (false, true) => 1;
+                    (false, false) => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("match flags"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_reports_non_exhaustive_enum_match() {
         let source = r#"
             enum Maybe {
