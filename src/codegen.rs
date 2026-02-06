@@ -1,6 +1,6 @@
 use crate::ir::lowered::{
-    RustBinaryOp, RustConst, RustEnum, RustExpr, RustFunction, RustImpl, RustItem, RustModule,
-    RustPattern, RustStatic, RustStmt, RustStruct, RustUnaryOp, RustUse,
+    RustBinaryOp, RustConst, RustDestructurePattern, RustEnum, RustExpr, RustFunction, RustImpl,
+    RustItem, RustModule, RustPattern, RustStatic, RustStmt, RustStruct, RustUnaryOp, RustUse,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -105,6 +105,13 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
         RustStmt::Return(None) => {
             out.push_str("    return;\n");
         }
+        RustStmt::DestructureConst { pattern, value } => {
+            out.push_str(&format!(
+                "    let {} = {};\n",
+                emit_destructure_pattern(pattern),
+                emit_expr(value)
+            ));
+        }
         RustStmt::If {
             condition,
             then_body,
@@ -198,6 +205,24 @@ fn emit_expr(expr: &RustExpr) -> String {
             };
             format!("({} {} {})", emit_expr(left), symbol, emit_expr(right))
         }
+        RustExpr::Tuple(items) => {
+            if items.is_empty() {
+                "()".to_string()
+            } else {
+                let body = items.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
+                format!("({body})")
+            }
+        }
+        RustExpr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let start = start.as_ref().map(|v| emit_expr(v)).unwrap_or_default();
+            let end = end.as_ref().map(|v| emit_expr(v)).unwrap_or_default();
+            let op = if *inclusive { "..=" } else { ".." };
+            format!("{start}{op}{end}")
+        }
         RustExpr::Try(inner) => format!("{}?", emit_expr(inner)),
     }
 }
@@ -215,6 +240,21 @@ fn emit_pattern(pattern: &RustPattern) -> String {
     }
 }
 
+fn emit_destructure_pattern(pattern: &RustDestructurePattern) -> String {
+    match pattern {
+        RustDestructurePattern::Name(name) => name.clone(),
+        RustDestructurePattern::Ignore => "_".to_string(),
+        RustDestructurePattern::Tuple(items) => {
+            let inner = items
+                .iter()
+                .map(emit_destructure_pattern)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({inner})")
+        }
+    }
+}
+
 fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
     let pad = "    ".repeat(indent);
     match stmt {
@@ -228,6 +268,13 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
         }
         RustStmt::Return(Some(expr)) => out.push_str(&format!("{pad}return {};\n", emit_expr(expr))),
         RustStmt::Return(None) => out.push_str(&format!("{pad}return;\n")),
+        RustStmt::DestructureConst { pattern, value } => {
+            out.push_str(&format!(
+                "{pad}let {} = {};\n",
+                emit_destructure_pattern(pattern),
+                emit_expr(value)
+            ));
+        }
         RustStmt::If {
             condition,
             then_body,

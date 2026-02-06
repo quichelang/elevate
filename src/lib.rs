@@ -289,6 +289,32 @@ mod tests {
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_ranges_and_tuple_destructure() {
+        let source = r#"
+            pub fn f() -> i64 {
+                const (a, b) = (1, 2);
+                const r1 = a..b;
+                const r2 = a..=b;
+                const r3 = ..b;
+                const r4 = a..;
+                std::mem::drop(r1);
+                std::mem::drop(r2);
+                std::mem::drop(r3);
+                std::mem::drop(r4);
+                a
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("let (a, b) = (1, 2);"));
+        assert!(output.rust_code.contains("a..b"));
+        assert!(output.rust_code.contains("a..=b"));
+        assert!(output.rust_code.contains("..b"));
+        assert!(output.rust_code.contains("a.."));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {

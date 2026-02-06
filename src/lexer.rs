@@ -40,6 +40,8 @@ pub enum TokenKind {
     Semicolon,
     Comma,
     Dot,
+    DotDot,
+    DotDotEq,
     Bang,
     Equal,
     EqualEqual,
@@ -109,7 +111,25 @@ impl<'a> Lexer<'a> {
                 }
                 ';' => self.push_simple(TokenKind::Semicolon, start),
                 ',' => self.push_simple(TokenKind::Comma, start),
-                '.' => self.push_simple(TokenKind::Dot, start),
+                '.' => {
+                    if self.peek_char() == Some('.') {
+                        self.advance();
+                        if self.peek_char() == Some('=') {
+                            self.advance();
+                            self.tokens.push(Token {
+                                kind: TokenKind::DotDotEq,
+                                span: Span::new(start, self.cursor),
+                            });
+                        } else {
+                            self.tokens.push(Token {
+                                kind: TokenKind::DotDot,
+                                span: Span::new(start, self.cursor),
+                            });
+                        }
+                    } else {
+                        self.push_simple(TokenKind::Dot, start);
+                    }
+                }
                 '!' => {
                     if self.peek_char() == Some('=') {
                         self.advance();
@@ -396,5 +416,13 @@ mod tests {
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::BangEqual)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::LtEqual)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::GtEqual)));
+    }
+
+    #[test]
+    fn lex_range_tokens() {
+        let source = "a..b; a..=b; ..b; ..=b; a..;";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDot)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDotEq)));
     }
 }

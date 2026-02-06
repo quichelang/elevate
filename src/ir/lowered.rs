@@ -69,6 +69,10 @@ pub struct RustParam {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustStmt {
     Const(RustConst),
+    DestructureConst {
+        pattern: RustDestructurePattern,
+        value: RustExpr,
+    },
     Return(Option<RustExpr>),
     If {
         condition: RustExpr,
@@ -125,6 +129,12 @@ pub enum RustExpr {
         left: Box<RustExpr>,
         right: Box<RustExpr>,
     },
+    Tuple(Vec<RustExpr>),
+    Range {
+        start: Option<Box<RustExpr>>,
+        end: Option<Box<RustExpr>>,
+        inclusive: bool,
+    },
     Try(Box<RustExpr>),
 }
 
@@ -158,4 +168,11 @@ pub enum RustPattern {
         path: Vec<String>,
         binding: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustDestructurePattern {
+    Name(String),
+    Ignore,
+    Tuple(Vec<RustDestructurePattern>),
 }

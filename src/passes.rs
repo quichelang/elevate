@@ -1,21 +1,25 @@
 use std::collections::HashMap;
 
-use crate::ast::{BinaryOp, Block, Expr, Item, Module, Pattern, Stmt, Type, UnaryOp, Visibility};
+use crate::ast::{
+    BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern, Stmt, Type, UnaryOp,
+    Visibility,
+};
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
-    RustBinaryOp, RustConst, RustEnum, RustExpr, RustField, RustFunction, RustImpl, RustItem,
-    RustMatchArm, RustModule, RustParam, RustPattern, RustStatic, RustStmt, RustStruct, RustUnaryOp,
-    RustUse, RustVariant,
+    RustBinaryOp, RustConst, RustDestructurePattern, RustEnum, RustExpr, RustField, RustFunction,
+    RustImpl, RustItem, RustMatchArm, RustModule, RustParam, RustPattern, RustStatic, RustStmt,
+    RustStruct, RustUnaryOp, RustUse, RustVariant,
 };
 use crate::ir::typed::{
     TypedBinaryOp, TypedConst, TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction,
-    TypedImpl, TypedItem, TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedRustUse,
-    TypedStatic, TypedStmt, TypedStruct, TypedUnaryOp, TypedVariant,
+    TypedDestructurePattern, TypedImpl, TypedItem, TypedMatchArm, TypedModule, TypedParam,
+    TypedPattern, TypedRustUse, TypedStatic, TypedStmt, TypedStruct, TypedUnaryOp, TypedVariant,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SemType {
     Path { path: Vec<String>, args: Vec<SemType> },
+    Tuple(Vec<SemType>),
     Unit,
     Unknown,
 }
@@ -527,6 +531,14 @@ fn lower_stmt_with_types(
                 value: typed_value,
             }))
         }
+        Stmt::DestructureConst { pattern, value } => {
+            let (typed_value, value_ty) = infer_expr(value, context, locals, return_ty, diagnostics);
+            bind_destructure_pattern(pattern, &value_ty, locals, diagnostics);
+            Some(TypedStmt::DestructureConst {
+                pattern: lower_destructure_pattern_typed(pattern),
+                value: typed_value,
+            })
+        }
         Stmt::Return(value) => {
             if let Some(expr) = value {
                 let (typed_expr, inferred) = infer_expr(expr, context, locals, return_ty, diagnostics);
@@ -833,6 +845,46 @@ fn infer_expr(
                     ty: type_to_string(&out_ty),
                 },
                 out_ty,
+            )
+        }
+        Expr::Tuple(items) => {
+            let mut typed_items = Vec::new();
+            let mut item_types = Vec::new();
+            for item in items {
+                let (typed_item, ty) = infer_expr(item, context, locals, return_ty, diagnostics);
+                typed_items.push(typed_item);
+                item_types.push(ty);
+            }
+            let out_ty = SemType::Tuple(item_types);
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Tuple(typed_items),
+                    ty: type_to_string(&out_ty),
+                },
+                out_ty,
+            )
+        }
+        Expr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let typed_start = start
+                .as_ref()
+                .map(|expr| infer_expr(expr, context, locals, return_ty, diagnostics).0);
+            let typed_end = end
+                .as_ref()
+                .map(|expr| infer_expr(expr, context, locals, return_ty, diagnostics).0);
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Range {
+                        start: typed_start.map(Box::new),
+                        end: typed_end.map(Box::new),
+                        inclusive: *inclusive,
+                    },
+                    ty: "_".to_string(),
+                },
+                SemType::Unknown,
             )
         }
         Expr::Try(inner) => {
@@ -1150,6 +1202,10 @@ fn lower_stmt(stmt: &TypedStmt) -> RustStmt {
             ty: def.ty.clone(),
             value: lower_expr(&def.value),
         }),
+        TypedStmt::DestructureConst { pattern, value } => RustStmt::DestructureConst {
+            pattern: lower_destructure_pattern(pattern),
+            value: lower_expr(value),
+        },
         TypedStmt::Return(value) => RustStmt::Return(value.as_ref().map(lower_expr)),
         TypedStmt::If {
             condition,
@@ -1214,6 +1270,16 @@ fn lower_expr(expr: &TypedExpr) -> RustExpr {
             left: Box::new(lower_expr(left)),
             right: Box::new(lower_expr(right)),
         },
+        TypedExprKind::Tuple(items) => RustExpr::Tuple(items.iter().map(lower_expr).collect()),
+        TypedExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } => RustExpr::Range {
+            start: start.as_ref().map(|expr| Box::new(lower_expr(expr))),
+            end: end.as_ref().map(|expr| Box::new(lower_expr(expr))),
+            inclusive: *inclusive,
+        },
         TypedExprKind::Try(inner) => RustExpr::Try(Box::new(lower_expr(inner))),
     }
 }
@@ -1229,6 +1295,10 @@ fn type_to_string(ty: &SemType) -> String {
     match ty {
         SemType::Unit => "()".to_string(),
         SemType::Unknown => "_".to_string(),
+        SemType::Tuple(items) => {
+            let text = items.iter().map(type_to_string).collect::<Vec<_>>().join(", ");
+            format!("({text})")
+        }
         SemType::Path { path, args } => {
             let head = path.join("::");
             if args.is_empty() {
@@ -1245,6 +1315,14 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
     match (actual, expected) {
         (_, SemType::Unknown) | (SemType::Unknown, _) => true,
         (SemType::Unit, SemType::Unit) => true,
+        (SemType::Tuple(left), SemType::Tuple(right)) => {
+            if left.len() != right.len() {
+                return false;
+            }
+            left.iter()
+                .zip(right.iter())
+                .all(|(a, b)| is_compatible(a, b))
+        }
         (
             SemType::Path {
                 path: actual_path,
@@ -1394,6 +1472,69 @@ fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
     }
 }
 
+fn lower_destructure_pattern_typed(pattern: &DestructurePattern) -> TypedDestructurePattern {
+    match pattern {
+        DestructurePattern::Name(name) => TypedDestructurePattern::Name(name.clone()),
+        DestructurePattern::Ignore => TypedDestructurePattern::Ignore,
+        DestructurePattern::Tuple(items) => TypedDestructurePattern::Tuple(
+            items
+                .iter()
+                .map(lower_destructure_pattern_typed)
+                .collect(),
+        ),
+    }
+}
+
+fn lower_destructure_pattern(pattern: &TypedDestructurePattern) -> RustDestructurePattern {
+    match pattern {
+        TypedDestructurePattern::Name(name) => RustDestructurePattern::Name(name.clone()),
+        TypedDestructurePattern::Ignore => RustDestructurePattern::Ignore,
+        TypedDestructurePattern::Tuple(items) => RustDestructurePattern::Tuple(
+            items.iter().map(lower_destructure_pattern).collect(),
+        ),
+    }
+}
+
+fn bind_destructure_pattern(
+    pattern: &DestructurePattern,
+    value_ty: &SemType,
+    locals: &mut HashMap<String, SemType>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match pattern {
+        DestructurePattern::Name(name) => {
+            locals.insert(name.clone(), value_ty.clone());
+        }
+        DestructurePattern::Ignore => {}
+        DestructurePattern::Tuple(items) => {
+            if let SemType::Tuple(value_items) = value_ty {
+                if items.len() != value_items.len() {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Tuple destructure arity mismatch: pattern has {}, value has {}",
+                            items.len(),
+                            value_items.len()
+                        ),
+                        Span::new(0, 0),
+                    ));
+                    return;
+                }
+                for (item_pattern, item_ty) in items.iter().zip(value_items.iter()) {
+                    bind_destructure_pattern(item_pattern, item_ty, locals, diagnostics);
+                }
+            } else {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Tuple destructure requires tuple value, got `{}`",
+                        type_to_string(value_ty)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+        }
+    }
+}
+
 fn unify_types(existing: SemType, next: SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
     if existing == SemType::Unknown {
         return next;
@@ -1493,6 +1634,7 @@ fn contains_unknown(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown => true,
         SemType::Unit => false,
+        SemType::Tuple(items) => items.iter().any(contains_unknown),
         SemType::Path { args, .. } => args.iter().any(contains_unknown),
     }
 }

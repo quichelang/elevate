@@ -80,6 +80,10 @@ pub struct Block {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Const(ConstDef),
+    DestructureConst {
+        pattern: DestructurePattern,
+        value: Expr,
+    },
     Return(Option<Expr>),
     If {
         condition: Expr,
@@ -143,7 +147,20 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    Tuple(Vec<Expr>),
+    Range {
+        start: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+        inclusive: bool,
+    },
     Try(Box<Expr>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DestructurePattern {
+    Name(String),
+    Ignore,
+    Tuple(Vec<DestructurePattern>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

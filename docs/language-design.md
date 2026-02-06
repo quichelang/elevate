@@ -159,6 +159,11 @@ Implemented:
 - Visibility controls for top-level items (`pub` vs private defaults).
 - Control-flow statements: `if` / `else` and `while`.
 - Struct functions via `impl` blocks (associated methods).
+- Logical boolean operators: `and`, `or`, `!`, `not`.
+- Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
+- Tail-expression returns for final function/method expressions.
+- Range expressions: `..` and `..=`.
+- Tuple literals and local tuple destructuring bindings.
 - `rust use` imports and external Rust path calls.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 
@@ -239,7 +244,9 @@ Quality gates:
 - Generic function definitions and constrained bounds are not complete.
 - Additional loop forms beyond `while` are not complete.
 - Ranges, slices, and spread-like expansion are not complete.
-- Full logical/comparison operator surface is not complete.
-- Full tail-expression return behavior across all block forms is not complete.
+- Slices are not complete.
+- Deep destructuring coverage (all contexts) is not complete.
+- Advanced match pattern coverage is not complete.
+- Full tail-expression return behavior across all nested block forms is not complete.
 - Borrow/reference features remain intentionally unsupported.
 - Closure support is deferred to MVP+1.

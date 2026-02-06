@@ -1,7 +1,7 @@
 use crate::ast::{
-    BinaryOp, Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, ImplBlock, Item,
-    MatchArm, Module, Param, Pattern, RustUse, StaticDef, Stmt, StructDef, Type, UnaryOp,
-    Visibility,
+    BinaryOp, Block, ConstDef, DestructurePattern, EnumDef, EnumVariant, Expr, Field, FunctionDef,
+    ImplBlock, Item, MatchArm, Module, Param, Pattern, RustUse, StaticDef, Stmt, StructDef, Type,
+    UnaryOp, Visibility,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -239,6 +239,13 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
         if self.match_kind(TokenKind::Const) {
+            if self.match_kind(TokenKind::LParen) {
+                let pattern = self.parse_destructure_pattern_tuple()?;
+                self.expect(TokenKind::Equal, "Expected '=' after destructuring const pattern")?;
+                let value = self.parse_expr()?;
+                self.expect(TokenKind::Semicolon, "Expected ';' after destructuring const")?;
+                return Some(Stmt::DestructureConst { pattern, value });
+            }
             let name = self.expect_ident("Expected const name")?;
             let ty = if self.match_kind(TokenKind::Colon) {
                 Some(self.parse_type()?)
@@ -298,7 +305,39 @@ impl Parser {
         if self.match_kind(TokenKind::Match) {
             return self.parse_match_expr();
         }
-        self.parse_or_expr()
+        self.parse_range_expr()
+    }
+
+    fn parse_range_expr(&mut self) -> Option<Expr> {
+        if self.match_kind(TokenKind::DotDot) || self.match_kind(TokenKind::DotDotEq) {
+            let inclusive = matches!(self.tokens[self.cursor - 1].kind, TokenKind::DotDotEq);
+            let end = if self.range_rhs_starts_here() {
+                Some(Box::new(self.parse_or_expr()?))
+            } else {
+                None
+            };
+            return Some(Expr::Range {
+                start: None,
+                end,
+                inclusive,
+            });
+        }
+
+        let left = self.parse_or_expr()?;
+        if self.match_kind(TokenKind::DotDot) || self.match_kind(TokenKind::DotDotEq) {
+            let inclusive = matches!(self.tokens[self.cursor - 1].kind, TokenKind::DotDotEq);
+            let end = if self.range_rhs_starts_here() {
+                Some(Box::new(self.parse_or_expr()?))
+            } else {
+                None
+            };
+            return Some(Expr::Range {
+                start: Some(Box::new(left)),
+                end,
+                inclusive,
+            });
+        }
+        Some(left)
     }
 
     fn parse_or_expr(&mut self) -> Option<Expr> {
@@ -463,9 +502,24 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
-                let expr = self.parse_expr()?;
-                self.expect(TokenKind::RParen, "Expected ')' after parenthesized expression")?;
-                Some(expr)
+                if self.match_kind(TokenKind::RParen) {
+                    return Some(Expr::Tuple(Vec::new()));
+                }
+                let first = self.parse_expr()?;
+                if self.match_kind(TokenKind::Comma) {
+                    let mut items = vec![first];
+                    while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                        items.push(self.parse_expr()?);
+                        if !self.match_kind(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen, "Expected ')' after tuple literal")?;
+                    Some(Expr::Tuple(items))
+                } else {
+                    self.expect(TokenKind::RParen, "Expected ')' after parenthesized expression")?;
+                    Some(first)
+                }
             }
             _ => {
                 self.error_current("Expected expression");
@@ -496,6 +550,37 @@ impl Parser {
             path.push(self.expect_ident("Expected identifier after '::'")?);
         }
         Some(path)
+    }
+
+    fn parse_destructure_pattern_tuple(&mut self) -> Option<DestructurePattern> {
+        let mut items = Vec::new();
+        while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+            items.push(self.parse_destructure_pattern_atom()?);
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "Expected ')' after destructuring pattern")?;
+        Some(DestructurePattern::Tuple(items))
+    }
+
+    fn parse_destructure_pattern_atom(&mut self) -> Option<DestructurePattern> {
+        if self.match_kind(TokenKind::Underscore) {
+            return Some(DestructurePattern::Ignore);
+        }
+        if self.match_kind(TokenKind::LParen) {
+            return self.parse_destructure_pattern_tuple();
+        }
+        let name = self.expect_ident("Expected identifier in destructuring pattern")?;
+        Some(DestructurePattern::Name(name))
+    }
+
+    fn range_rhs_starts_here(&self) -> bool {
+        !(self.at(TokenKind::Semicolon)
+            || self.at(TokenKind::Comma)
+            || self.at(TokenKind::RParen)
+            || self.at(TokenKind::RBrace)
+            || self.at(TokenKind::FatArrow))
     }
 
     fn expect_ident(&mut self, message: &str) -> Option<String> {
@@ -607,6 +692,8 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Semicolon, Semicolon)
             | (Comma, Comma)
             | (Dot, Dot)
+            | (DotDot, DotDot)
+            | (DotDotEq, DotDotEq)
             | (Bang, Bang)
             | (Equal, Equal)
             | (EqualEqual, EqualEqual)
@@ -717,6 +804,21 @@ mod tests {
                 } else {
                     x != y
                 }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_ranges_and_tuple_destructure() {
+        let source = r#"
+            fn f() -> i64 {
+                const (a, b) = (1, 2);
+                const r1 = a..b;
+                const r2 = a..=b;
+                return a;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

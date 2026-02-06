@@ -69,6 +69,10 @@ pub struct TypedParam {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedStmt {
     Const(TypedConst),
+    DestructureConst {
+        pattern: TypedDestructurePattern,
+        value: TypedExpr,
+    },
     Return(Option<TypedExpr>),
     If {
         condition: TypedExpr,
@@ -131,6 +135,12 @@ pub enum TypedExprKind {
         left: Box<TypedExpr>,
         right: Box<TypedExpr>,
     },
+    Tuple(Vec<TypedExpr>),
+    Range {
+        start: Option<Box<TypedExpr>>,
+        end: Option<Box<TypedExpr>>,
+        inclusive: bool,
+    },
     Try(Box<TypedExpr>),
 }
 
@@ -164,4 +174,11 @@ pub enum TypedPattern {
         path: Vec<String>,
         binding: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedDestructurePattern {
+    Name(String),
+    Ignore,
+    Tuple(Vec<TypedDestructurePattern>),
 }
