@@ -166,8 +166,11 @@ Implemented:
 - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
 - Tail-expression returns for final function/method expressions.
 - Range expressions: `..` and `..=`.
+- Arithmetic remainder operator `%`.
 - `Vec` indexing and range slicing expressions (`values[i]`, `values[a..b]`).
+- Index assignment targets for vectors (`values[i] = v`).
 - Slice-adjacent `Vec` methods `first`, `last`, and `get(i)` are typed and lowered.
+- `Vec::push` method support with inferred mutable receiver lowering.
 - Heterogeneous tuple support with Rust-like semantics (tuple literals, tuple type annotations, and tuple destructuring bindings in const/assignment/`for` contexts).
 - Slice destructuring bindings for `Vec` values in `const`/`for` patterns (`[head, ..tail]`, `[left, right]`).
 - Generic function definitions with callsite type inference and trait-style bound syntax (for example `fn id<T>(x: T) -> T`, `fn keep<T: Clone + Copy>(x: T) -> T`).
@@ -184,6 +187,7 @@ Implemented:
 - Exhaustiveness analysis is guard-aware for static-true guards (`if true`) while still conservatively excluding other guarded arms.
 - Closure expressions and closure calls with typed parameters.
 - Comment support (`//` and `/* ... */`) and raw multiline string literals.
+- Character literals (`'a'`, escaped forms like `'\n'`).
 - `rust use` imports and external Rust path calls.
 - Inline `rust { ... }` escape blocks (top-level and statement position) that pass raw Rust through without Elevate parsing.
 - Centralized interop policy registry for clone/borrow/shim behavior.
@@ -210,6 +214,7 @@ Implemented:
 - CLI support for `test` subcommand and experiment flag toggles.
 - Lexopt case study API now centered on `Parser` impl methods (compatibility wrapper surface removed).
 - Instance method-call syntax (`value.method(...)`) resolves against user `impl` methods, enabling object-native API style beyond associated-call form.
+- Neon Boardwalk migration progress: board parsing/state transitions now run in Elevate (`runtime.ers`), while terminal raw-mode/input rendering remains in a narrow Rust host module (`host.rs`).
 
 Quality status:
 - Unit tests cover lexer, parser, semantic checks, and codegen behavior.
@@ -293,6 +298,7 @@ Quality gates:
 ### Known Incomplete Areas
 
 - Ownership lowering policy is improved for several core/interoperability paths, but a globally optimal move/clone/borrow planner is not complete.
+- Borrow-free read ergonomics for large owned structs still require explicit state-threading in some flows (for example repeated reads inside loops); first-class non-consuming read views are pending.
 - Generic constrained bounds are partially complete (syntax + Rust emission + initial compile-time checks for `Clone`/`Copy` are implemented; broader trait-bound enforcement remains pending).
 - Full iterator-model ergonomics for `for` loops are not complete beyond current lowering support.
 - Slices are not complete (current support focuses on `Vec` literals/index/range expressions and slice-style match patterns).

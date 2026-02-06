@@ -1,9 +1,10 @@
 rust use crate::runtime;
-rust use crate::runtime::KeyEvent;
+rust use crate::runtime::Board;
+rust use crate::host::KeyEvent;
 
 pub struct Game {
     runtime: i64;
-    board: i64;
+    board: Board;
     puzzle_index: i64;
     cursor_row: i64;
     cursor_col: i64;
@@ -14,10 +15,10 @@ pub struct Game {
 impl Game {
     pub fn new() -> Self {
         const runtime_handle = runtime::runtime_start();
-        const board_handle = runtime::board_from_puzzle(0);
+        const board_state = runtime::board_from_puzzle(0);
         Game {
             runtime: runtime_handle;
-            board: board_handle;
+            board: board_state;
             puzzle_index: 0;
             cursor_row: 0;
             cursor_col: 0;
@@ -28,7 +29,7 @@ impl Game {
 
     pub fn run(self) {
         while self.running {
-            runtime::runtime_render(
+            self.board = runtime::runtime_render(
                 self.board,
                 self.cursor_row,
                 self.cursor_col,
@@ -80,7 +81,8 @@ impl Game {
     }
 
     fn apply_digit(self, value: i64) -> Self {
-        const ok = runtime::board_set(self.board, self.cursor_row, self.cursor_col, value);
+        const (next_board, ok) = runtime::board_set(self.board, self.cursor_row, self.cursor_col, value);
+        self.board = next_board;
         if ok {
             self.message = String::from("");
             return self;
@@ -90,7 +92,8 @@ impl Game {
     }
 
     fn clear_cell(self) -> Self {
-        const ok = runtime::board_clear(self.board, self.cursor_row, self.cursor_col);
+        const (next_board, ok) = runtime::board_clear(self.board, self.cursor_row, self.cursor_col);
+        self.board = next_board;
         if ok {
             self.message = String::from("");
             return self;
@@ -100,11 +103,15 @@ impl Game {
     }
 
     fn check_status(self) -> Self {
-        if board_complete(self.board) {
+        const (board_after_complete, complete) = board_complete(self.board);
+        self.board = board_after_complete;
+        if complete {
             self.message = String::from("Solved! Press n for next puzzle or q to quit");
             return self;
         }
-        if cell_conflict(self.board, self.cursor_row, self.cursor_col) {
+        const (board_after_conflict, conflict) = cell_conflict(self.board, self.cursor_row, self.cursor_col);
+        self.board = board_after_conflict;
+        if conflict {
             self.message = String::from("Current cell conflicts with row/column/box");
             return self;
         }
@@ -144,24 +151,29 @@ fn wrap_0_to_8(value: i64) -> i64 {
     value
 }
 
-fn cell_conflict(board: i64, row: i64, col: i64) -> bool {
-    const value = runtime::board_get(board, row, col);
+fn cell_conflict(board: Board, row: i64, col: i64) -> (Board, bool) {
+    const (board_after_value, value) = runtime::board_get(board, row, col);
+    board = board_after_value;
     if value == 0 {
-        return false;
+        return (board, false);
     }
 
     for c in 0..9 {
+        const (next_board, candidate) = runtime::board_get(board, row, c);
+        board = next_board;
         if c != col {
-            if runtime::board_get(board, row, c) == value {
-                return true;
+            if candidate == value {
+                return (board, true);
             }
         }
     }
 
     for r in 0..9 {
+        const (next_board, candidate) = runtime::board_get(board, r, col);
+        board = next_board;
         if r != row {
-            if runtime::board_get(board, r, col) == value {
-                return true;
+            if candidate == value {
+                return (board, true);
             }
         }
     }
@@ -174,33 +186,40 @@ fn cell_conflict(board: i64, row: i64, col: i64) -> bool {
                 if c == col {
                     ()
                 } else {
-                    if runtime::board_get(board, r, c) == value {
-                        return true;
+                    const (next_board, candidate) = runtime::board_get(board, r, c);
+                    board = next_board;
+                    if candidate == value {
+                        return (board, true);
                     }
                 }
             } else {
-                if runtime::board_get(board, r, c) == value {
-                    return true;
+                const (next_board, candidate) = runtime::board_get(board, r, c);
+                board = next_board;
+                if candidate == value {
+                    return (board, true);
                 }
             }
         }
     }
 
-    false
+    (board, false)
 }
 
-fn board_complete(board: i64) -> bool {
+fn board_complete(board: Board) -> (Board, bool) {
     for row in 0..9 {
         for col in 0..9 {
-            const value = runtime::board_get(board, row, col);
+            const (board_after_get, value) = runtime::board_get(board, row, col);
+            board = board_after_get;
             if value == 0 {
-                return false;
+                return (board, false);
             }
-            if cell_conflict(board, row, col) {
-                return false;
+            const (board_after_check, conflict) = cell_conflict(board, row, col);
+            board = board_after_check;
+            if conflict {
+                return (board, false);
             }
         }
     }
 
-    true
+    (board, true)
 }

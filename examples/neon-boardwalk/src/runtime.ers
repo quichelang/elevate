@@ -1,0 +1,146 @@
+rust use crate::host;
+rust use crate::host::KeyEvent;
+
+pub struct Board {
+    cells: Vec<i64>;
+    fixed: Vec<bool>;
+}
+
+pub fn runtime_start() -> i64 {
+    host::runtime_start()
+}
+
+pub fn runtime_poll_key(handle: i64) -> Option<KeyEvent> {
+    host::runtime_poll_key(handle)
+}
+
+pub fn runtime_shutdown(handle: i64) {
+    host::runtime_shutdown(handle);
+}
+
+pub fn runtime_render(board: Board, cursor_row: i64, cursor_col: i64, message: String) -> Board {
+    host::runtime_render(board, cursor_row, cursor_col, message)
+}
+
+pub fn puzzle_count() -> i64 {
+    3
+}
+
+pub fn board_from_puzzle(index: i64) -> Board {
+    const text = puzzle_text(index);
+    const cells = parse_cells(text);
+    const fixed = build_fixed(cells);
+    Board {
+        cells: cells;
+        fixed: fixed;
+    }
+}
+
+pub fn board_get(board: Board, row: i64, col: i64) -> (Board, i64) {
+    const index = board_index(row, col);
+    if index < 0 {
+        return (board, 0);
+    }
+    const value = board.cells[index];
+    (board, value)
+}
+
+pub fn board_set(board: Board, row: i64, col: i64, value: i64) -> (Board, bool) {
+    if value < 1 {
+        return (board, false);
+    }
+    if value > 9 {
+        return (board, false);
+    }
+
+    const index = board_index(row, col);
+    if index < 0 {
+        return (board, false);
+    }
+    board_set_at_index(board, index, value)
+}
+
+pub fn board_clear(board: Board, row: i64, col: i64) -> (Board, bool) {
+    const index = board_index(row, col);
+    if index < 0 {
+        return (board, false);
+    }
+    board_set_at_index(board, index, 0)
+}
+
+fn board_set_at_index(board: Board, index: i64, value: i64) -> (Board, bool) {
+    if board.fixed[index] {
+        return (board, false);
+    }
+    board.cells[index] = value;
+    (board, true)
+}
+
+fn board_index(row: i64, col: i64) -> i64 {
+    if row < 0 or row > 8 {
+        return -1;
+    }
+    if col < 0 or col > 8 {
+        return -1;
+    }
+    row * 9 + col
+}
+
+fn puzzle_text(index: i64) -> String {
+    const normalized = normalize_puzzle_index(index);
+    match normalized {
+        0 => "530070000600195000098000060800060003400803001700020006060000280000419005000080079";
+        1 => "009000000080605020501078000000000700706040102004000000000720903090301080000000600";
+        _ => "000260701680070090190004500820100040004602900050003028009300074040050036703018000";
+    }
+}
+
+fn normalize_puzzle_index(index: i64) -> i64 {
+    const total = puzzle_count();
+    if total == 0 {
+        return 0;
+    }
+    const wrapped = index % total;
+    if wrapped < 0 {
+        return wrapped + total;
+    }
+    wrapped
+}
+
+fn parse_cells(text: String) -> Vec<i64> {
+    parse_cells_into(text, [])
+}
+
+fn parse_cells_into(text: String, cells: Vec<i64>) -> Vec<i64> {
+    for ch in text.chars() {
+        cells.push(char_to_digit(ch));
+    }
+    cells
+}
+
+fn build_fixed(cells: Vec<i64>) -> Vec<bool> {
+    build_fixed_into(cells, [])
+}
+
+fn build_fixed_into(cells: Vec<i64>, fixed: Vec<bool>) -> Vec<bool> {
+    for value in cells {
+        fixed.push(value != 0);
+    }
+    fixed
+}
+
+fn char_to_digit(ch: char) -> i64 {
+    match ch {
+        '0' => 0;
+        '1' => 1;
+        '2' => 2;
+        '3' => 3;
+        '4' => 4;
+        '5' => 5;
+        '6' => 6;
+        '7' => 7;
+        '8' => 8;
+        '9' => 9;
+        _ => 0;
+    }
+}

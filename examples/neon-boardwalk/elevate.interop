@@ -1,3 +1,5 @@
 allow crate::runtime
-allow crate::runtime::KeyEvent
+allow crate::runtime::Board
+allow crate::host
+allow crate::host::KeyEvent
 allow neon_boardwalk::app::Game
