@@ -149,6 +149,9 @@ Implemented:
 - Rust emission includes full function bodies (no `todo!` stubs for supported features).
 - `Option`/`Result` constructors plus `?` validation.
 - Enum `match` expressions.
+- Visibility controls for top-level items (`pub` vs private defaults).
+- Control-flow statements: `if` / `else` and `while`.
+- Struct functions via `impl` blocks (associated methods).
 - `rust use` imports and external Rust path calls.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 
@@ -227,7 +230,6 @@ Quality gates:
 
 - Ownership lowering policy implementation is not complete.
 - Generic function definitions and constrained bounds are not complete.
-- Conditional blocks and loop constructs are not complete.
-- Struct functions and visibility controls are not complete.
+- Additional loop forms beyond `while` are not complete.
 - Borrow/reference features remain intentionally unsupported.
 - Closure support is deferred to MVP+1.

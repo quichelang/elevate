@@ -1,6 +1,6 @@
 use crate::ir::lowered::{
-    RustConst, RustEnum, RustExpr, RustFunction, RustItem, RustModule, RustPattern, RustStatic,
-    RustStmt, RustStruct, RustUse,
+    RustConst, RustEnum, RustExpr, RustFunction, RustImpl, RustItem, RustModule, RustPattern,
+    RustStatic, RustStmt, RustStruct, RustUse,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -12,6 +12,7 @@ pub fn emit_rust_module(module: &RustModule) -> String {
             RustItem::Use(def) => emit_use(def, &mut out),
             RustItem::Struct(def) => emit_struct(def, &mut out),
             RustItem::Enum(def) => emit_enum(def, &mut out),
+            RustItem::Impl(def) => emit_impl(def, &mut out),
             RustItem::Function(def) => emit_function(def, &mut out),
             RustItem::Const(def) => emit_const(def, &mut out),
             RustItem::Static(def) => emit_static(def, &mut out),
@@ -60,6 +61,30 @@ fn emit_function(def: &RustFunction, out: &mut String) {
     out.push_str(" {\n");
     for stmt in &def.body {
         emit_stmt(stmt, out);
+    }
+    out.push_str("}\n");
+}
+
+fn emit_impl(def: &RustImpl, out: &mut String) {
+    out.push_str(&format!("impl {} {{\n", def.target));
+    for method in &def.methods {
+        let params = method
+            .params
+            .iter()
+            .map(|p| format!("{}: {}", p.name, p.ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(
+            "    {}fn {}({}) -> {} {{\n",
+            vis(method.is_public),
+            method.name,
+            params,
+            method.return_type
+        ));
+        for stmt in &method.body {
+            emit_stmt_with_indent(stmt, out, 2);
+        }
+        out.push_str("    }\n");
     }
     out.push_str("}\n");
 }

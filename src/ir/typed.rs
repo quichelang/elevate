@@ -8,6 +8,7 @@ pub enum TypedItem {
     RustUse(TypedRustUse),
     Struct(TypedStruct),
     Enum(TypedEnum),
+    Impl(TypedImpl),
     Function(TypedFunction),
     Const(TypedConst),
     Static(TypedStatic),
@@ -51,6 +52,12 @@ pub struct TypedFunction {
     pub params: Vec<TypedParam>,
     pub return_type: String,
     pub body: Vec<TypedStmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedImpl {
+    pub target: String,
+    pub methods: Vec<TypedFunction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

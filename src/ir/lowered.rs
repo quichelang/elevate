@@ -8,6 +8,7 @@ pub enum RustItem {
     Use(RustUse),
     Struct(RustStruct),
     Enum(RustEnum),
+    Impl(RustImpl),
     Function(RustFunction),
     Const(RustConst),
     Static(RustStatic),
@@ -51,6 +52,12 @@ pub struct RustFunction {
     pub params: Vec<RustParam>,
     pub return_type: String,
     pub body: Vec<RustStmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustImpl {
+    pub target: String,
+    pub methods: Vec<RustFunction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

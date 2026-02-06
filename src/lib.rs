@@ -250,6 +250,29 @@ mod tests {
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_impl_methods() {
+        let source = r#"
+            pub struct Point { x: i64; }
+
+            impl Point {
+                pub fn get_x(p: Point) -> i64 {
+                    return p.x;
+                }
+            }
+
+            pub fn read_x(p: Point) -> i64 {
+                return Point::get_x(p);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("impl Point"));
+        assert!(output.rust_code.contains("pub fn get_x"));
+        assert!(output.rust_code.contains("Point::get_x(p)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {

@@ -1,6 +1,6 @@
 use crate::ast::{
-    Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, Item, MatchArm, Module, Param,
-    Pattern, RustUse, StaticDef, Stmt, StructDef, Type, Visibility,
+    Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, ImplBlock, Item, MatchArm,
+    Module, Param, Pattern, RustUse, StaticDef, Stmt, StructDef, Type, Visibility,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -61,6 +61,12 @@ impl Parser {
         if self.match_kind(TokenKind::Enum) {
             return self.parse_enum(visibility).map(Item::Enum);
         }
+        if self.match_kind(TokenKind::Impl) {
+            if visibility == Visibility::Public {
+                self.error_current("`pub impl` is not supported");
+            }
+            return self.parse_impl().map(Item::Impl);
+        }
         if self.match_kind(TokenKind::Fn) {
             return self.parse_function(visibility).map(Item::Function);
         }
@@ -75,7 +81,9 @@ impl Parser {
             return None;
         }
 
-        self.error_current("Expected top-level item (`rust use`, `struct`, `enum`, `fn`, `const`, `static`)");
+        self.error_current(
+            "Expected top-level item (`rust use`, `struct`, `enum`, `impl`, `fn`, `const`, `static`)",
+        );
         None
     }
 
@@ -165,6 +173,23 @@ impl Parser {
             return_type,
             body,
         })
+    }
+
+    fn parse_impl(&mut self) -> Option<ImplBlock> {
+        let target = self.expect_ident("Expected type name after `impl`")?;
+        self.expect(TokenKind::LBrace, "Expected '{' to start impl block")?;
+        let mut methods = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let method_visibility = if self.match_kind(TokenKind::Pub) {
+                Visibility::Public
+            } else {
+                Visibility::Private
+            };
+            self.expect(TokenKind::Fn, "Expected `fn` in impl block")?;
+            methods.push(self.parse_function(method_visibility)?);
+        }
+        self.expect(TokenKind::RBrace, "Expected '}' after impl block")?;
+        Some(ImplBlock { target, methods })
     }
 
     fn parse_const_item(&mut self, visibility: Visibility) -> Option<ConstDef> {
@@ -458,6 +483,7 @@ impl Parser {
                 || self.at(TokenKind::Pub)
                 || self.at(TokenKind::Struct)
                 || self.at(TokenKind::Enum)
+                || self.at(TokenKind::Impl)
                 || self.at(TokenKind::Fn)
                 || self.at(TokenKind::Const)
                 || self.at(TokenKind::Static)
@@ -477,6 +503,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Use, Use)
             | (Struct, Struct)
             | (Enum, Enum)
+            | (Impl, Impl)
             | (Fn, Fn)
             | (Const, Const)
             | (Static, Static)
@@ -575,6 +602,21 @@ mod tests {
                     return 1;
                 }
                 return 0;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
+    }
+
+    #[test]
+    fn parse_impl_methods() {
+        let source = r#"
+            struct Point { x: i64; }
+            impl Point {
+                pub fn get_x(p: Point) -> i64 {
+                    return p.x;
+                }
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

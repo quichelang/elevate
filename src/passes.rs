@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use crate::ast::{Block, Expr, Item, Module, Pattern, Stmt, Type, Visibility};
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
-    RustConst, RustEnum, RustExpr, RustField, RustFunction, RustItem, RustMatchArm, RustModule,
-    RustParam, RustPattern, RustStatic, RustStmt, RustStruct, RustUse, RustVariant,
+    RustConst, RustEnum, RustExpr, RustField, RustFunction, RustImpl, RustItem, RustMatchArm,
+    RustModule, RustParam, RustPattern, RustStatic, RustStmt, RustStruct, RustUse, RustVariant,
 };
 use crate::ir::typed::{
-    TypedConst, TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedItem,
+    TypedConst, TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedItem,
     TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedRustUse, TypedStatic, TypedStmt,
     TypedStruct, TypedVariant,
 };
@@ -88,6 +88,27 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
                     })
                     .collect(),
             }),
+            TypedItem::Impl(def) => RustItem::Impl(RustImpl {
+                target: def.target.clone(),
+                methods: def
+                    .methods
+                    .iter()
+                    .map(|method| RustFunction {
+                        is_public: method.is_public,
+                        name: method.name.clone(),
+                        params: method
+                            .params
+                            .iter()
+                            .map(|param| RustParam {
+                                name: param.name.clone(),
+                                ty: param.ty.clone(),
+                            })
+                            .collect(),
+                        return_type: method.return_type.clone(),
+                        body: method.body.iter().map(lower_stmt).collect(),
+                    })
+                    .collect(),
+            }),
             TypedItem::Function(def) => RustItem::Function(RustFunction {
                 is_public: def.is_public,
                 name: def.name.clone(),
@@ -154,6 +175,25 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                 };
                 context.functions.insert(def.name.clone(), sig);
             }
+            Item::Impl(def) => {
+                for method in &def.methods {
+                    let sig = FunctionSig {
+                        params: method
+                            .params
+                            .iter()
+                            .map(|param| type_from_ast(&param.ty))
+                            .collect(),
+                        return_type: method
+                            .return_type
+                            .as_ref()
+                            .map(type_from_ast)
+                            .unwrap_or(SemType::Unit),
+                    };
+                    context
+                        .functions
+                        .insert(format!("{}::{}", def.target, method.name), sig);
+                }
+            }
             Item::Const(def) => {
                 let ty = def.ty.as_ref().map(type_from_ast).unwrap_or(SemType::Unknown);
                 context.globals.insert(def.name.clone(), ty);
@@ -200,6 +240,71 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                 })
                 .collect(),
         })),
+        Item::Impl(def) => {
+            let mut methods = Vec::new();
+            for method in &def.methods {
+                let mut locals = HashMap::new();
+                for param in &method.params {
+                    locals.insert(param.name.clone(), type_from_ast(&param.ty));
+                }
+                let declared_return_ty = method.return_type.as_ref().map(type_from_ast);
+                let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
+                let mut body = Vec::new();
+                let mut inferred_returns = Vec::new();
+                for statement in &method.body.statements {
+                    if let Some(stmt) = lower_stmt_with_types(
+                        statement,
+                        context,
+                        &mut locals,
+                        &provisional_return_ty,
+                        &mut inferred_returns,
+                        diagnostics,
+                    ) {
+                        body.push(stmt);
+                    }
+                }
+                let final_return_ty = declared_return_ty.unwrap_or_else(|| {
+                    infer_return_type(&inferred_returns, diagnostics, &method.name)
+                });
+                if contains_unknown(&final_return_ty) {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Method `{}` return type could not be fully inferred; add an explicit return type",
+                            method.name
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+                if final_return_ty != SemType::Unit && inferred_returns.is_empty() {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Method `{}` must explicitly return `{}`",
+                            method.name,
+                            type_to_string(&final_return_ty)
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+                methods.push(TypedFunction {
+                    is_public: method.visibility == Visibility::Public,
+                    name: method.name.clone(),
+                    params: method
+                        .params
+                        .iter()
+                        .map(|param| TypedParam {
+                            name: param.name.clone(),
+                            ty: type_to_string(&type_from_ast(&param.ty)),
+                        })
+                        .collect(),
+                    return_type: type_to_string(&final_return_ty),
+                    body,
+                });
+            }
+            Some(TypedItem::Impl(TypedImpl {
+                target: def.target.clone(),
+                methods,
+            }))
+        }
         Item::Const(def) => {
             let mut locals = HashMap::new();
             let (typed_value, inferred) =
@@ -629,6 +734,37 @@ fn resolve_call_type(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SemType {
     if let TypedExprKind::Path(path) = &callee.kind {
+        let lookup_name = path.join("::");
+        if let Some(sig) = context.functions.get(&lookup_name) {
+            let name = lookup_name;
+            if sig.params.len() != args.len() {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Function `{name}` expects {} args, got {}",
+                        sig.params.len(),
+                        args.len()
+                    ),
+                    Span::new(0, 0),
+                ));
+                return sig.return_type.clone();
+            }
+
+            for (index, (actual, expected)) in args.iter().zip(&sig.params).enumerate() {
+                if !is_compatible(actual, expected) {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Arg {} for `{name}`: expected `{}`, got `{}`",
+                            index + 1,
+                            type_to_string(expected),
+                            type_to_string(actual)
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+            }
+            return sig.return_type.clone();
+        }
+
         if path.len() == 1 {
             let name = &path[0];
             if let Some(sig) = context.functions.get(name) {

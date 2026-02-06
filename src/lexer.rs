@@ -12,6 +12,7 @@ pub enum TokenKind {
     Use,
     Struct,
     Enum,
+    Impl,
     Fn,
     Const,
     Static,
@@ -206,6 +207,7 @@ impl<'a> Lexer<'a> {
             "use" => TokenKind::Use,
             "struct" => TokenKind::Struct,
             "enum" => TokenKind::Enum,
+            "impl" => TokenKind::Impl,
             "fn" => TokenKind::Fn,
             "const" => TokenKind::Const,
             "static" => TokenKind::Static,
@@ -324,5 +326,13 @@ mod tests {
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::If)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Else)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::While)));
+    }
+
+    #[test]
+    fn lex_impl_tokens() {
+        let source = "impl Point { pub fn make() { return; } }";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Impl)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Pub)));
     }
 }

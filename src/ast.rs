@@ -14,6 +14,7 @@ pub enum Item {
     RustUse(RustUse),
     Struct(StructDef),
     Enum(EnumDef),
+    Impl(ImplBlock),
     Function(FunctionDef),
     Const(ConstDef),
     Static(StaticDef),
@@ -57,6 +58,12 @@ pub struct FunctionDef {
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub body: Block,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplBlock {
+    pub target: String,
+    pub methods: Vec<FunctionDef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
