@@ -1381,6 +1381,13 @@ fn infer_expr(
             },
             named_type("bool"),
         ),
+        Expr::Char(value) => (
+            TypedExpr {
+                kind: TypedExprKind::Char(*value),
+                ty: "char".to_string(),
+            },
+            named_type("char"),
+        ),
         Expr::String(value) => (
             TypedExpr {
                 kind: TypedExprKind::String(value.clone()),
@@ -3400,6 +3407,7 @@ fn lower_expr_with_context(
         TypedExprKind::Int(value) => RustExpr::Int(*value),
         TypedExprKind::Bool(value) => RustExpr::Bool(*value),
         TypedExprKind::String(value) => RustExpr::String(value.clone()),
+        TypedExprKind::Char(value) => RustExpr::Char(*value),
         TypedExprKind::Path(path) => lower_path_expr(path, &expr.ty, position, context, state),
         TypedExprKind::Call { callee, args } => {
             if let TypedExprKind::Path(path) = &callee.kind
@@ -4202,6 +4210,7 @@ fn collect_path_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<String, usize>
         TypedExprKind::Int(_)
         | TypedExprKind::Bool(_)
         | TypedExprKind::String(_)
+        | TypedExprKind::Char(_)
         | TypedExprKind::Path(_) => {}
     }
 }
@@ -4580,6 +4589,10 @@ fn lower_pattern(
         Pattern::Bool(value) => {
             ensure_pattern_type(scrutinee_ty, &named_type("bool"), "bool", diagnostics);
             TypedPattern::Bool(*value)
+        }
+        Pattern::Char(value) => {
+            ensure_pattern_type(scrutinee_ty, &named_type("char"), "char", diagnostics);
+            TypedPattern::Char(*value)
         }
         Pattern::String(value) => {
             ensure_pattern_type(scrutinee_ty, &named_type("String"), "string", diagnostics);
@@ -5168,6 +5181,7 @@ fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
         TypedPattern::Binding(name) => RustPattern::Binding(name.clone()),
         TypedPattern::Int(value) => RustPattern::Int(*value),
         TypedPattern::Bool(value) => RustPattern::Bool(*value),
+        TypedPattern::Char(value) => RustPattern::Char(*value),
         TypedPattern::String(value) => RustPattern::String(value.clone()),
         TypedPattern::Tuple(items) => {
             RustPattern::Tuple(items.iter().map(lower_pattern_to_rust).collect())

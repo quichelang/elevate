@@ -1824,6 +1824,25 @@ world"#;
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_char_literals_in_match() {
+        let source = r#"
+            fn classify(ch: char) -> i64 {
+                return match ch {
+                    'a' => 1;
+                    'b' => 2;
+                    _ => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("match ch"));
+        assert!(output.rust_code.contains("'a' => 1"));
+        assert!(output.rust_code.contains("'b' => 2"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {

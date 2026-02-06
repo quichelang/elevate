@@ -657,6 +657,10 @@ impl Parser {
         if self.match_kind(TokenKind::False) {
             return Some(Pattern::Bool(false));
         }
+        if let TokenKind::CharLiteral(value) = self.peek().kind.clone() {
+            self.advance();
+            return Some(Pattern::Char(value));
+        }
         if let TokenKind::StringLiteral(value) = self.peek().kind.clone() {
             self.advance();
             return Some(Pattern::String(value));
@@ -883,6 +887,10 @@ impl Parser {
             TokenKind::StringLiteral(value) => {
                 self.advance();
                 Some(Expr::String(value))
+            }
+            TokenKind::CharLiteral(value) => {
+                self.advance();
+                Some(Expr::Char(value))
             }
             TokenKind::Identifier(_) => {
                 let path = self.parse_path("Expected identifier path")?;
@@ -1268,6 +1276,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Underscore, Underscore)
             | (Identifier(_), Identifier(_))
             | (IntLiteral(_), IntLiteral(_))
+            | (CharLiteral(_), CharLiteral(_))
             | (StringLiteral(_), StringLiteral(_))
             | (LBrace, LBrace)
             | (RBrace, RBrace)
@@ -1747,6 +1756,21 @@ world"#;
                 return msg;
             }
         "##;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_char_literals_in_exprs_and_patterns() {
+        let source = r#"
+            fn classify(ch: char) -> i64 {
+                return match ch {
+                    'a' => 1;
+                    _ => 0;
+                };
+            }
+        "#;
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 1);

@@ -36,6 +36,7 @@ pub enum TokenKind {
     Underscore,
     Identifier(String),
     IntLiteral(i64),
+    CharLiteral(char),
     StringLiteral(String),
     LBrace,
     RBrace,
@@ -227,6 +228,7 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '"' => self.lex_string(start),
+                '\'' => self.lex_char(start),
                 'r' => {
                     if self.peek_char() == Some('"') || self.peek_char() == Some('#') {
                         self.lex_raw_string(start);
@@ -278,6 +280,79 @@ impl<'a> Lexer<'a> {
             "Unterminated string literal",
             Span::new(start, self.cursor),
         ));
+    }
+
+    fn lex_char(&mut self, start: usize) {
+        let value = match self.peek_char() {
+            Some('\\') => {
+                self.advance();
+                match self.peek_char() {
+                    Some('n') => {
+                        self.advance();
+                        '\n'
+                    }
+                    Some('r') => {
+                        self.advance();
+                        '\r'
+                    }
+                    Some('t') => {
+                        self.advance();
+                        '\t'
+                    }
+                    Some('0') => {
+                        self.advance();
+                        '\0'
+                    }
+                    Some('\\') => {
+                        self.advance();
+                        '\\'
+                    }
+                    Some('\'') => {
+                        self.advance();
+                        '\''
+                    }
+                    Some(other) => {
+                        self.advance();
+                        self.diagnostics.push(Diagnostic::new(
+                            format!("Unsupported char escape '\\{other}'"),
+                            Span::new(start, self.cursor),
+                        ));
+                        other
+                    }
+                    None => {
+                        self.diagnostics.push(Diagnostic::new(
+                            "Unterminated character literal escape",
+                            Span::new(start, self.cursor),
+                        ));
+                        return;
+                    }
+                }
+            }
+            Some(value) => {
+                self.advance();
+                value
+            }
+            None => {
+                self.diagnostics.push(Diagnostic::new(
+                    "Unterminated character literal",
+                    Span::new(start, self.cursor),
+                ));
+                return;
+            }
+        };
+
+        if self.peek_char() != Some('\'') {
+            self.diagnostics.push(Diagnostic::new(
+                "Character literal must contain exactly one character",
+                Span::new(start, self.cursor),
+            ));
+            return;
+        }
+        self.advance();
+        self.tokens.push(Token {
+            kind: TokenKind::CharLiteral(value),
+            span: Span::new(start, self.cursor),
+        });
     }
 
     fn lex_raw_string(&mut self, start: usize) {
@@ -733,5 +808,20 @@ last line"#;"##;
         assert!(literal.contains('\n'));
         assert!(literal.contains("\"quoted\""));
         assert!(literal.contains("last line"));
+    }
+
+    #[test]
+    fn lex_char_literals() {
+        let source = r#"const a = 'x'; const b = '\n'; const c = '\'';"#;
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::CharLiteral('x'))));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::CharLiteral('\n'))));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::CharLiteral('\''))));
     }
 }

@@ -156,6 +156,7 @@ pub struct TypedExpr {
 pub enum TypedExprKind {
     Int(i64),
     Bool(bool),
+    Char(char),
     String(String),
     Path(Vec<String>),
     Call {
@@ -248,6 +249,7 @@ pub enum TypedPattern {
     Binding(String),
     Int(i64),
     Bool(bool),
+    Char(char),
     String(String),
     Tuple(Vec<TypedPattern>),
     Slice {

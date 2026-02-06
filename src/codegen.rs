@@ -290,6 +290,7 @@ fn emit_expr(expr: &RustExpr) -> String {
     match expr {
         RustExpr::Int(value) => value.to_string(),
         RustExpr::Bool(value) => value.to_string(),
+        RustExpr::Char(value) => emit_char_literal(*value),
         RustExpr::String(value) => format!("::std::string::String::from({value:?})"),
         RustExpr::Path(path) => path.join("::"),
         RustExpr::Borrow(inner) => {
@@ -474,6 +475,7 @@ fn emit_pattern(pattern: &RustPattern) -> String {
         RustPattern::Binding(name) => name.clone(),
         RustPattern::Int(value) => value.to_string(),
         RustPattern::Bool(value) => value.to_string(),
+        RustPattern::Char(value) => emit_char_literal(*value),
         RustPattern::String(value) => format!("{value:?}"),
         RustPattern::Tuple(items) => {
             let inner = items
@@ -934,12 +936,28 @@ fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::Ha
         RustExpr::Try(inner) | RustExpr::Borrow(inner) | RustExpr::Cast { expr: inner, .. } => {
             collect_mutated_paths_in_expr(inner, out)
         }
-        RustExpr::Int(_) | RustExpr::Bool(_) | RustExpr::String(_) | RustExpr::Path(_) => {}
+        RustExpr::Int(_)
+        | RustExpr::Bool(_)
+        | RustExpr::Char(_)
+        | RustExpr::String(_)
+        | RustExpr::Path(_) => {}
     }
 }
 
 fn method_mutates_receiver(field: &str) -> bool {
     matches!(field, "push")
+}
+
+fn emit_char_literal(value: char) -> String {
+    match value {
+        '\\' => "'\\\\'".to_string(),
+        '\'' => "'\\''".to_string(),
+        '\n' => "'\\n'".to_string(),
+        '\r' => "'\\r'".to_string(),
+        '\t' => "'\\t'".to_string(),
+        '\0' => "'\\0'".to_string(),
+        other => format!("'{other}'"),
+    }
 }
 
 fn emit_slice_element_rebinds(pattern: &RustDestructurePattern, out: &mut String, indent: usize) {

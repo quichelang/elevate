@@ -151,6 +151,7 @@ pub struct RustStatic {
 pub enum RustExpr {
     Int(i64),
     Bool(bool),
+    Char(char),
     String(String),
     Path(Vec<String>),
     Borrow(Box<RustExpr>),
@@ -248,6 +249,7 @@ pub enum RustPattern {
     Binding(String),
     Int(i64),
     Bool(bool),
+    Char(char),
     String(String),
     Tuple(Vec<RustPattern>),
     Slice {

@@ -148,6 +148,7 @@ pub struct Type {
 pub enum Expr {
     Int(i64),
     Bool(bool),
+    Char(char),
     String(String),
     Path(Vec<String>),
     Call {
@@ -272,6 +273,7 @@ pub enum Pattern {
     Binding(String),
     Int(i64),
     Bool(bool),
+    Char(char),
     String(String),
     Tuple(Vec<Pattern>),
     Slice {
