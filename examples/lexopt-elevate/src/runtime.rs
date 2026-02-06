@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::model::{Arg, ParseError};
+use crate::model::Arg;
+use crate::parser::{ClusterHead, LongWithValue, MaybeString, RawArgClass};
 
 #[derive(Debug, Clone)]
 struct ParserState {
     args: Vec<String>,
     index: usize,
     pending_value: Option<String>,
-    short_cluster: Option<(Vec<char>, usize)>,
+    short_cluster: Option<String>,
     finished_opts: bool,
     last_option: Option<String>,
 }
@@ -35,161 +36,173 @@ pub fn from_raw(raw: String) -> i64 {
 }
 
 pub fn reset(handle: i64) {
-    let mut registry = registry().lock().expect("registry mutex poisoned");
-    if let Some(state) = registry.states.get_mut(&handle) {
+    with_state_mut(handle, |state| {
         state.index = 0;
         state.pending_value = None;
         state.short_cluster = None;
         state.finished_opts = false;
         state.last_option = None;
-    }
+    });
 }
 
-pub fn next(handle: i64) -> Result<Option<Arg>, ParseError> {
-    let mut registry = registry().lock().expect("registry mutex poisoned");
-    let state = lookup_state(&mut registry, handle)?;
-    next_impl(state)
+pub fn take_pending_value(handle: i64) -> MaybeString {
+    from_option(with_state_mut(handle, |state| state.pending_value.take()).flatten())
 }
 
-pub fn value(handle: i64) -> Result<String, ParseError> {
-    let mut registry = registry().lock().expect("registry mutex poisoned");
-    let state = lookup_state(&mut registry, handle)?;
-
-    if let Some(value) = take_optional_value(state) {
-        return Ok(value);
-    }
-
-    if let Some(value) = state.args.get(state.index).cloned() {
-        state.index += 1;
-        return Ok(value);
-    }
-
-    Err(ParseError::MissingValue(format_missing_value(
-        state.last_option.as_ref(),
-    )))
+pub fn set_pending_value(handle: i64, value: String) {
+    with_state_mut(handle, |state| {
+        state.pending_value = Some(value);
+    });
 }
 
-pub fn optional_value(handle: i64) -> Option<String> {
-    let mut registry = registry().lock().expect("registry mutex poisoned");
-    let state = registry.states.get_mut(&handle)?;
-    take_optional_value(state)
+pub fn take_short_cluster(handle: i64) -> MaybeString {
+    from_option(with_state_mut(handle, |state| state.short_cluster.take()).flatten())
 }
 
-pub fn values(handle: i64) -> Result<Option<String>, ParseError> {
-    let mut registry = registry().lock().expect("registry mutex poisoned");
-    let state = lookup_state(&mut registry, handle)?;
+pub fn set_short_cluster(handle: i64, cluster: String) {
+    with_state_mut(handle, |state| {
+        state.short_cluster = if cluster.is_empty() { None } else { Some(cluster) };
+    });
+}
 
-    if let Some(value) = take_optional_value(state) {
-        return Ok(Some(value));
-    }
-
-    if let Some(value) = state.args.get(state.index).cloned() {
-        if state.finished_opts || value == "-" || !value.starts_with('-') {
+pub fn take_next_arg(handle: i64) -> MaybeString {
+    let value = with_state_mut(handle, |state| {
+        let arg = state.args.get(state.index).cloned();
+        if arg.is_some() {
             state.index += 1;
-            return Ok(Some(value));
         }
-    }
-
-    Err(ParseError::MissingValue(format_missing_value(
-        state.last_option.as_ref(),
-    )))
+        arg
+    })
+    .flatten();
+    from_option(value)
 }
 
-fn next_impl(state: &mut ParserState) -> Result<Option<Arg>, ParseError> {
-    loop {
-        if let Some(value) = state.pending_value.take() {
-            let option = state
-                .last_option
-                .clone()
-                .unwrap_or_else(|| "<unknown-option>".to_string());
-            return Err(ParseError::UnexpectedValue(format!(
-                "unexpected argument for option '{}': {}",
-                option, value
-            )));
+pub fn take_next_if_normal(handle: i64) -> MaybeString {
+    let value = with_state_mut(handle, |state| {
+        let arg = state.args.get(state.index).cloned()?;
+        if state.finished_opts || arg == "-" || !arg.starts_with('-') {
+            state.index += 1;
+            Some(arg)
+        } else {
+            None
         }
+    })
+    .flatten();
+    from_option(value)
+}
 
-        if let Some((cluster, mut pos)) = state.short_cluster.take() {
-            if pos >= cluster.len() {
-                continue;
-            }
+pub fn is_finished_opts(handle: i64) -> bool {
+    with_state_mut(handle, |state| state.finished_opts).unwrap_or(false)
+}
 
-            if cluster[pos] == '=' && pos > 1 {
-                pos += 1;
-                let value = cluster[pos..].iter().collect::<String>();
-                let option = state
-                    .last_option
-                    .clone()
-                    .unwrap_or_else(|| "<unknown-option>".to_string());
-                return Err(ParseError::UnexpectedValue(format!(
-                    "unexpected argument for option '{}': {}",
-                    option, value
-                )));
-            }
+pub fn set_finished_opts(handle: i64) {
+    with_state_mut(handle, |state| {
+        state.finished_opts = true;
+    });
+}
 
-            let short = cluster[pos].to_string();
-            pos += 1;
-            if pos < cluster.len() {
-                state.short_cluster = Some((cluster, pos));
-            }
-            state.last_option = Some(format!("-{short}"));
-            return Ok(Some(Arg::Short(short)));
-        }
-
-        let current = match state.args.get(state.index).cloned() {
-            Some(arg) => arg,
-            None => return Ok(None),
-        };
-        state.index += 1;
-
-        if state.finished_opts {
-            state.last_option = None;
-            return Ok(Some(Arg::Value(current)));
-        }
-
-        if current == "--" {
-            state.finished_opts = true;
-            continue;
-        }
-
-        if let Some(rest) = current.strip_prefix("--") {
-            if let Some((name, value)) = rest.split_once('=') {
-                state.pending_value = Some(value.to_string());
-                state.last_option = Some(format!("--{name}"));
-                return Ok(Some(Arg::Long(name.to_string())));
-            }
-            state.last_option = Some(format!("--{rest}"));
-            return Ok(Some(Arg::Long(rest.to_string())));
-        }
-
-        if current.starts_with('-') && current != "-" {
-            let chars = current.chars().collect::<Vec<_>>();
-            if chars.len() > 1 {
-                state.short_cluster = Some((chars, 1));
-                continue;
-            }
-        }
-
+pub fn clear_last_option(handle: i64) {
+    with_state_mut(handle, |state| {
         state.last_option = None;
-        return Ok(Some(Arg::Value(current)));
-    }
+    });
 }
 
-fn take_optional_value(state: &mut ParserState) -> Option<String> {
-    if let Some(value) = state.pending_value.take() {
-        return Some(value);
+pub fn finalize_short(handle: i64, short: String) -> Arg {
+    with_state_mut(handle, |state| {
+        state.last_option = Some(format!("-{short}"));
+    });
+    Arg::Short(short)
+}
+
+pub fn finalize_long(handle: i64, name: String) -> Arg {
+    with_state_mut(handle, |state| {
+        state.last_option = Some(format!("--{name}"));
+    });
+    Arg::Long(name)
+}
+
+pub fn finalize_long_with_value(handle: i64, payload: LongWithValue) -> Arg {
+    with_state_mut(handle, |state| {
+        state.last_option = Some(format!("--{}", payload.name));
+        state.pending_value = Some(payload.value);
+    });
+    Arg::Long(payload.name)
+}
+
+pub fn format_missing_value_for_last(handle: i64) -> String {
+    with_state_mut(handle, |state| match &state.last_option {
+        Some(option) => format!("missing value for option {option}"),
+        None => "missing value".to_string(),
+    })
+    .unwrap_or_else(|| "missing value".to_string())
+}
+
+pub fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
+    with_state_mut(handle, |state| {
+        let option = state
+            .last_option
+            .clone()
+            .unwrap_or_else(|| "<unknown-option>".to_string());
+        format!("unexpected argument for option '{}': {}", option, value)
+    })
+    .unwrap_or_else(|| format!("unexpected argument: {value}"))
+}
+
+pub fn classify_arg(arg: String) -> RawArgClass {
+    if arg == "--" {
+        return RawArgClass::DashDash;
     }
 
-    if let Some((cluster, mut pos)) = state.short_cluster.take() {
-        if pos >= cluster.len() {
-            return None;
+    if let Some(rest) = arg.strip_prefix("--") {
+        if let Some((name, value)) = rest.split_once('=') {
+            return RawArgClass::LongWithValue(LongWithValue {
+                name: name.to_string(),
+                value: value.to_string(),
+            });
         }
-        if cluster[pos] == '=' {
-            pos += 1;
-        }
-        return Some(cluster[pos..].iter().collect::<String>());
+        return RawArgClass::Long(rest.to_string());
     }
 
-    None
+    if arg.starts_with('-') && arg != "-" {
+        let cluster = arg.chars().skip(1).collect::<String>();
+        if !cluster.is_empty() {
+            return RawArgClass::ShortCluster(cluster);
+        }
+    }
+
+    RawArgClass::Value(arg)
+}
+
+pub fn take_cluster_head(handle: i64, cluster: String) -> ClusterHead {
+    if cluster.is_empty() {
+        return ClusterHead::End;
+    }
+
+    if let Some(value) = cluster.strip_prefix('=') {
+        return ClusterHead::UnexpectedValue(value.to_string());
+    }
+
+    let mut chars = cluster.chars();
+    let short = chars.next().expect("cluster is known non-empty").to_string();
+    let rest = chars.collect::<String>();
+    if !rest.is_empty() {
+        set_short_cluster(handle, rest);
+    }
+    ClusterHead::Short(short)
+}
+
+pub fn cluster_optional_value(cluster: String) -> String {
+    if let Some(value) = cluster.strip_prefix('=') {
+        return value.to_string();
+    }
+    cluster
+}
+
+fn from_option(value: Option<String>) -> MaybeString {
+    match value {
+        Some(value) => MaybeString::Some(value),
+        None => MaybeString::None,
+    }
 }
 
 fn insert_state(args: Vec<String>) -> i64 {
@@ -210,17 +223,10 @@ fn insert_state(args: Vec<String>) -> i64 {
     handle
 }
 
-fn lookup_state(registry: &mut Registry, handle: i64) -> Result<&mut ParserState, ParseError> {
-    registry.states.get_mut(&handle).ok_or_else(|| {
-        ParseError::UnexpectedArgument(format!("invalid parser handle: {handle}"))
-    })
-}
-
-fn format_missing_value(last_option: Option<&String>) -> String {
-    match last_option {
-        Some(option) => format!("missing value for option {option}"),
-        None => "missing value".to_string(),
-    }
+fn with_state_mut<T>(handle: i64, f: impl FnOnce(&mut ParserState) -> T) -> Option<T> {
+    let mut registry = registry().lock().expect("registry mutex poisoned");
+    let state = registry.states.get_mut(&handle)?;
+    Some(f(state))
 }
 
 fn registry() -> &'static Mutex<Registry> {

@@ -20,6 +20,11 @@ Recreate lexopt semantics in Elevate, then compare generated Rust and behavior a
 - combined short options (`-abc`)
 - error when value is left unconsumed and parsing continues
 
+### Refactor Note (Current)
+
+- Parser control flow and decision logic now live in `examples/lexopt-elevate/src/parser.ers`.
+- `examples/lexopt-elevate/src/runtime.rs` is reduced to parser-state storage, argument access, and string utility primitives used by Elevate code.
+
 ## Current Deviations From Upstream lexopt
 
 - Values are modeled as `String`, not `OsString`.
@@ -41,4 +46,3 @@ Recreate lexopt semantics in Elevate, then compare generated Rust and behavior a
 3. Comparison harness:
 - run identical fixture vectors through upstream lexopt and Elevate implementation
 - output a behavior diff report under `docs/case-studies/lexopt-report.md`
-

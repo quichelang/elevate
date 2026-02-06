@@ -2,28 +2,203 @@ rust use crate::runtime;
 rust use crate::model::Arg;
 rust use crate::model::ParseError;
 
+pub struct LongWithValue {
+    name: String;
+    value: String;
+}
+
+pub enum RawArgClass {
+    DashDash;
+    Long(String);
+    LongWithValue(LongWithValue);
+    ShortCluster(String);
+    Value(String);
+}
+
+pub enum ClusterHead {
+    End;
+    UnexpectedValue(String);
+    Short(String);
+}
+
+pub enum MaybeString {
+    Some(String);
+    None;
+}
+
 pub fn from_env() -> i64 {
-    return runtime::from_env();
+    runtime::from_env()
 }
 
 pub fn from_raw(raw: String) -> i64 {
-    return runtime::from_raw(raw);
+    runtime::from_raw(raw)
 }
 
 pub fn next(handle: i64) -> Result<Option<Arg>, ParseError> {
-    return runtime::next(handle);
+    next_internal(handle)
+}
+
+fn next_internal(handle: i64) -> Result<Option<Arg>, ParseError> {
+    const pending = runtime::take_pending_value(handle);
+    const out = match pending {
+        MaybeString::Some(value) => pending_unexpected_value(handle, value);
+        MaybeString::None => next_after_pending(handle);
+    };
+    out
+}
+
+fn pending_unexpected_value(handle: i64, value: String) -> Result<Option<Arg>, ParseError> {
+    Result::Err(ParseError::UnexpectedValue(
+        runtime::format_unexpected_value_for_last(handle, value),
+    ))
+}
+
+fn next_after_pending(handle: i64) -> Result<Option<Arg>, ParseError> {
+    const cluster = runtime::take_short_cluster(handle);
+    const out = match cluster {
+        MaybeString::Some(cluster_text) => next_from_cluster(handle, cluster_text);
+        MaybeString::None => next_from_stream(handle);
+    };
+    out
+}
+
+fn next_from_cluster(handle: i64, cluster: String) -> Result<Option<Arg>, ParseError> {
+    const head = runtime::take_cluster_head(handle, cluster);
+    const out = match head {
+        ClusterHead::End => next_internal(handle);
+        ClusterHead::UnexpectedValue(value) => pending_unexpected_value(handle, value);
+        ClusterHead::Short(short) => emit_short(handle, short);
+    };
+    out
+}
+
+fn emit_short(handle: i64, short: String) -> Result<Option<Arg>, ParseError> {
+    Result::Ok(Option::Some(runtime::finalize_short(handle, short)))
+}
+
+fn next_from_stream(handle: i64) -> Result<Option<Arg>, ParseError> {
+    const next_arg = runtime::take_next_arg(handle);
+    const out = match next_arg {
+        MaybeString::Some(arg) => next_from_taken_arg(handle, arg);
+        MaybeString::None => Result::Ok(Option::None);
+    };
+    out
+}
+
+fn next_from_taken_arg(handle: i64, arg: String) -> Result<Option<Arg>, ParseError> {
+    if runtime::is_finished_opts(handle) {
+        runtime::clear_last_option(handle);
+        return Result::Ok(Option::Some(Arg::Value(arg)));
+    }
+    next_from_classified_arg(handle, arg)
+}
+
+fn next_from_classified_arg(handle: i64, arg: String) -> Result<Option<Arg>, ParseError> {
+    const class = runtime::classify_arg(arg);
+    const out = match class {
+        RawArgClass::DashDash => after_dashdash(handle);
+        RawArgClass::Long(name) => emit_long(handle, name);
+        RawArgClass::LongWithValue(payload) => emit_long_with_value(handle, payload);
+        RawArgClass::ShortCluster(cluster) => continue_short_cluster(handle, cluster);
+        RawArgClass::Value(value) => emit_value(handle, value);
+    };
+    out
+}
+
+fn after_dashdash(handle: i64) -> Result<Option<Arg>, ParseError> {
+    runtime::set_finished_opts(handle);
+    next_internal(handle)
+}
+
+fn emit_long(handle: i64, name: String) -> Result<Option<Arg>, ParseError> {
+    Result::Ok(Option::Some(runtime::finalize_long(handle, name)))
+}
+
+fn emit_long_with_value(
+    handle: i64,
+    payload: LongWithValue,
+) -> Result<Option<Arg>, ParseError> {
+    Result::Ok(Option::Some(runtime::finalize_long_with_value(handle, payload)))
+}
+
+fn continue_short_cluster(handle: i64, cluster: String) -> Result<Option<Arg>, ParseError> {
+    runtime::set_short_cluster(handle, cluster);
+    next_internal(handle)
+}
+
+fn emit_value(handle: i64, value: String) -> Result<Option<Arg>, ParseError> {
+    runtime::clear_last_option(handle);
+    Result::Ok(Option::Some(Arg::Value(value)))
 }
 
 pub fn value(handle: i64) -> Result<String, ParseError> {
-    return runtime::value(handle);
+    const maybe = optional_value_internal(handle);
+    const out = match maybe {
+        MaybeString::Some(value) => Result::Ok(value);
+        MaybeString::None => value_from_stream_or_error(handle);
+    };
+    out
+}
+
+fn value_from_stream_or_error(handle: i64) -> Result<String, ParseError> {
+    const raw_next = runtime::take_next_arg(handle);
+    const out = match raw_next {
+        MaybeString::Some(value) => Result::Ok(value);
+        MaybeString::None => Result::Err(ParseError::MissingValue(
+            runtime::format_missing_value_for_last(handle),
+        ));
+    };
+    out
 }
 
 pub fn optional_value(handle: i64) -> Option<String> {
-    return runtime::optional_value(handle);
+    maybe_to_option(optional_value_internal(handle))
+}
+
+fn optional_value_internal(handle: i64) -> MaybeString {
+    const pending = runtime::take_pending_value(handle);
+    const out = match pending {
+        MaybeString::Some(value) => MaybeString::Some(value);
+        MaybeString::None => optional_from_cluster(handle);
+    };
+    out
+}
+
+fn optional_from_cluster(handle: i64) -> MaybeString {
+    const cluster = runtime::take_short_cluster(handle);
+    const out = match cluster {
+        MaybeString::Some(text) => MaybeString::Some(runtime::cluster_optional_value(text));
+        MaybeString::None => MaybeString::None;
+    };
+    out
 }
 
 pub fn values(handle: i64) -> Result<Option<String>, ParseError> {
-    return runtime::values(handle);
+    const maybe = optional_value_internal(handle);
+    const out = match maybe {
+        MaybeString::Some(value) => Result::Ok(Option::Some(value));
+        MaybeString::None => values_from_stream_or_error(handle);
+    };
+    out
+}
+
+fn values_from_stream_or_error(handle: i64) -> Result<Option<String>, ParseError> {
+    const next_value = runtime::take_next_if_normal(handle);
+    const out = match next_value {
+        MaybeString::Some(value) => Result::Ok(Option::Some(value));
+        MaybeString::None => Result::Err(ParseError::MissingValue(
+            runtime::format_missing_value_for_last(handle),
+        ));
+    };
+    out
+}
+
+fn maybe_to_option(value: MaybeString) -> Option<String> {
+    const out = match value {
+        MaybeString::Some(text) => Option::Some(text);
+        MaybeString::None => Option::None;
+    };
+    out
 }
 
 pub fn reset(handle: i64) {
