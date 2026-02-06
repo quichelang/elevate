@@ -2645,6 +2645,33 @@ fn resolve_method_call_type(
                     expect_method_arity(type_name, method, args.len(), 1, diagnostics);
                     return named_type("bool");
                 }
+                "first" | "last" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    if let SemType::Path { args, .. } = base_ty
+                        && let Some(item_ty) = args.first()
+                    {
+                        return option_type(item_ty.clone());
+                    }
+                    return option_type(SemType::Unknown);
+                }
+                "get" => {
+                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
+                    if args.len() == 1 && !is_compatible(&args[0], &named_type("i64")) {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Method `Vec::get` expects `i64` index, got `{}`",
+                                type_to_string(&args[0])
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                    if let SemType::Path { args, .. } = base_ty
+                        && let Some(item_ty) = args.first()
+                    {
+                        return option_type(item_ty.clone());
+                    }
+                    return option_type(SemType::Unknown);
+                }
                 "into_iter" | "iter" => {
                     expect_method_arity(type_name, method, args.len(), 0, diagnostics);
                     if let SemType::Path { args, .. } = base_ty
@@ -3540,7 +3567,7 @@ fn method_receiver_is_borrowed(base_ty: &str, field: &str) -> bool {
                 | "strip_prefix"
                 | "split_once"
         ),
-        "Vec" => matches!(field, "len" | "is_empty" | "contains"),
+        "Vec" => matches!(field, "len" | "is_empty" | "contains" | "first" | "last" | "get"),
         "Option" => matches!(field, "is_some" | "is_none"),
         "Result" => matches!(field, "is_ok" | "is_err"),
         "HashMap" | "BTreeMap" => matches!(field, "len" | "is_empty" | "contains_key"),

@@ -1277,6 +1277,24 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_vec_first_last_get_methods() {
+        let source = r#"
+            fn probe(values: Vec<i64>) -> bool {
+                const has_first = values.first().is_some();
+                const has_last = values.last().is_some();
+                const has_idx0 = values.get(0).is_some();
+                has_first and has_last and has_idx0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains(".first().is_some()"));
+        assert!(output.rust_code.contains(".last().is_some()"));
+        assert!(output.rust_code.contains(".get(0).is_some()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_for_loop_hashmap_keys() {
         let source = r#"
             rust use std::collections::HashMap;

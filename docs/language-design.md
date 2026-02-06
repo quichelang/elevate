@@ -167,6 +167,7 @@ Implemented:
 - Tail-expression returns for final function/method expressions.
 - Range expressions: `..` and `..=`.
 - `Vec` indexing and range slicing expressions (`values[i]`, `values[a..b]`).
+- Slice-adjacent `Vec` methods `first`, `last`, and `get(i)` are typed and lowered.
 - Heterogeneous tuple support with Rust-like semantics (tuple literals, tuple type annotations, and tuple destructuring bindings in const/assignment/`for` contexts).
 - Slice destructuring bindings for `Vec` values in `const`/`for` patterns (`[head, ..tail]`, `[left, right]`).
 - Generic function definitions with callsite type inference and trait-style bound syntax (for example `fn id<T>(x: T) -> T`, `fn keep<T: Clone + Copy>(x: T) -> T`).
