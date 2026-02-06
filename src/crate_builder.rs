@@ -19,6 +19,7 @@ struct InteropContract {
     allowed_paths: BTreeSet<String>,
     adapters: Vec<InteropAdapter>,
     runtime_lines: Vec<String>,
+    runtime_presets: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -457,6 +458,26 @@ fn parse_interop_contract(content: &str, path: &Path) -> Result<InteropContract,
             contract.runtime_lines.push(runtime_line.to_string());
             continue;
         }
+        if let Some(rest) = line.strip_prefix("runtime_preset ") {
+            let preset = rest.trim();
+            if preset.is_empty() {
+                return Err(format!(
+                    "invalid runtime_preset directive at {}:{}: missing preset name",
+                    path.display(),
+                    line_no
+                ));
+            }
+            if !matches!(preset, "parser_state") {
+                return Err(format!(
+                    "unknown runtime preset `{}` at {}:{}",
+                    preset,
+                    path.display(),
+                    line_no
+                ));
+            }
+            contract.runtime_presets.insert(preset.to_string());
+            continue;
+        }
         return Err(format!(
             "unknown interop contract directive at {}:{}: `{}`",
             path.display(),
@@ -693,7 +714,7 @@ fn is_valid_allow_pattern(pattern: &str) -> bool {
 }
 
 fn emit_interop_adapter_module(generated_src: &Path, contract: &InteropContract) -> Result<(), String> {
-    if contract.adapters.is_empty() && contract.runtime_lines.is_empty() {
+    if contract.adapters.is_empty() && contract.runtime_lines.is_empty() && contract.runtime_presets.is_empty() {
         return Ok(());
     }
 
@@ -706,7 +727,13 @@ fn emit_interop_adapter_module(generated_src: &Path, contract: &InteropContract)
         out.push_str(line);
         out.push('\n');
     }
-    if !contract.runtime_lines.is_empty() {
+    for preset in &contract.runtime_presets {
+        out.push_str(runtime_preset_source(preset));
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if !contract.runtime_lines.is_empty() || !contract.runtime_presets.is_empty() {
         out.push('\n');
     }
     for adapter in &contract.adapters {
@@ -797,6 +824,162 @@ fn inject_interop_module_decl(generated_src: &Path) -> Result<(), String> {
             .map_err(|error| format!("failed to rewrite {}: {error}", file.display()))?;
     }
     Ok(())
+}
+
+fn runtime_preset_source(name: &str) -> &'static str {
+    match name {
+        "parser_state" => {
+            r#"
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+#[derive(Debug, Clone)]
+struct ParserState {
+    args: Vec<String>,
+    index: usize,
+    pending_value: Option<String>,
+    short_cluster: Option<String>,
+    finished_opts: bool,
+    last_option: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct Registry {
+    next_id: i64,
+    states: HashMap<i64, ParserState>,
+}
+
+static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+
+pub fn from_env() -> i64 {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    insert_state(args)
+}
+
+pub fn from_raw(raw: String) -> i64 {
+    let args = raw
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    insert_state(args)
+}
+
+pub fn reset(handle: i64) {
+    with_state_mut(handle, |state| {
+        state.index = 0;
+        state.pending_value = None;
+        state.short_cluster = None;
+        state.finished_opts = false;
+        state.last_option = None;
+    });
+}
+
+pub fn take_pending_value(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| state.pending_value.take()).flatten()
+}
+
+pub fn set_pending_value(handle: i64, value: String) {
+    with_state_mut(handle, |state| {
+        state.pending_value = Some(value);
+    });
+}
+
+pub fn take_short_cluster(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| state.short_cluster.take()).flatten()
+}
+
+pub fn set_short_cluster(handle: i64, cluster: String) {
+    with_state_mut(handle, |state| {
+        state.short_cluster = if cluster.is_empty() { None } else { Some(cluster) };
+    });
+}
+
+pub fn take_next_arg(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| {
+        let arg = state.args.get(state.index).cloned();
+        if arg.is_some() {
+            state.index += 1;
+        }
+        arg
+    })
+    .flatten()
+}
+
+pub fn peek_next_arg(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| state.args.get(state.index).cloned()).flatten()
+}
+
+pub fn is_finished_opts(handle: i64) -> bool {
+    with_state_mut(handle, |state| state.finished_opts).unwrap_or(false)
+}
+
+pub fn set_finished_opts(handle: i64) {
+    with_state_mut(handle, |state| {
+        state.finished_opts = true;
+    });
+}
+
+pub fn clear_last_option(handle: i64) {
+    with_state_mut(handle, |state| {
+        state.last_option = None;
+    });
+}
+
+pub fn set_last_short_option(handle: i64, short: String) {
+    with_state_mut(handle, |state| {
+        state.last_option = Some(format!("-{short}"));
+    });
+}
+
+pub fn set_last_long_option(handle: i64, name: String) {
+    with_state_mut(handle, |state| {
+        state.last_option = Some(format!("--{name}"));
+    });
+}
+
+pub fn last_option(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| state.last_option.clone()).flatten()
+}
+
+pub fn drop_first_char_known(text: String) -> (String, String) {
+    let mut chars = text.chars();
+    let first = chars
+        .next()
+        .expect("text must be non-empty before dropping first char");
+    (first.to_string(), chars.collect::<String>())
+}
+
+fn insert_state(args: Vec<String>) -> i64 {
+    let mut registry = registry().lock().expect("registry mutex poisoned");
+    registry.next_id += 1;
+    let handle = registry.next_id;
+    registry.states.insert(
+        handle,
+        ParserState {
+            args,
+            index: 0,
+            pending_value: None,
+            short_cluster: None,
+            finished_opts: false,
+            last_option: None,
+        },
+    );
+    handle
+}
+
+fn with_state_mut<T>(handle: i64, f: impl FnOnce(&mut ParserState) -> T) -> Option<T> {
+    let mut registry = registry().lock().expect("registry mutex poisoned");
+    let state = registry.states.get_mut(&handle)?;
+    Some(f(state))
+}
+
+fn registry() -> &'static Mutex<Registry> {
+    REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
+}
+"#
+        }
+        _ => "",
+    }
 }
 
 fn format_compile_error_with_context(path: &Path, source: &str, error: &crate::CompileError) -> String {
@@ -1007,6 +1190,29 @@ mod tests {
             .expect("interop module should exist");
         assert!(interop_module.contains("use std::sync::OnceLock;"));
         assert!(interop_module.contains("static REG: OnceLock<i64> = OnceLock::new();"));
+    }
+
+    #[test]
+    fn transpile_generates_runtime_preset_parser_state() {
+        let root = create_temp_dir("elevate-interop-runtime-preset");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(root.join("src/lib.ers"), "pub fn identity(v: i64) -> i64 { v }\n")
+            .expect("write lib.ers should succeed");
+        fs::write(root.join("elevate.interop"), "runtime_preset parser_state\n")
+            .expect("write interop contract should succeed");
+
+        let summary = transpile_ers_crate(&root).expect("transpile should succeed");
+        let generated_src = summary.generated_root.join("src");
+        let interop_module = fs::read_to_string(generated_src.join("elevate_interop.rs"))
+            .expect("interop module should exist");
+        assert!(interop_module.contains("struct ParserState"));
+        assert!(interop_module.contains("static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();"));
+        assert!(interop_module.contains("pub fn take_next_arg(handle: i64) -> Option<String>"));
     }
 
     #[test]
