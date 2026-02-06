@@ -159,6 +159,10 @@ pub enum TypedExprKind {
         base: Box<TypedExpr>,
         field: String,
     },
+    Index {
+        base: Box<TypedExpr>,
+        index: Box<TypedExpr>,
+    },
     Match {
         scrutinee: Box<TypedExpr>,
         arms: Vec<TypedMatchArm>,

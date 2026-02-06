@@ -155,6 +155,10 @@ pub enum RustExpr {
         base: Box<RustExpr>,
         field: String,
     },
+    Index {
+        base: Box<RustExpr>,
+        index: Box<RustExpr>,
+    },
     Match {
         scrutinee: Box<RustExpr>,
         arms: Vec<RustMatchArm>,

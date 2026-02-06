@@ -166,6 +166,7 @@ Implemented:
 - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
 - Tail-expression returns for final function/method expressions.
 - Range expressions: `..` and `..=`.
+- `Vec` indexing and range slicing expressions (`values[i]`, `values[a..b]`).
 - Tuple literals and tuple destructuring bindings (const bindings, assignment targets, and `for` loop bindings).
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
 - Match arm block expressions (`pattern => { ... };`).
@@ -281,7 +282,7 @@ Quality gates:
 - Ownership lowering policy implementation is not complete.
 - Generic function definitions and constrained bounds are not complete.
 - Full iterator-model ergonomics for `for` loops are not complete beyond current lowering support.
-- Slices are not complete.
+- Slices are not complete (current support focuses on `Vec` index/range expressions and slice-style match patterns).
 - Deep destructuring coverage (all contexts) is not complete.
 - Full exhaustiveness diagnostics are not complete (current checks focus on bool/tuple-bool and enum variants).
 - Full Rust-pattern parity for match is not complete (remaining work includes ref/binding-mode patterns and richer guard/exhaustiveness combinations).

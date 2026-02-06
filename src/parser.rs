@@ -759,6 +759,15 @@ impl Parser {
                 };
                 continue;
             }
+            if self.match_kind(TokenKind::LBracket) {
+                let index = self.parse_expr()?;
+                self.expect(TokenKind::RBracket, "Expected ']' after index expression")?;
+                expr = Expr::Index {
+                    base: Box::new(expr),
+                    index: Box::new(index),
+                };
+                continue;
+            }
             if self.match_kind(TokenKind::Question) {
                 expr = Expr::Try(Box::new(expr));
                 continue;
@@ -1301,6 +1310,20 @@ mod tests {
                 const r1 = a..b;
                 const r2 = a..=b;
                 return a;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_index_and_slice_expressions() {
+        let source = r#"
+            fn head(values: Vec<i64>) -> i64 {
+                const first = values[0];
+                std::mem::drop(values[1..3]);
+                first
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

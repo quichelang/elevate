@@ -1054,6 +1054,33 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_vec_index_expressions() {
+        let source = r#"
+            pub fn first(values: Vec<i64>) -> i64 {
+                values[0]
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("values[(0) as usize]"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_emits_vec_slice_range_expressions() {
+        let source = r#"
+            pub fn view(values: Vec<i64>) -> i64 {
+                const middle = values[1..3];
+                std::mem::drop(middle);
+                values[0]
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("values[1..3]"));
+    }
+
+    #[test]
     fn compile_supports_tuple_assignment_targets() {
         let source = r#"
             pub fn swap(a: i64, b: i64) -> i64 {

@@ -155,6 +155,10 @@ pub enum Expr {
         base: Box<Expr>,
         field: String,
     },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
     Match {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,

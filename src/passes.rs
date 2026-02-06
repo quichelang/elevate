@@ -1447,6 +1447,57 @@ fn infer_expr(
                 resolved,
             )
         }
+        Expr::Index { base, index } => {
+            let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
+            let (typed_index, index_ty) =
+                infer_expr(index, context, locals, return_ty, diagnostics);
+
+            let resolved = match &base_ty {
+                SemType::Path { path, args } if path.len() == 1 && path[0] == "Vec" && args.len() == 1 => {
+                    if matches!(typed_index.kind, TypedExprKind::Range { .. }) {
+                        SemType::Path {
+                            path: vec!["Vec".to_string()],
+                            args: vec![args[0].clone()],
+                        }
+                    } else if is_compatible(&index_ty, &named_type("i64")) {
+                        args[0].clone()
+                    } else if index_ty == SemType::Unknown {
+                        SemType::Unknown
+                    } else {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Vector indexing expects `i64` index or range, got `{}`",
+                                type_to_string(&index_ty)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                        SemType::Unknown
+                    }
+                }
+                SemType::Unknown => SemType::Unknown,
+                _ => {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Indexing requires `Vec<T>` value, got `{}`",
+                            type_to_string(&base_ty)
+                        ),
+                        Span::new(0, 0),
+                    ));
+                    SemType::Unknown
+                }
+            };
+
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Index {
+                        base: Box::new(typed_base),
+                        index: Box::new(typed_index),
+                    },
+                    ty: type_to_string(&resolved),
+                },
+                resolved,
+            )
+        }
         Expr::Match { scrutinee, arms } => {
             let (typed_scrutinee, scrutinee_ty) =
                 infer_expr(scrutinee, context, locals, return_ty, diagnostics);
@@ -2614,6 +2665,20 @@ fn lower_expr_with_context(
             )),
             field: field.clone(),
         },
+        TypedExprKind::Index { base, index } => RustExpr::Index {
+            base: Box::new(lower_expr_with_context(
+                base,
+                context,
+                ExprPosition::Value,
+                state,
+            )),
+            index: Box::new(lower_expr_with_context(
+                index,
+                context,
+                ExprPosition::Value,
+                state,
+            )),
+        },
         TypedExprKind::Match { scrutinee, arms } => RustExpr::Match {
             scrutinee: Box::new(lower_expr_with_context(
                 scrutinee,
@@ -3170,6 +3235,10 @@ fn collect_path_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<String, usize>
             }
         }
         TypedExprKind::Field { base, .. } => collect_path_uses_in_expr(base, uses),
+        TypedExprKind::Index { base, index } => {
+            collect_path_uses_in_expr(base, uses);
+            collect_path_uses_in_expr(index, uses);
+        }
         TypedExprKind::Match { scrutinee, arms } => {
             collect_path_uses_in_expr(scrutinee, uses);
             for arm in arms {

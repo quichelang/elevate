@@ -283,6 +283,15 @@ fn emit_expr(expr: &RustExpr) -> String {
             format!("{}!({args})", path.join("::"))
         }
         RustExpr::Field { base, field } => format!("{}.{}", emit_expr(base), field),
+        RustExpr::Index { base, index } => {
+            let base_text = emit_expr(base);
+            let index_text = emit_expr(index);
+            if matches!(index.as_ref(), RustExpr::Range { .. }) {
+                format!("{base_text}[{index_text}]")
+            } else {
+                format!("{base_text}[({index_text}) as usize]")
+            }
+        }
         RustExpr::Match { scrutinee, arms } => {
             let mut text = String::new();
             text.push_str("match ");
