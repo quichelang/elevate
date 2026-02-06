@@ -30,6 +30,7 @@ enum SemType {
         params: Vec<SemType>,
         ret: Box<SemType>,
     },
+    Iter(Box<SemType>),
     Unit,
     Unknown,
 }
@@ -2539,6 +2540,15 @@ fn resolve_method_call_type(
                     expect_method_arity(type_name, method, args.len(), 1, diagnostics);
                     return named_type("bool");
                 }
+                "into_iter" | "iter" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    if let SemType::Path { args, .. } = base_ty
+                        && let Some(item_ty) = args.first()
+                    {
+                        return SemType::Iter(Box::new(item_ty.clone()));
+                    }
+                    return SemType::Iter(Box::new(SemType::Unknown));
+                }
                 _ => {}
             },
             "Option" => match method {
@@ -2817,6 +2827,9 @@ fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagn
 fn infer_for_item_type(iter_expr: &TypedExpr, iter_ty: &SemType) -> SemType {
     if matches!(iter_expr.kind, TypedExprKind::Range { .. }) {
         return named_type("i64");
+    }
+    if let SemType::Iter(item_ty) = iter_ty {
+        return (**item_ty).clone();
     }
     if let SemType::Path { path, args } = iter_ty {
         if path.len() == 1 && path[0] == "Vec" && args.len() == 1 {
@@ -3706,6 +3719,7 @@ fn type_to_string(ty: &SemType) -> String {
                 .join(", ");
             format!("fn({params}) -> {}", type_to_string(ret))
         }
+        SemType::Iter(item) => format!("Iter<{}>", type_to_string(item)),
         SemType::Path { path, args } => {
             let head = path.join("::");
             if args.is_empty() {
@@ -3786,6 +3800,9 @@ fn bind_generic_params(
                 .all(|(left, right)| bind_generic_params(left, right, type_params, bindings))
                 && bind_generic_params(er, ar, type_params, bindings)
         }
+        (SemType::Iter(expected_item), SemType::Iter(actual_item)) => {
+            bind_generic_params(expected_item, actual_item, type_params, bindings)
+        }
         _ => false,
     }
 }
@@ -3825,6 +3842,9 @@ fn substitute_generic_type(
                 .collect(),
             ret: Box::new(substitute_generic_type(ret, type_params, bindings)),
         },
+        SemType::Iter(item) => {
+            SemType::Iter(Box::new(substitute_generic_type(item, type_params, bindings)))
+        }
         SemType::Unit | SemType::Unknown => ty.clone(),
     }
 }
@@ -3859,6 +3879,7 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
             }
             lp.iter().zip(rp.iter()).all(|(a, b)| is_compatible(a, b)) && is_compatible(lr, rr)
         }
+        (SemType::Iter(left), SemType::Iter(right)) => is_compatible(left, right),
         (
             SemType::Path {
                 path: actual_path,
@@ -4887,6 +4908,7 @@ fn contains_unknown(ty: &SemType) -> bool {
         SemType::Unit => false,
         SemType::Tuple(items) => items.iter().any(contains_unknown),
         SemType::Fn { params, ret } => params.iter().any(contains_unknown) || contains_unknown(ret),
+        SemType::Iter(item) => contains_unknown(item),
         SemType::Path { args, .. } => args.iter().any(contains_unknown),
     }
 }

@@ -1178,6 +1178,38 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_for_loop_vec_into_iter() {
+        let source = r#"
+            fn sum(values: Vec<i64>) -> i64 {
+                for value in values.into_iter() {
+                    std::mem::drop(value);
+                }
+                0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for value in values.into_iter()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_for_loop_vec_iter() {
+        let source = r#"
+            fn sum(values: Vec<i64>) -> i64 {
+                for value in values.iter() {
+                    std::mem::drop(value);
+                }
+                0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for value in values.iter()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_reports_slice_destructure_type_mismatch() {
         let source = r#"
             fn bad(v: i64) -> i64 {
