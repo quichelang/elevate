@@ -219,7 +219,16 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 c if c.is_ascii_digit() => self.lex_number(start, c),
-                '_' => self.push_simple(TokenKind::Underscore, start),
+                '_' => {
+                    if self
+                        .peek_char()
+                        .is_some_and(is_identifier_continue)
+                    {
+                        self.lex_identifier(start, '_');
+                    } else {
+                        self.push_simple(TokenKind::Underscore, start);
+                    }
+                }
                 c if is_identifier_start(c) => self.lex_identifier(start, c),
                 c => self.diagnostics.push(Diagnostic::new(
                     format!("Unexpected character '{c}'"),
@@ -578,6 +587,17 @@ mod tests {
             tokens
                 .iter()
                 .any(|t| matches!(t.kind, TokenKind::Identifier(ref name) if name == "y"))
+        );
+    }
+
+    #[test]
+    fn lex_leading_underscore_identifiers() {
+        let source = "rust use crate::__elevate_interop;";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::Identifier(ref name) if name == "__elevate_interop"))
         );
     }
 
