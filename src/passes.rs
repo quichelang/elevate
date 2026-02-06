@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::ast::{
     BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern, Stmt, Type, UnaryOp,
@@ -63,10 +63,10 @@ pub fn lower_to_typed(module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
 }
 
 pub fn lower_to_rust(module: &TypedModule) -> RustModule {
-    let items = module
-        .items
-        .iter()
-        .map(|item| match item {
+    let mut state = LoweringState::from_module(module);
+    let mut items = Vec::new();
+    for item in &module.items {
+        let lowered = match item {
             TypedItem::RustUse(def) => RustItem::Use(RustUse {
                 path: def.path.clone(),
             }),
@@ -96,9 +96,13 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
             }),
             TypedItem::Impl(def) => RustItem::Impl(RustImpl {
                 target: def.target.clone(),
-                methods: def.methods.iter().map(lower_function).collect(),
+                methods: def
+                    .methods
+                    .iter()
+                    .map(|method| lower_function(method, &mut state))
+                    .collect(),
             }),
-            TypedItem::Function(def) => RustItem::Function(lower_function(def)),
+            TypedItem::Function(def) => RustItem::Function(lower_function(def, &mut state)),
             TypedItem::Const(def) => RustItem::Const(RustConst {
                 is_public: def.is_public,
                 name: def.name.clone(),
@@ -107,6 +111,7 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
                     &def.value,
                     &mut LoweringContext::default(),
                     ExprPosition::Value,
+                    &mut state,
                 ),
             }),
             TypedItem::Static(def) => RustItem::Static(RustStatic {
@@ -117,16 +122,27 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
                     &def.value,
                     &mut LoweringContext::default(),
                     ExprPosition::Value,
+                    &mut state,
                 ),
             }),
-        })
-        .collect();
+        };
+        items.push(lowered);
+    }
+    for shim in state.used_shims.iter().copied() {
+        items.push(RustItem::Function(lower_interop_shim(shim)));
+    }
     RustModule { items }
 }
 
 #[derive(Debug, Default)]
 struct LoweringContext {
     remaining_path_uses: HashMap<String, usize>,
+}
+
+#[derive(Debug, Default)]
+struct LoweringState {
+    used_shims: BTreeSet<InteropShimKind>,
+    imported_rust_paths: HashMap<String, Vec<Vec<String>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,7 +157,47 @@ enum CallArgMode {
     Borrowed,
 }
 
-fn lower_function(def: &TypedFunction) -> RustFunction {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum InteropShimKind {
+    StrLen,
+    StrIsEmpty,
+    StrContains,
+    StrStartsWith,
+    StrEndsWith,
+}
+
+impl LoweringState {
+    fn from_module(module: &TypedModule) -> Self {
+        let mut state = Self::default();
+        for item in &module.items {
+            if let TypedItem::RustUse(def) = item
+                && let Some(name) = def.path.last()
+            {
+                state
+                    .imported_rust_paths
+                    .entry(name.clone())
+                    .or_default()
+                    .push(def.path.clone());
+            }
+        }
+        state
+    }
+
+    fn resolve_callee_path(&self, callee_path: &[String]) -> Vec<String> {
+        if callee_path.len() != 1 {
+            return callee_path.to_vec();
+        }
+        let Some(candidates) = self.imported_rust_paths.get(&callee_path[0]) else {
+            return callee_path.to_vec();
+        };
+        if candidates.len() == 1 {
+            return candidates[0].clone();
+        }
+        callee_path.to_vec()
+    }
+}
+
+fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunction {
     let mut context = LoweringContext {
         remaining_path_uses: collect_path_uses_in_stmts(&def.body),
     };
@@ -160,7 +216,7 @@ fn lower_function(def: &TypedFunction) -> RustFunction {
         body: def
             .body
             .iter()
-            .map(|stmt| lower_stmt_with_context(stmt, &mut context))
+            .map(|stmt| lower_stmt_with_context(stmt, &mut context, state))
             .collect(),
     }
 }
@@ -1334,47 +1390,51 @@ fn resolve_try_type(inner: &SemType, return_ty: &SemType, diagnostics: &mut Vec<
     SemType::Unknown
 }
 
-fn lower_stmt_with_context(stmt: &TypedStmt, context: &mut LoweringContext) -> RustStmt {
+fn lower_stmt_with_context(
+    stmt: &TypedStmt,
+    context: &mut LoweringContext,
+    state: &mut LoweringState,
+) -> RustStmt {
     match stmt {
         TypedStmt::Const(def) => RustStmt::Const(RustConst {
             is_public: false,
             name: def.name.clone(),
             ty: def.ty.clone(),
-            value: lower_expr_with_context(&def.value, context, ExprPosition::Value),
+            value: lower_expr_with_context(&def.value, context, ExprPosition::Value, state),
         }),
         TypedStmt::DestructureConst { pattern, value } => RustStmt::DestructureConst {
             pattern: lower_destructure_pattern(pattern),
-            value: lower_expr_with_context(value, context, ExprPosition::Value),
+            value: lower_expr_with_context(value, context, ExprPosition::Value, state),
         },
         TypedStmt::Return(value) => RustStmt::Return(value.as_ref().map(|expr| {
-            lower_expr_with_context(expr, context, ExprPosition::Value)
+            lower_expr_with_context(expr, context, ExprPosition::Value, state)
         })),
         TypedStmt::If {
             condition,
             then_body,
             else_body,
         } => RustStmt::If {
-            condition: lower_expr_with_context(condition, context, ExprPosition::Value),
+            condition: lower_expr_with_context(condition, context, ExprPosition::Value, state),
             then_body: then_body
                 .iter()
-                .map(|stmt| lower_stmt_with_context(stmt, context))
+                .map(|stmt| lower_stmt_with_context(stmt, context, state))
                 .collect(),
             else_body: else_body.as_ref().map(|block| {
                 block
                     .iter()
-                    .map(|stmt| lower_stmt_with_context(stmt, context))
+                    .map(|stmt| lower_stmt_with_context(stmt, context, state))
                     .collect()
             }),
         },
         TypedStmt::While { condition, body } => RustStmt::While {
-            condition: lower_expr_with_context(condition, context, ExprPosition::Value),
+            condition: lower_expr_with_context(condition, context, ExprPosition::Value, state),
             body: body
                 .iter()
-                .map(|stmt| lower_stmt_with_context(stmt, context))
+                .map(|stmt| lower_stmt_with_context(stmt, context, state))
                 .collect(),
         },
         TypedStmt::Expr(expr) => {
-            RustStmt::Expr(lower_expr_with_context(expr, context, ExprPosition::Value))
+            RustStmt::Expr(lower_expr_with_context(expr, context, ExprPosition::Value, state))
         }
     }
 }
@@ -1383,6 +1443,7 @@ fn lower_expr_with_context(
     expr: &TypedExpr,
     context: &mut LoweringContext,
     position: ExprPosition,
+    state: &mut LoweringState,
 ) -> RustExpr {
     match &expr.kind {
         TypedExprKind::Int(value) => RustExpr::Int(*value),
@@ -1390,26 +1451,32 @@ fn lower_expr_with_context(
         TypedExprKind::String(value) => RustExpr::String(value.clone()),
         TypedExprKind::Path(path) => lower_path_expr(path, &expr.ty, position, context),
         TypedExprKind::Call { callee, args } => {
-            let arg_modes = infer_call_arg_modes(callee, args.len());
+            let (lowered_callee, arg_modes) =
+                lower_call_callee(callee, args.len(), context, state);
             RustExpr::Call {
-                callee: Box::new(lower_expr_with_context(callee, context, ExprPosition::Value)),
+                callee: Box::new(lowered_callee),
                 args: args
                     .iter()
                     .enumerate()
                     .map(|(index, arg)| {
                         if arg_modes.get(index) == Some(&CallArgMode::Borrowed) {
                             let lowered =
-                                lower_expr_with_context(arg, context, ExprPosition::Value);
+                                lower_expr_with_context(arg, context, ExprPosition::Value, state);
                             borrow_expr(lowered)
                         } else {
-                            lower_expr_with_context(arg, context, ExprPosition::CallArgOwned)
+                            lower_expr_with_context(
+                                arg,
+                                context,
+                                ExprPosition::CallArgOwned,
+                                state,
+                            )
                         }
                     })
                     .collect(),
             }
         }
         TypedExprKind::Field { base, field } => RustExpr::Field {
-            base: Box::new(lower_expr_with_context(base, context, ExprPosition::Value)),
+            base: Box::new(lower_expr_with_context(base, context, ExprPosition::Value, state)),
             field: field.clone(),
         },
         TypedExprKind::Match { scrutinee, arms } => RustExpr::Match {
@@ -1417,12 +1484,13 @@ fn lower_expr_with_context(
                 scrutinee,
                 context,
                 ExprPosition::Value,
+                state,
             )),
             arms: arms
                 .iter()
                 .map(|arm| RustMatchArm {
                     pattern: lower_pattern_to_rust(&arm.pattern),
-                    value: lower_expr_with_context(&arm.value, context, ExprPosition::Value),
+                    value: lower_expr_with_context(&arm.value, context, ExprPosition::Value, state),
                 })
                 .collect(),
         },
@@ -1430,7 +1498,7 @@ fn lower_expr_with_context(
             op: match op {
                 TypedUnaryOp::Not => RustUnaryOp::Not,
             },
-            expr: Box::new(lower_expr_with_context(expr, context, ExprPosition::Value)),
+            expr: Box::new(lower_expr_with_context(expr, context, ExprPosition::Value, state)),
         },
         TypedExprKind::Binary { op, left, right } => RustExpr::Binary {
             op: match op {
@@ -1443,13 +1511,13 @@ fn lower_expr_with_context(
                 TypedBinaryOp::Gt => RustBinaryOp::Gt,
                 TypedBinaryOp::Ge => RustBinaryOp::Ge,
             },
-            left: Box::new(lower_expr_with_context(left, context, ExprPosition::Value)),
-            right: Box::new(lower_expr_with_context(right, context, ExprPosition::Value)),
+            left: Box::new(lower_expr_with_context(left, context, ExprPosition::Value, state)),
+            right: Box::new(lower_expr_with_context(right, context, ExprPosition::Value, state)),
         },
         TypedExprKind::Tuple(items) => RustExpr::Tuple(
             items
                 .iter()
-                .map(|item| lower_expr_with_context(item, context, ExprPosition::Value))
+                .map(|item| lower_expr_with_context(item, context, ExprPosition::Value, state))
                 .collect(),
         ),
         TypedExprKind::Closure {
@@ -1471,7 +1539,7 @@ fn lower_expr_with_context(
                 return_type: return_type.clone(),
                 body: body
                     .iter()
-                    .map(|stmt| lower_stmt_with_context(stmt, &mut closure_context))
+                    .map(|stmt| lower_stmt_with_context(stmt, &mut closure_context, state))
                     .collect(),
             }
         }
@@ -1482,16 +1550,21 @@ fn lower_expr_with_context(
         } => RustExpr::Range {
             start: start
                 .as_ref()
-                .map(|expr| Box::new(lower_expr_with_context(expr, context, ExprPosition::Value))),
+                .map(|expr| {
+                    Box::new(lower_expr_with_context(expr, context, ExprPosition::Value, state))
+                }),
             end: end
                 .as_ref()
-                .map(|expr| Box::new(lower_expr_with_context(expr, context, ExprPosition::Value))),
+                .map(|expr| {
+                    Box::new(lower_expr_with_context(expr, context, ExprPosition::Value, state))
+                }),
             inclusive: *inclusive,
         },
         TypedExprKind::Try(inner) => RustExpr::Try(Box::new(lower_expr_with_context(
             inner,
             context,
             ExprPosition::Value,
+            state,
         ))),
     }
 }
@@ -1537,28 +1610,116 @@ fn borrow_expr(expr: RustExpr) -> RustExpr {
     RustExpr::Borrow(Box::new(expr))
 }
 
-fn infer_call_arg_modes(callee: &TypedExpr, arg_count: usize) -> Vec<CallArgMode> {
-    let mut modes = vec![CallArgMode::Owned; arg_count];
+fn lower_call_callee(
+    callee: &TypedExpr,
+    arg_count: usize,
+    context: &mut LoweringContext,
+    state: &mut LoweringState,
+) -> (RustExpr, Vec<CallArgMode>) {
+    if let Some(shim) = resolve_interop_shim(callee, state) {
+        state.used_shims.insert(shim);
+        return (
+            RustExpr::Path(vec![interop_shim_name(shim).to_string()]),
+            interop_arg_modes(shim, arg_count),
+        );
+    }
+    (
+        lower_expr_with_context(callee, context, ExprPosition::Value, state),
+        vec![CallArgMode::Owned; arg_count],
+    )
+}
+
+fn resolve_interop_shim(callee: &TypedExpr, state: &LoweringState) -> Option<InteropShimKind> {
     let TypedExprKind::Path(path) = &callee.kind else {
-        return modes;
+        return None;
     };
-    let joined = path.join("::");
+    let resolved = state.resolve_callee_path(path);
+    let joined = resolved.join("::");
     match joined.as_str() {
-        "str::len" | "str::is_empty" | "std::str::len" | "std::str::is_empty" => {
+        "str::len" | "std::str::len" => Some(InteropShimKind::StrLen),
+        "str::is_empty" | "std::str::is_empty" => Some(InteropShimKind::StrIsEmpty),
+        "str::contains" | "std::str::contains" => Some(InteropShimKind::StrContains),
+        "str::starts_with" | "std::str::starts_with" => Some(InteropShimKind::StrStartsWith),
+        "str::ends_with" | "std::str::ends_with" => Some(InteropShimKind::StrEndsWith),
+        _ => None,
+    }
+}
+
+fn interop_arg_modes(shim: InteropShimKind, arg_count: usize) -> Vec<CallArgMode> {
+    let mut modes = vec![CallArgMode::Owned; arg_count];
+    match shim {
+        InteropShimKind::StrLen | InteropShimKind::StrIsEmpty => {
             set_borrowed(&mut modes, 0);
         }
-        "str::contains"
-        | "str::starts_with"
-        | "str::ends_with"
-        | "std::str::contains"
-        | "std::str::starts_with"
-        | "std::str::ends_with" => {
+        InteropShimKind::StrContains
+        | InteropShimKind::StrStartsWith
+        | InteropShimKind::StrEndsWith => {
             set_borrowed(&mut modes, 0);
             set_borrowed(&mut modes, 1);
         }
-        _ => {}
     }
     modes
+}
+
+fn interop_shim_name(shim: InteropShimKind) -> &'static str {
+    match shim {
+        InteropShimKind::StrLen => "__elevate_shim_str_len",
+        InteropShimKind::StrIsEmpty => "__elevate_shim_str_is_empty",
+        InteropShimKind::StrContains => "__elevate_shim_str_contains",
+        InteropShimKind::StrStartsWith => "__elevate_shim_str_starts_with",
+        InteropShimKind::StrEndsWith => "__elevate_shim_str_ends_with",
+    }
+}
+
+fn interop_shim_target_path(shim: InteropShimKind) -> &'static [&'static str] {
+    match shim {
+        InteropShimKind::StrLen => &["str", "len"],
+        InteropShimKind::StrIsEmpty => &["str", "is_empty"],
+        InteropShimKind::StrContains => &["str", "contains"],
+        InteropShimKind::StrStartsWith => &["str", "starts_with"],
+        InteropShimKind::StrEndsWith => &["str", "ends_with"],
+    }
+}
+
+fn interop_shim_signature(shim: InteropShimKind) -> (&'static [&'static str], &'static str) {
+    match shim {
+        InteropShimKind::StrLen => (&["&str"], "usize"),
+        InteropShimKind::StrIsEmpty => (&["&str"], "bool"),
+        InteropShimKind::StrContains => (&["&str", "&str"], "bool"),
+        InteropShimKind::StrStartsWith => (&["&str", "&str"], "bool"),
+        InteropShimKind::StrEndsWith => (&["&str", "&str"], "bool"),
+    }
+}
+
+fn lower_interop_shim(shim: InteropShimKind) -> RustFunction {
+    let (param_types, return_type) = interop_shim_signature(shim);
+    let params = param_types
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| RustParam {
+            name: format!("__arg{index}"),
+            ty: (*ty).to_string(),
+        })
+        .collect::<Vec<_>>();
+    let args = params
+        .iter()
+        .map(|param| RustExpr::Path(vec![param.name.clone()]))
+        .collect::<Vec<_>>();
+    RustFunction {
+        is_public: false,
+        name: interop_shim_name(shim).to_string(),
+        params,
+        return_type: return_type.to_string(),
+        body: vec![RustStmt::Return(Some(RustExpr::Call {
+            callee: Box::new(RustExpr::Path(
+                interop_shim_target_path(shim)
+                    .iter()
+                    .map(|part| (*part).to_string())
+                    .collect(),
+            )),
+            args,
+        }))],
+    }
 }
 
 fn set_borrowed(modes: &mut [CallArgMode], index: usize) {

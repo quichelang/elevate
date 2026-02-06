@@ -217,7 +217,10 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("str::len(&text)"));
+        assert!(output.rust_code.contains("__elevate_shim_str_len(&text)"));
+        assert!(output
+            .rust_code
+            .contains("fn __elevate_shim_str_len(__arg0: &str) -> usize"));
         assert!(!output.rust_code.contains("str::len(text)"));
         assert!(!output.rust_code.contains("text.clone()"));
         assert_rust_code_compiles(&output.rust_code);
@@ -239,9 +242,30 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("str::len(&text)"));
+        assert!(output.rust_code.contains("__elevate_shim_str_len(&text)"));
         assert!(output.rust_code.contains("consume(text);"));
         assert!(!output.rust_code.contains("consume(text.clone());"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_auto_borrows_for_str_contains_calls() {
+        let source = r#"
+            fn demo(text: String, needle: String) {
+                std::mem::drop(str::contains(text, needle));
+                std::mem::drop(str::contains(text, needle));
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("__elevate_shim_str_contains(&text, &needle)"));
+        assert!(output
+            .rust_code
+            .contains("fn __elevate_shim_str_contains(__arg0: &str, __arg1: &str) -> bool"));
+        assert!(!output.rust_code.contains("str::contains(text, needle)"));
+        assert!(!output.rust_code.contains("text.clone()"));
+        assert!(!output.rust_code.contains("needle.clone()"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
