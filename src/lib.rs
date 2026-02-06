@@ -644,6 +644,24 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_vec_push_method_with_mut_inference() {
+        let source = r#"
+            fn demo(values: Vec<i64>, item: i64) -> usize {
+                values.push(item);
+                return Vec::len(values);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output
+            .rust_code
+            .contains("fn demo(mut values: Vec<i64>, item: i64) -> usize"));
+        assert!(output.rust_code.contains("values.push(item);"));
+        assert!(output.rust_code.contains("Vec::len(&values)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_auto_borrows_hashmap_btreemap_associated_calls() {
         let source = r#"
             rust use std::collections::HashMap;

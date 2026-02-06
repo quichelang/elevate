@@ -2714,6 +2714,23 @@ fn resolve_method_call_type(
                     expect_method_arity(type_name, method, args.len(), 1, diagnostics);
                     return named_type("bool");
                 }
+                "push" => {
+                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
+                    if let SemType::Path { args: item_args, .. } = base_ty
+                        && let (Some(item_ty), Some(arg_ty)) = (item_args.first(), args.first())
+                        && !is_compatible(arg_ty, item_ty)
+                    {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Arg 1 for method `Vec::push`: expected `{}`, got `{}`",
+                                type_to_string(item_ty),
+                                type_to_string(arg_ty)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                    return SemType::Unit;
+                }
                 "first" | "last" => {
                     expect_method_arity(type_name, method, args.len(), 0, diagnostics);
                     if let SemType::Path { args, .. } = base_ty
@@ -3830,7 +3847,10 @@ fn method_receiver_is_borrowed(base_ty: &str, field: &str) -> bool {
                 | "strip_prefix"
                 | "split_once"
         ),
-        "Vec" => matches!(field, "len" | "is_empty" | "contains" | "first" | "last" | "get"),
+        "Vec" => matches!(
+            field,
+            "len" | "is_empty" | "contains" | "first" | "last" | "get" | "push"
+        ),
         "Option" => matches!(field, "is_some" | "is_none"),
         "Result" => matches!(field, "is_ok" | "is_err"),
         "HashMap" | "BTreeMap" => matches!(field, "len" | "is_empty" | "contains_key"),
@@ -3948,7 +3968,8 @@ fn set_borrowed(modes: &mut [CallArgMode], index: usize) {
 }
 
 fn last_path_segment(path: &str) -> &str {
-    path.rsplit("::").next().unwrap_or(path)
+    let segment = path.rsplit("::").next().unwrap_or(path);
+    segment.split('<').next().unwrap_or(segment)
 }
 
 fn is_known_clone_container(head: &str) -> bool {

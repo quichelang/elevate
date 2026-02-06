@@ -795,14 +795,17 @@ fn collect_mutated_paths_in_stmt(
     out: &mut std::collections::HashSet<String>,
 ) {
     match stmt {
-        RustStmt::Assign { target, .. } => {
+        RustStmt::Assign { target, value, .. } => {
             collect_mutated_paths_in_target(target, out);
+            collect_mutated_paths_in_expr(value, out);
         }
         RustStmt::If {
+            condition,
             then_body,
             else_body,
             ..
         } => {
+            collect_mutated_paths_in_expr(condition, out);
             for stmt in then_body {
                 collect_mutated_paths_in_stmt(stmt, out);
             }
@@ -812,12 +815,14 @@ fn collect_mutated_paths_in_stmt(
                 }
             }
         }
-        RustStmt::While { body, .. } => {
+        RustStmt::While { condition, body } => {
+            collect_mutated_paths_in_expr(condition, out);
             for stmt in body {
                 collect_mutated_paths_in_stmt(stmt, out);
             }
         }
-        RustStmt::For { body, .. } => {
+        RustStmt::For { iter, body, .. } => {
+            collect_mutated_paths_in_expr(iter, out);
             for stmt in body {
                 collect_mutated_paths_in_stmt(stmt, out);
             }
@@ -827,13 +832,15 @@ fn collect_mutated_paths_in_stmt(
                 collect_mutated_paths_in_stmt(stmt, out);
             }
         }
-        RustStmt::Const(_)
-        | RustStmt::DestructureConst { .. }
+        RustStmt::Const(def) => collect_mutated_paths_in_expr(&def.value, out),
+        RustStmt::DestructureConst { value, .. } => collect_mutated_paths_in_expr(value, out),
+        RustStmt::Return(Some(expr)) => collect_mutated_paths_in_expr(expr, out),
+        RustStmt::Return(None)
         | RustStmt::Break
         | RustStmt::Continue
         | RustStmt::Raw(_)
-        | RustStmt::Return(_)
-        | RustStmt::Expr(_) => {}
+         => {}
+        RustStmt::Expr(expr) => collect_mutated_paths_in_expr(expr, out),
     }
 }
 
@@ -861,6 +868,78 @@ fn collect_mutated_paths_in_target(
             }
         }
     }
+}
+
+fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::HashSet<String>) {
+    match expr {
+        RustExpr::Call { callee, args } => {
+            if let RustExpr::Field { base, field } = callee.as_ref()
+                && method_mutates_receiver(field)
+                && let Some(name) = root_path_name(base)
+            {
+                out.insert(name.to_string());
+            }
+            collect_mutated_paths_in_expr(callee, out);
+            for arg in args {
+                collect_mutated_paths_in_expr(arg, out);
+            }
+        }
+        RustExpr::MacroCall { args, .. } => {
+            for arg in args {
+                collect_mutated_paths_in_expr(arg, out);
+            }
+        }
+        RustExpr::Field { base, .. } => collect_mutated_paths_in_expr(base, out),
+        RustExpr::Index { base, index } => {
+            collect_mutated_paths_in_expr(base, out);
+            collect_mutated_paths_in_expr(index, out);
+        }
+        RustExpr::Match { scrutinee, arms } => {
+            collect_mutated_paths_in_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_mutated_paths_in_expr(guard, out);
+                }
+                collect_mutated_paths_in_expr(&arm.value, out);
+            }
+        }
+        RustExpr::Unary { expr, .. } => collect_mutated_paths_in_expr(expr, out),
+        RustExpr::Binary { left, right, .. } => {
+            collect_mutated_paths_in_expr(left, out);
+            collect_mutated_paths_in_expr(right, out);
+        }
+        RustExpr::Array(items) | RustExpr::Tuple(items) => {
+            for item in items {
+                collect_mutated_paths_in_expr(item, out);
+            }
+        }
+        RustExpr::StructLiteral { fields, .. } => {
+            for field in fields {
+                collect_mutated_paths_in_expr(&field.value, out);
+            }
+        }
+        RustExpr::Closure { body, .. } => {
+            for stmt in body {
+                collect_mutated_paths_in_stmt(stmt, out);
+            }
+        }
+        RustExpr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                collect_mutated_paths_in_expr(start, out);
+            }
+            if let Some(end) = end {
+                collect_mutated_paths_in_expr(end, out);
+            }
+        }
+        RustExpr::Try(inner) | RustExpr::Borrow(inner) | RustExpr::Cast { expr: inner, .. } => {
+            collect_mutated_paths_in_expr(inner, out)
+        }
+        RustExpr::Int(_) | RustExpr::Bool(_) | RustExpr::String(_) | RustExpr::Path(_) => {}
+    }
+}
+
+fn method_mutates_receiver(field: &str) -> bool {
+    matches!(field, "push")
 }
 
 fn emit_slice_element_rebinds(pattern: &RustDestructurePattern, out: &mut String, indent: usize) {
