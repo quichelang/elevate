@@ -165,6 +165,16 @@ impl Parser {
         impl_target: Option<&str>,
     ) -> Option<FunctionDef> {
         let name = self.expect_ident("Expected function name")?;
+        let mut type_params = Vec::new();
+        if self.match_kind(TokenKind::Lt) {
+            while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
+                type_params.push(self.expect_ident("Expected generic type parameter name")?);
+                if !self.match_kind(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt, "Expected '>' after generic type parameters")?;
+        }
         self.expect(TokenKind::LParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
         while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
@@ -196,6 +206,7 @@ impl Parser {
         Some(FunctionDef {
             visibility,
             name,
+            type_params,
             params,
             return_type,
             body,

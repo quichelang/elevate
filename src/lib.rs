@@ -682,6 +682,43 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_generic_function_inference() {
+        let source = r#"
+            fn id<T>(value: T) -> T {
+                value
+            }
+
+            fn run() -> i64 {
+                id(7)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("fn id<T>(value: T) -> T"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_reports_generic_reuse_mismatch() {
+        let source = r#"
+            fn same<T>(left: T, right: T) -> T {
+                left
+            }
+
+            fn bad() -> i64 {
+                same(1, "oops")
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected generic mismatch");
+        assert!(
+            error
+                .to_string()
+                .contains("Arg 2 for `same`: expected `T`, got `String`")
+        );
+    }
+
+    #[test]
     fn compile_supports_match_on_enums() {
         let source = r#"
             enum Maybe {

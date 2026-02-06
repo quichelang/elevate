@@ -50,6 +50,7 @@ pub struct TypedVariant {
 pub struct TypedFunction {
     pub is_public: bool,
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<TypedParam>,
     pub return_type: String,
     pub body: Vec<TypedStmt>,

@@ -51,6 +51,7 @@ pub struct RustVariant {
 pub struct RustFunction {
     pub is_public: bool,
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<RustParam>,
     pub return_type: String,
     pub body: Vec<RustStmt>,

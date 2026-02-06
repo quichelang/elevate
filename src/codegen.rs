@@ -83,10 +83,16 @@ fn emit_function(def: &RustFunction, out: &mut String) {
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let generics = if def.type_params.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", def.type_params.join(", "))
+    };
     out.push_str(&format!(
-        "{}fn {}({})",
+        "{}fn {}{}({})",
         vis(def.is_public),
         def.name,
+        generics,
         params
     ));
     out.push_str(&format!(" -> {}", def.return_type));
@@ -113,10 +119,16 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let generics = if method.type_params.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", method.type_params.join(", "))
+        };
         out.push_str(&format!(
-            "    {}fn {}({}) -> {} {{\n",
+            "    {}fn {}{}({}) -> {} {{\n",
             vis(method.is_public),
             method.name,
+            generics,
             params,
             method.return_type
         ));

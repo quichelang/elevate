@@ -36,6 +36,7 @@ enum SemType {
 
 #[derive(Debug, Clone)]
 struct FunctionSig {
+    type_params: Vec<String>,
     params: Vec<SemType>,
     return_type: SemType,
 }
@@ -538,6 +539,7 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
     RustFunction {
         is_public: def.is_public,
         name: def.name.clone(),
+        type_params: def.type_params.clone(),
         params: def
             .params
             .iter()
@@ -581,6 +583,7 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
             }
             Item::Function(def) => {
                 let sig = FunctionSig {
+                    type_params: def.type_params.clone(),
                     params: def
                         .params
                         .iter()
@@ -597,6 +600,7 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
             Item::Impl(def) => {
                 for method in &def.methods {
                     let sig = FunctionSig {
+                        type_params: method.type_params.clone(),
                         params: method
                             .params
                             .iter()
@@ -752,6 +756,7 @@ fn lower_item(
                 methods.push(TypedFunction {
                     is_public: method.visibility == Visibility::Public,
                     name: method.name.clone(),
+                    type_params: method.type_params.clone(),
                     params: method
                         .params
                         .iter()
@@ -921,6 +926,7 @@ fn lower_item(
             Some(TypedItem::Function(TypedFunction {
                 is_public: def.visibility == Visibility::Public,
                 name: def.name.clone(),
+                type_params: def.type_params.clone(),
                 params: def
                     .params
                     .iter()
@@ -2364,64 +2370,13 @@ fn resolve_call_type(
 
         let lookup_name = path.join("::");
         if let Some(sig) = context.functions.get(&lookup_name) {
-            let name = lookup_name;
-            if sig.params.len() != args.len() {
-                diagnostics.push(Diagnostic::new(
-                    format!(
-                        "Function `{name}` expects {} args, got {}",
-                        sig.params.len(),
-                        args.len()
-                    ),
-                    Span::new(0, 0),
-                ));
-                return sig.return_type.clone();
-            }
-
-            for (index, (actual, expected)) in args.iter().zip(&sig.params).enumerate() {
-                if !is_compatible(actual, expected) {
-                    diagnostics.push(Diagnostic::new(
-                        format!(
-                            "Arg {} for `{name}`: expected `{}`, got `{}`",
-                            index + 1,
-                            type_to_string(expected),
-                            type_to_string(actual)
-                        ),
-                        Span::new(0, 0),
-                    ));
-                }
-            }
-            return sig.return_type.clone();
+            return resolve_named_function_call(sig, &lookup_name, args, diagnostics);
         }
 
         if path.len() == 1 {
             let name = &path[0];
             if let Some(sig) = context.functions.get(name) {
-                if sig.params.len() != args.len() {
-                    diagnostics.push(Diagnostic::new(
-                        format!(
-                            "Function `{name}` expects {} args, got {}",
-                            sig.params.len(),
-                            args.len()
-                        ),
-                        Span::new(0, 0),
-                    ));
-                    return sig.return_type.clone();
-                }
-
-                for (index, (actual, expected)) in args.iter().zip(&sig.params).enumerate() {
-                    if !is_compatible(actual, expected) {
-                        diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Arg {} for `{name}`: expected `{}`, got `{}`",
-                                index + 1,
-                                type_to_string(expected),
-                                type_to_string(actual)
-                            ),
-                            Span::new(0, 0),
-                        ));
-                    }
-                }
-                return sig.return_type.clone();
+                return resolve_named_function_call(sig, name, args, diagnostics);
             }
         }
 
@@ -2434,6 +2389,46 @@ fn resolve_call_type(
 
     diagnostics.push(Diagnostic::new("Unsupported call target", Span::new(0, 0)));
     SemType::Unknown
+}
+
+fn resolve_named_function_call(
+    sig: &FunctionSig,
+    name: &str,
+    args: &[SemType],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> SemType {
+    if sig.params.len() != args.len() {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "Function `{name}` expects {} args, got {}",
+                sig.params.len(),
+                args.len()
+            ),
+            Span::new(0, 0),
+        ));
+        return sig.return_type.clone();
+    }
+
+    let type_param_set = sig.type_params.iter().cloned().collect::<HashSet<_>>();
+    let mut generic_bindings = HashMap::new();
+
+    for (index, (actual, expected)) in args.iter().zip(&sig.params).enumerate() {
+        if !bind_generic_params(expected, actual, &type_param_set, &mut generic_bindings)
+            && !is_compatible(actual, expected)
+        {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Arg {} for `{name}`: expected `{}`, got `{}`",
+                    index + 1,
+                    type_to_string(expected),
+                    type_to_string(actual)
+                ),
+                Span::new(0, 0),
+            ));
+        }
+    }
+
+    substitute_generic_type(&sig.return_type, &type_param_set, &generic_bindings)
 }
 
 fn resolve_builtin_assert_call(
@@ -3400,6 +3395,7 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
     RustFunction {
         is_public: false,
         name: shim.name.clone(),
+        type_params: Vec::new(),
         params,
         return_type: shim.return_type.clone(),
         body,
@@ -3715,6 +3711,113 @@ fn type_to_string(ty: &SemType) -> String {
                 format!("{head}<{args_text}>")
             }
         }
+    }
+}
+
+fn bind_generic_params(
+    expected: &SemType,
+    actual: &SemType,
+    type_params: &HashSet<String>,
+    bindings: &mut HashMap<String, SemType>,
+) -> bool {
+    match expected {
+        SemType::Path { path, args } if path.len() == 1 && args.is_empty() => {
+            let name = &path[0];
+            if type_params.contains(name) {
+                if let Some(existing) = bindings.get(name) {
+                    return is_compatible(actual, existing) && is_compatible(existing, actual);
+                }
+                bindings.insert(name.clone(), actual.clone());
+                return true;
+            }
+        }
+        _ => {}
+    }
+
+    match (expected, actual) {
+        (
+            SemType::Path {
+                path: ep,
+                args: ea,
+            },
+            SemType::Path {
+                path: ap,
+                args: aa,
+            },
+        ) => {
+            if ep != ap || ea.len() != aa.len() {
+                return false;
+            }
+            ea.iter()
+                .zip(aa.iter())
+                .all(|(left, right)| bind_generic_params(left, right, type_params, bindings))
+        }
+        (SemType::Tuple(et), SemType::Tuple(at)) => {
+            if et.len() != at.len() {
+                return false;
+            }
+            et.iter()
+                .zip(at.iter())
+                .all(|(left, right)| bind_generic_params(left, right, type_params, bindings))
+        }
+        (
+            SemType::Fn {
+                params: ep,
+                ret: er,
+            },
+            SemType::Fn {
+                params: ap,
+                ret: ar,
+            },
+        ) => {
+            if ep.len() != ap.len() {
+                return false;
+            }
+            ep.iter()
+                .zip(ap.iter())
+                .all(|(left, right)| bind_generic_params(left, right, type_params, bindings))
+                && bind_generic_params(er, ar, type_params, bindings)
+        }
+        _ => false,
+    }
+}
+
+fn substitute_generic_type(
+    ty: &SemType,
+    type_params: &HashSet<String>,
+    bindings: &HashMap<String, SemType>,
+) -> SemType {
+    match ty {
+        SemType::Path { path, args } if path.len() == 1 && args.is_empty() => {
+            if type_params.contains(&path[0]) {
+                return bindings
+                    .get(&path[0])
+                    .cloned()
+                    .unwrap_or(SemType::Unknown);
+            }
+            ty.clone()
+        }
+        SemType::Path { path, args } => SemType::Path {
+            path: path.clone(),
+            args: args
+                .iter()
+                .map(|arg| substitute_generic_type(arg, type_params, bindings))
+                .collect(),
+        },
+        SemType::Tuple(items) => SemType::Tuple(
+            items
+                .iter()
+                .map(|item| substitute_generic_type(item, type_params, bindings))
+                .collect(),
+        ),
+        SemType::Fn { params, ret } => SemType::Fn {
+            params: params
+                .iter()
+                .map(|param| substitute_generic_type(param, type_params, bindings))
+                .collect(),
+            ret: Box::new(substitute_generic_type(ret, type_params, bindings)),
+        },
+        SemType::Unit | SemType::Unknown => ty.clone(),
     }
 }
 

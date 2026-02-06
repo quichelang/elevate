@@ -169,6 +169,7 @@ Implemented:
 - `Vec` indexing and range slicing expressions (`values[i]`, `values[a..b]`).
 - Heterogeneous tuple support with Rust-like semantics (tuple literals, tuple type annotations, and tuple destructuring bindings in const/assignment/`for` contexts).
 - Slice destructuring bindings for `Vec` values in `const`/`for` patterns (`[head, ..tail]`, `[left, right]`).
+- Generic function definitions with callsite type inference (for example `fn id<T>(x: T) -> T`).
 - Array/vector literals (`[a, b, c]`) with inferred element type and `Vec` lowering.
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
 - Local enum tuple payload variants with multiple fields (for example `Pair(i64, i64)`) across definitions, constructors, and match patterns.
@@ -287,7 +288,7 @@ Quality gates:
 ### Known Incomplete Areas
 
 - Ownership lowering policy implementation is not complete.
-- Generic function definitions and constrained bounds are not complete.
+- Generic constrained bounds are not complete (generic function definitions are implemented, but trait-style bound constraints are still pending).
 - Full iterator-model ergonomics for `for` loops are not complete beyond current lowering support.
 - Slices are not complete (current support focuses on `Vec` literals/index/range expressions and slice-style match patterns).
 - Deep destructuring coverage is expanded (tuple + slice destructuring in const/assignment/for), but not complete across all possible contexts/forms.

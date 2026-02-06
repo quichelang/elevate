@@ -56,6 +56,7 @@ pub struct Field {
 pub struct FunctionDef {
     pub visibility: Visibility,
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub body: Block,
