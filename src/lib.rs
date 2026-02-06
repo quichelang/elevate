@@ -498,7 +498,7 @@ mod tests {
             output
                 .ownership_notes
                 .iter()
-                .any(|note| note.contains("field value"))
+                .any(|note| note.contains("`state.text`"))
         );
         assert_rust_code_compiles(&output.rust_code);
     }
@@ -524,8 +524,33 @@ mod tests {
             output
                 .ownership_notes
                 .iter()
-                .any(|note| note.contains("field value"))
+                .any(|note| note.contains("`state.text`"))
         );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_avoids_clone_for_disjoint_struct_fields() {
+        let source = r#"
+            pub struct Pair { left: String; right: String; }
+
+            fn consume(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn demo(pair: Pair) {
+                consume(pair.left);
+                consume(pair.right);
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("consume(pair.left);"));
+        assert!(output.rust_code.contains("consume(pair.right);"));
+        assert!(!output.rust_code.contains("pair.left.clone()"));
+        assert!(output.ownership_notes.is_empty());
         assert_rust_code_compiles(&output.rust_code);
     }
 

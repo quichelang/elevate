@@ -159,27 +159,69 @@ struct LoweringContext {
     scope_name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OwnershipPlace {
+    root: String,
+    projections: Vec<OwnershipProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum OwnershipProjection {
+    Field(String),
+    Index,
+}
+
+impl OwnershipPlace {
+    fn from_root(root: &str) -> Self {
+        Self {
+            root: root.to_string(),
+            projections: Vec::new(),
+        }
+    }
+
+    fn with_projection(mut self, projection: OwnershipProjection) -> Self {
+        self.projections.push(projection);
+        self
+    }
+
+    fn display_name(&self) -> String {
+        let mut out = self.root.clone();
+        for segment in &self.projections {
+            match segment {
+                OwnershipProjection::Field(field) => {
+                    out.push('.');
+                    out.push_str(field);
+                }
+                OwnershipProjection::Index => out.push_str("[_]"),
+            }
+        }
+        out
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct OwnershipPlan {
-    remaining_root_uses: HashMap<String, usize>,
+    remaining_place_uses: HashMap<OwnershipPlace, usize>,
 }
 
 impl OwnershipPlan {
     fn from_stmts(stmts: &[TypedStmt]) -> Self {
         Self {
-            remaining_root_uses: collect_path_uses_in_stmts(stmts),
+            remaining_place_uses: collect_place_uses_in_stmts(stmts),
         }
     }
 
-    fn remaining_for_root(&self, name: &str) -> usize {
-        self.remaining_root_uses.get(name).copied().unwrap_or(0)
+    fn remaining_for_place(&self, place: &OwnershipPlace) -> usize {
+        self.remaining_place_uses.get(place).copied().unwrap_or(0)
     }
 
-    fn consume_root(&mut self, name: &str) -> usize {
-        let remaining = self.remaining_for_root(name);
+    fn consume_expr(&mut self, expr: &TypedExpr) -> usize {
+        let Some(place) = place_for_expr(expr) else {
+            return 0;
+        };
+        let remaining = self.remaining_for_place(&place);
         if remaining > 0 {
-            self.remaining_root_uses
-                .insert(name.to_string(), remaining - 1);
+            self.remaining_place_uses.insert(place, remaining - 1);
         }
         remaining
     }
@@ -198,6 +240,7 @@ struct LoweringState {
 enum ExprPosition {
     Value,
     CallArgOwned,
+    ProjectionBase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3434,7 +3477,9 @@ fn lower_expr_with_context(
         TypedExprKind::Bool(value) => RustExpr::Bool(*value),
         TypedExprKind::String(value) => RustExpr::String(value.clone()),
         TypedExprKind::Char(value) => RustExpr::Char(*value),
-        TypedExprKind::Path(path) => lower_path_expr(path, &expr.ty, position, context, state),
+        TypedExprKind::Path(path) => {
+            lower_path_expr(expr, path, &expr.ty, position, context, state)
+        }
         TypedExprKind::Call { callee, args } => {
             if let TypedExprKind::Path(path) = &callee.kind
                 && path.len() == 1
@@ -3476,15 +3521,17 @@ fn lower_expr_with_context(
                 .collect(),
         },
         TypedExprKind::Field { base, field } => {
-            let root = root_local_typed_expr(base);
-            let remaining_before = root
-                .map(|name| context.ownership_plan.remaining_for_root(name))
-                .unwrap_or(0);
+            let remaining_before = if position == ExprPosition::ProjectionBase {
+                0
+            } else {
+                context.ownership_plan.consume_expr(expr)
+            };
+            let place_name = place_for_expr(expr).map(|place| place.display_name());
             let lowered_field = RustExpr::Field {
                 base: Box::new(lower_expr_with_context(
                     base,
                     context,
-                    ExprPosition::Value,
+                    ExprPosition::ProjectionBase,
                     state,
                 )),
                 field: field.clone(),
@@ -3493,14 +3540,14 @@ fn lower_expr_with_context(
                 && remaining_before > 1
                 && should_clone_for_reuse(&expr.ty, state)
             {
-                if let Some(name) = root {
+                if let Some(name) = place_name {
                     let scope = if context.scope_name.is_empty() {
                         "<module>"
                     } else {
                         context.scope_name.as_str()
                     };
                     state.push_ownership_note(format!(
-                        "auto-clone inserted in `{scope}` for `{name}` field value of type `{}`",
+                        "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
                         expr.ty.trim()
                     ));
                 }
@@ -3510,15 +3557,17 @@ fn lower_expr_with_context(
             }
         }
         TypedExprKind::Index { base, index } => {
-            let root = root_local_typed_expr(base);
-            let remaining_before = root
-                .map(|name| context.ownership_plan.remaining_for_root(name))
-                .unwrap_or(0);
+            let remaining_before = if position == ExprPosition::ProjectionBase {
+                0
+            } else {
+                context.ownership_plan.consume_expr(expr)
+            };
+            let place_name = place_for_expr(expr).map(|place| place.display_name());
             let lowered_index_expr = RustExpr::Index {
                 base: Box::new(lower_expr_with_context(
                     base,
                     context,
-                    ExprPosition::Value,
+                    ExprPosition::ProjectionBase,
                     state,
                 )),
                 index: Box::new(lower_expr_with_context(
@@ -3532,14 +3581,14 @@ fn lower_expr_with_context(
                 && remaining_before > 1
                 && should_clone_for_reuse(&expr.ty, state)
             {
-                if let Some(name) = root {
+                if let Some(name) = place_name {
                     let scope = if context.scope_name.is_empty() {
                         "<module>"
                     } else {
                         context.scope_name.as_str()
                     };
                     state.push_ownership_note(format!(
-                        "auto-clone inserted in `{scope}` for `{name}` indexed value of type `{}`",
+                        "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
                         expr.ty.trim()
                     ));
                 }
@@ -3732,18 +3781,22 @@ fn lower_expr_with_context(
 }
 
 fn lower_path_expr(
+    expr: &TypedExpr,
     path: &[String],
     ty: &str,
     position: ExprPosition,
     context: &mut LoweringContext,
     state: &mut LoweringState,
 ) -> RustExpr {
+    if position == ExprPosition::ProjectionBase {
+        return RustExpr::Path(path.to_vec());
+    }
     if path.len() != 1 {
         return RustExpr::Path(path.to_vec());
     }
 
     let name = path[0].clone();
-    let remaining = context.ownership_plan.consume_root(&name);
+    let remaining = context.ownership_plan.consume_expr(expr);
 
     let path_expr = RustExpr::Path(path.to_vec());
     if position == ExprPosition::CallArgOwned && remaining > 1 && should_clone_for_reuse(ty, state)
@@ -3760,15 +3813,6 @@ fn lower_path_expr(
         return clone_expr(path_expr);
     }
     path_expr
-}
-
-fn root_local_typed_expr(expr: &TypedExpr) -> Option<&str> {
-    match &expr.kind {
-        TypedExprKind::Path(path) if path.len() == 1 => Some(path[0].as_str()),
-        TypedExprKind::Field { base, .. } => root_local_typed_expr(base),
-        TypedExprKind::Index { base, .. } => root_local_typed_expr(base),
-        _ => None,
-    }
 }
 
 fn cast_expr(expr: RustExpr, ty: String) -> RustExpr {
@@ -4163,130 +4207,147 @@ fn split_top_level_commas(input: &str) -> Vec<&str> {
     items
 }
 
-fn collect_path_uses_in_stmts(stmts: &[TypedStmt]) -> HashMap<String, usize> {
+fn place_for_expr(expr: &TypedExpr) -> Option<OwnershipPlace> {
+    match &expr.kind {
+        TypedExprKind::Path(path) if path.len() == 1 => Some(OwnershipPlace::from_root(&path[0])),
+        TypedExprKind::Field { base, field } => place_for_expr(base)
+            .map(|place| place.with_projection(OwnershipProjection::Field(field.clone()))),
+        TypedExprKind::Index { base, .. } => {
+            place_for_expr(base).map(|place| place.with_projection(OwnershipProjection::Index))
+        }
+        _ => None,
+    }
+}
+
+fn collect_place_uses_in_stmts(stmts: &[TypedStmt]) -> HashMap<OwnershipPlace, usize> {
     let mut uses = HashMap::new();
     for stmt in stmts {
-        collect_path_uses_in_stmt(stmt, &mut uses);
+        collect_place_uses_in_stmt(stmt, &mut uses);
     }
     uses
 }
 
-fn collect_path_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<String, usize>) {
+fn collect_place_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<OwnershipPlace, usize>) {
     match stmt {
-        TypedStmt::Const(def) => collect_path_uses_in_expr(&def.value, uses),
-        TypedStmt::DestructureConst { value, .. } => collect_path_uses_in_expr(value, uses),
+        TypedStmt::Const(def) => collect_place_uses_in_expr(&def.value, uses),
+        TypedStmt::DestructureConst { value, .. } => collect_place_uses_in_expr(value, uses),
         TypedStmt::Assign { target, value, .. } => {
-            collect_path_uses_in_expr(value, uses);
-            collect_path_uses_in_assign_target(target, uses);
+            collect_place_uses_in_expr(value, uses);
+            collect_place_uses_in_assign_target(target, uses);
         }
-        TypedStmt::Return(Some(expr)) => collect_path_uses_in_expr(expr, uses),
+        TypedStmt::Return(Some(expr)) => collect_place_uses_in_expr(expr, uses),
         TypedStmt::Return(None) => {}
         TypedStmt::If {
             condition,
             then_body,
             else_body,
         } => {
-            collect_path_uses_in_expr(condition, uses);
+            collect_place_uses_in_expr(condition, uses);
             for stmt in then_body {
-                collect_path_uses_in_stmt(stmt, uses);
+                collect_place_uses_in_stmt(stmt, uses);
             }
             if let Some(else_body) = else_body {
                 for stmt in else_body {
-                    collect_path_uses_in_stmt(stmt, uses);
+                    collect_place_uses_in_stmt(stmt, uses);
                 }
             }
         }
         TypedStmt::While { condition, body } => {
-            collect_path_uses_in_expr(condition, uses);
+            collect_place_uses_in_expr(condition, uses);
             for stmt in body {
-                collect_path_uses_in_stmt(stmt, uses);
+                collect_place_uses_in_stmt(stmt, uses);
             }
         }
         TypedStmt::For { iter, body, .. } => {
-            collect_path_uses_in_expr(iter, uses);
+            collect_place_uses_in_expr(iter, uses);
             for stmt in body {
-                collect_path_uses_in_stmt(stmt, uses);
+                collect_place_uses_in_stmt(stmt, uses);
             }
         }
         TypedStmt::Loop { body } => {
             for stmt in body {
-                collect_path_uses_in_stmt(stmt, uses);
+                collect_place_uses_in_stmt(stmt, uses);
             }
         }
         TypedStmt::Break | TypedStmt::Continue => {}
         TypedStmt::RustBlock(_) => {}
-        TypedStmt::Expr(expr) => collect_path_uses_in_expr(expr, uses),
+        TypedStmt::Expr(expr) => collect_place_uses_in_expr(expr, uses),
     }
 }
 
-fn collect_path_uses_in_assign_target(target: &TypedAssignTarget, uses: &mut HashMap<String, usize>) {
+fn collect_place_uses_in_assign_target(
+    target: &TypedAssignTarget,
+    uses: &mut HashMap<OwnershipPlace, usize>,
+) {
     match target {
         TypedAssignTarget::Path(_) => {}
-        TypedAssignTarget::Field { base, .. } => collect_path_uses_in_expr(base, uses),
+        TypedAssignTarget::Field { base, .. } => collect_place_uses_in_expr(base, uses),
         TypedAssignTarget::Index { base, index } => {
-            collect_path_uses_in_expr(base, uses);
-            collect_path_uses_in_expr(index, uses);
+            collect_place_uses_in_expr(base, uses);
+            collect_place_uses_in_expr(index, uses);
         }
         TypedAssignTarget::Tuple(items) => {
             for item in items {
-                collect_path_uses_in_assign_target(item, uses);
+                collect_place_uses_in_assign_target(item, uses);
             }
         }
     }
 }
 
-fn collect_path_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<String, usize>) {
+fn collect_place_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<OwnershipPlace, usize>) {
+    if let Some(place) = place_for_expr(expr) {
+        *uses.entry(place).or_insert(0) += 1;
+        return;
+    }
+
     match &expr.kind {
-        TypedExprKind::Path(path) if path.len() == 1 => {
-            *uses.entry(path[0].clone()).or_insert(0) += 1;
-        }
         TypedExprKind::Call { callee, args } => {
-            collect_path_uses_in_expr(callee, uses);
+            if let TypedExprKind::Field { base, .. } = &callee.kind {
+                collect_place_uses_in_expr(base, uses);
+            } else {
+                collect_place_uses_in_expr(callee, uses);
+            }
             for arg in args {
-                collect_path_uses_in_expr(arg, uses);
+                collect_place_uses_in_expr(arg, uses);
             }
         }
         TypedExprKind::MacroCall { args, .. } => {
             for arg in args {
-                collect_path_uses_in_expr(arg, uses);
+                collect_place_uses_in_expr(arg, uses);
             }
         }
-        TypedExprKind::Field { base, .. } => collect_path_uses_in_expr(base, uses),
-        TypedExprKind::Index { base, index } => {
-            collect_path_uses_in_expr(base, uses);
-            collect_path_uses_in_expr(index, uses);
-        }
+        TypedExprKind::Field { .. } | TypedExprKind::Index { .. } => {}
         TypedExprKind::Match { scrutinee, arms } => {
-            collect_path_uses_in_expr(scrutinee, uses);
+            collect_place_uses_in_expr(scrutinee, uses);
             for arm in arms {
-                collect_path_uses_in_expr(&arm.value, uses);
+                collect_place_uses_in_expr(&arm.value, uses);
             }
         }
-        TypedExprKind::Unary { expr, .. } => collect_path_uses_in_expr(expr, uses),
+        TypedExprKind::Unary { expr, .. } => collect_place_uses_in_expr(expr, uses),
         TypedExprKind::Binary { left, right, .. } => {
-            collect_path_uses_in_expr(left, uses);
-            collect_path_uses_in_expr(right, uses);
+            collect_place_uses_in_expr(left, uses);
+            collect_place_uses_in_expr(right, uses);
         }
         TypedExprKind::Array(items) | TypedExprKind::Tuple(items) => {
             for item in items {
-                collect_path_uses_in_expr(item, uses);
+                collect_place_uses_in_expr(item, uses);
             }
         }
         TypedExprKind::StructLiteral { fields, .. } => {
             for field in fields {
-                collect_path_uses_in_expr(&field.value, uses);
+                collect_place_uses_in_expr(&field.value, uses);
             }
         }
         TypedExprKind::Closure { .. } => {}
         TypedExprKind::Range { start, end, .. } => {
             if let Some(start) = start {
-                collect_path_uses_in_expr(start, uses);
+                collect_place_uses_in_expr(start, uses);
             }
             if let Some(end) = end {
-                collect_path_uses_in_expr(end, uses);
+                collect_place_uses_in_expr(end, uses);
             }
         }
-        TypedExprKind::Try(inner) => collect_path_uses_in_expr(inner, uses),
+        TypedExprKind::Try(inner) => collect_place_uses_in_expr(inner, uses),
         TypedExprKind::Int(_)
         | TypedExprKind::Bool(_)
         | TypedExprKind::String(_)
