@@ -840,6 +840,41 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_match_struct_rest_patterns() {
+        let source = r#"
+            struct Point { x: i64; y: i64; z: i64; }
+            fn classify(p: Point) -> i64 {
+                return match p {
+                    Point { x, .. } => x;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("Point { x, .. }"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_reports_match_struct_missing_fields_without_rest() {
+        let source = r#"
+            struct Point { x: i64; y: i64; }
+            fn classify(p: Point) -> i64 {
+                return match p {
+                    Point { x } => x;
+                };
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(
+            error
+                .to_string()
+                .contains("Struct pattern `Point` is missing field(s): y")
+        );
+    }
+
+    #[test]
     fn compile_supports_match_slice_rest_patterns() {
         let source = r#"
             fn classify(v: Vec<i64>) -> i64 {

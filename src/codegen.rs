@@ -481,13 +481,25 @@ fn emit_pattern(pattern: &RustPattern) -> String {
         RustPattern::BindingAt { name, pattern } => {
             format!("{name} @ {}", emit_pattern(pattern))
         }
-        RustPattern::Struct { path, fields } => {
+        RustPattern::Struct {
+            path,
+            fields,
+            has_rest,
+        } => {
             let inner = fields
                 .iter()
                 .map(emit_pattern_field)
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{} {{ {} }}", path.join("::"), inner)
+            if *has_rest {
+                if inner.is_empty() {
+                    format!("{} {{ .. }}", path.join("::"))
+                } else {
+                    format!("{} {{ {}, .. }}", path.join("::"), inner)
+                }
+            } else {
+                format!("{} {{ {} }}", path.join("::"), inner)
+            }
         }
         RustPattern::Range {
             start,

@@ -248,6 +248,7 @@ pub enum TypedPattern {
     Struct {
         path: Vec<String>,
         fields: Vec<TypedPatternField>,
+        has_rest: bool,
     },
     Range {
         start: Option<i64>,

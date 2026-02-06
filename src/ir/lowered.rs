@@ -244,6 +244,7 @@ pub enum RustPattern {
     Struct {
         path: Vec<String>,
         fields: Vec<RustPatternField>,
+        has_rest: bool,
     },
     Range {
         start: Option<i64>,

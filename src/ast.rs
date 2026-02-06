@@ -272,6 +272,7 @@ pub enum Pattern {
     Struct {
         path: Vec<String>,
         fields: Vec<PatternField>,
+        has_rest: bool,
     },
     Range {
         start: Option<i64>,

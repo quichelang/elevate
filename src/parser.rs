@@ -665,7 +665,13 @@ impl Parser {
         };
         if self.match_kind(TokenKind::LBrace) {
             let mut fields = Vec::new();
+            let mut has_rest = false;
             while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+                if self.match_kind(TokenKind::DotDot) {
+                    has_rest = true;
+                    self.match_kind(TokenKind::Comma);
+                    break;
+                }
                 let name = self.expect_ident("Expected struct pattern field name")?;
                 let pattern = if self.match_kind(TokenKind::Colon) {
                     self.parse_pattern()?
@@ -678,7 +684,11 @@ impl Parser {
                 }
             }
             self.expect(TokenKind::RBrace, "Expected '}' after struct pattern fields")?;
-            return Some(Pattern::Struct { path, fields });
+            return Some(Pattern::Struct {
+                path,
+                fields,
+                has_rest,
+            });
         }
         if path.len() == 1 && payload.is_none() && self.match_kind(TokenKind::At) {
             let inner = self.parse_pattern_atom()?;

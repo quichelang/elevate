@@ -4090,7 +4090,11 @@ fn lower_pattern(
                 pattern: Box::new(lowered),
             }
         }
-        Pattern::Struct { path, fields } => {
+        Pattern::Struct {
+            path,
+            fields,
+            has_rest,
+        } => {
             let struct_name = path.last().cloned().unwrap_or_default();
             let struct_fields = context.structs.get(&struct_name);
             if struct_fields.is_none() {
@@ -4124,6 +4128,27 @@ fn lower_pattern(
                 ));
             }
 
+            if let Some(expected_fields) = struct_fields
+                && !*has_rest
+            {
+                let bound = fields.iter().map(|field| field.name.as_str()).collect::<HashSet<_>>();
+                let missing = expected_fields
+                    .keys()
+                    .filter(|name| !bound.contains(name.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !missing.is_empty() {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Struct pattern `{}` is missing field(s): {} (add `..` to ignore remaining fields)",
+                            struct_name,
+                            missing.join(", ")
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+            }
+
             let lowered_fields = fields
                 .iter()
                 .map(|field| {
@@ -4155,6 +4180,7 @@ fn lower_pattern(
             TypedPattern::Struct {
                 path: path.clone(),
                 fields: lowered_fields,
+                has_rest: *has_rest,
             }
         }
         Pattern::Range {
@@ -4533,7 +4559,11 @@ fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
             name: name.clone(),
             pattern: Box::new(lower_pattern_to_rust(pattern)),
         },
-        TypedPattern::Struct { path, fields } => RustPattern::Struct {
+        TypedPattern::Struct {
+            path,
+            fields,
+            has_rest,
+        } => RustPattern::Struct {
             path: path.clone(),
             fields: fields
                 .iter()
@@ -4542,6 +4572,7 @@ fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
                     pattern: lower_pattern_to_rust(&field.pattern),
                 })
                 .collect(),
+            has_rest: *has_rest,
         },
         TypedPattern::Range {
             start,

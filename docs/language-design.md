@@ -172,6 +172,7 @@ Implemented:
 - Generic function definitions with callsite type inference (for example `fn id<T>(x: T) -> T`).
 - Array/vector literals (`[a, b, c]`) with inferred element type and `Vec` lowering.
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
+- Struct rest match patterns (`Type { field, .. }`) with diagnostics for missing required fields when rest is omitted.
 - Local enum tuple payload variants with multiple fields (for example `Pair(i64, i64)`) across definitions, constructors, and match patterns.
 - Match arm block expressions (`pattern => { ... };`).
 - Match guards (`pattern if condition => ...`).
