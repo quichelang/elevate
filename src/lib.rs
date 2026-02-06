@@ -1277,6 +1277,59 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_for_loop_hashmap_keys() {
+        let source = r#"
+            rust use std::collections::HashMap;
+
+            fn walk_keys(map: HashMap<String, i64>) -> i64 {
+                for key in map.keys() {
+                    std::mem::drop(key);
+                }
+                0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for key in map.keys()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_for_loop_hashmap_into_iter_tuple() {
+        let source = r#"
+            rust use std::collections::HashMap;
+
+            fn walk_pairs(map: HashMap<String, i64>) -> i64 {
+                for (key, value) in map.into_iter() {
+                    std::mem::drop(key);
+                    std::mem::drop(value);
+                }
+                0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for (key, value) in map.into_iter()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_for_loop_option_into_iter() {
+        let source = r#"
+            fn walk_one() -> i64 {
+                for value in Option::Some(1).into_iter() {
+                    std::mem::drop(value);
+                }
+                0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for value in Option::Some(1).into_iter()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_reports_slice_destructure_type_mismatch() {
         let source = r#"
             fn bad(v: i64) -> i64 {

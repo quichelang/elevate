@@ -2652,12 +2652,30 @@ fn resolve_method_call_type(
                     expect_method_arity(type_name, method, args.len(), 0, diagnostics);
                     return named_type("bool");
                 }
+                "into_iter" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    if let SemType::Path { args, .. } = base_ty
+                        && let Some(item_ty) = args.first()
+                    {
+                        return SemType::Iter(Box::new(item_ty.clone()));
+                    }
+                    return SemType::Iter(Box::new(SemType::Unknown));
+                }
                 _ => {}
             },
             "Result" => match method {
                 "is_ok" | "is_err" => {
                     expect_method_arity(type_name, method, args.len(), 0, diagnostics);
                     return named_type("bool");
+                }
+                "into_iter" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    if let SemType::Path { args, .. } = base_ty
+                        && let Some(ok_ty) = args.first()
+                    {
+                        return SemType::Iter(Box::new(ok_ty.clone()));
+                    }
+                    return SemType::Iter(Box::new(SemType::Unknown));
                 }
                 _ => {}
             },
@@ -2674,6 +2692,36 @@ fn resolve_method_call_type(
                     expect_method_arity(type_name, method, args.len(), 1, diagnostics);
                     return named_type("bool");
                 }
+                "keys" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    if let SemType::Path { args, .. } = base_ty
+                        && let Some(key_ty) = args.first()
+                    {
+                        return SemType::Iter(Box::new(key_ty.clone()));
+                    }
+                    return SemType::Iter(Box::new(SemType::Unknown));
+                }
+                "values" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    if let SemType::Path { args, .. } = base_ty
+                        && let Some(value_ty) = args.get(1)
+                    {
+                        return SemType::Iter(Box::new(value_ty.clone()));
+                    }
+                    return SemType::Iter(Box::new(SemType::Unknown));
+                }
+                "iter" | "into_iter" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    if let SemType::Path { args, .. } = base_ty
+                        && args.len() >= 2
+                    {
+                        return SemType::Iter(Box::new(SemType::Tuple(vec![
+                            args[0].clone(),
+                            args[1].clone(),
+                        ])));
+                    }
+                    return SemType::Iter(Box::new(SemType::Unknown));
+                }
                 _ => {}
             },
             "HashSet" | "BTreeSet" => match method {
@@ -2688,6 +2736,15 @@ fn resolve_method_call_type(
                 "contains" => {
                     expect_method_arity(type_name, method, args.len(), 1, diagnostics);
                     return named_type("bool");
+                }
+                "iter" | "into_iter" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    if let SemType::Path { args, .. } = base_ty
+                        && let Some(item_ty) = args.first()
+                    {
+                        return SemType::Iter(Box::new(item_ty.clone()));
+                    }
+                    return SemType::Iter(Box::new(SemType::Unknown));
                 }
                 _ => {}
             },
