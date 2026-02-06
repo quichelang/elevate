@@ -39,6 +39,15 @@ enum InteropTransform {
     UnwrapSplitOnceToOwnedTuple,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContractType {
+    I64,
+    Bool,
+    String,
+    StrRef,
+    Unknown,
+}
+
 pub fn build_ers_crate(crate_root: &Path, release: bool) -> Result<BuildSummary, String> {
     build_ers_crate_with_options(crate_root, release, &CompileOptions::default())
 }
@@ -265,9 +274,23 @@ fn validate_adapter_callsites(
         .iter()
         .map(|adapter| (adapter.alias.clone(), adapter.params.len()))
         .collect::<HashMap<_, _>>();
+    let alias_param_types = contract
+        .adapters
+        .iter()
+        .map(|adapter| {
+            (
+                adapter.alias.clone(),
+                adapter
+                    .params
+                    .iter()
+                    .map(|param| parse_contract_type(param))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut diagnostics = Vec::new();
     for item in &module.items {
-        validate_item_adapter_calls(item, &alias_arity, &mut diagnostics);
+        validate_item_adapter_calls(item, &alias_arity, &alias_param_types, &mut diagnostics);
     }
     diagnostics
 }
@@ -275,17 +298,29 @@ fn validate_adapter_callsites(
 fn validate_item_adapter_calls(
     item: &Item,
     alias_arity: &HashMap<String, usize>,
+    alias_param_types: &HashMap<String, Vec<ContractType>>,
     diagnostics: &mut Vec<crate::diag::Diagnostic>,
 ) {
     match item {
-        Item::Function(def) => validate_block_adapter_calls(&def.body, alias_arity, diagnostics),
+        Item::Function(def) => {
+            validate_block_adapter_calls(&def.body, alias_arity, alias_param_types, diagnostics)
+        }
         Item::Impl(def) => {
             for method in &def.methods {
-                validate_block_adapter_calls(&method.body, alias_arity, diagnostics);
+                validate_block_adapter_calls(
+                    &method.body,
+                    alias_arity,
+                    alias_param_types,
+                    diagnostics,
+                );
             }
         }
-        Item::Const(def) => validate_expr_adapter_calls(&def.value, alias_arity, diagnostics),
-        Item::Static(def) => validate_expr_adapter_calls(&def.value, alias_arity, diagnostics),
+        Item::Const(def) => {
+            validate_expr_adapter_calls(&def.value, alias_arity, alias_param_types, diagnostics)
+        }
+        Item::Static(def) => {
+            validate_expr_adapter_calls(&def.value, alias_arity, alias_param_types, diagnostics)
+        }
         Item::Struct(_) | Item::Enum(_) | Item::RustUse(_) | Item::RustBlock(_) => {}
     }
 }
@@ -293,52 +328,65 @@ fn validate_item_adapter_calls(
 fn validate_block_adapter_calls(
     block: &Block,
     alias_arity: &HashMap<String, usize>,
+    alias_param_types: &HashMap<String, Vec<ContractType>>,
     diagnostics: &mut Vec<crate::diag::Diagnostic>,
 ) {
     for stmt in &block.statements {
-        validate_stmt_adapter_calls(stmt, alias_arity, diagnostics);
+        validate_stmt_adapter_calls(stmt, alias_arity, alias_param_types, diagnostics);
     }
 }
 
 fn validate_stmt_adapter_calls(
     stmt: &Stmt,
     alias_arity: &HashMap<String, usize>,
+    alias_param_types: &HashMap<String, Vec<ContractType>>,
     diagnostics: &mut Vec<crate::diag::Diagnostic>,
 ) {
     match stmt {
-        Stmt::Const(def) => validate_expr_adapter_calls(&def.value, alias_arity, diagnostics),
+        Stmt::Const(def) => {
+            validate_expr_adapter_calls(&def.value, alias_arity, alias_param_types, diagnostics)
+        }
         Stmt::DestructureConst { value, .. } => {
-            validate_expr_adapter_calls(value, alias_arity, diagnostics)
+            validate_expr_adapter_calls(value, alias_arity, alias_param_types, diagnostics)
         }
         Stmt::Assign { target, value, .. } => {
-            validate_assign_target_adapter_calls(target, alias_arity, diagnostics);
-            validate_expr_adapter_calls(value, alias_arity, diagnostics);
+            validate_assign_target_adapter_calls(target, alias_arity, alias_param_types, diagnostics);
+            validate_expr_adapter_calls(value, alias_arity, alias_param_types, diagnostics);
         }
-        Stmt::Return(Some(expr)) => validate_expr_adapter_calls(expr, alias_arity, diagnostics),
+        Stmt::Return(Some(expr)) => {
+            validate_expr_adapter_calls(expr, alias_arity, alias_param_types, diagnostics)
+        }
         Stmt::Return(None) => {}
         Stmt::If {
             condition,
             then_block,
             else_block,
         } => {
-            validate_expr_adapter_calls(condition, alias_arity, diagnostics);
-            validate_block_adapter_calls(then_block, alias_arity, diagnostics);
+            validate_expr_adapter_calls(condition, alias_arity, alias_param_types, diagnostics);
+            validate_block_adapter_calls(then_block, alias_arity, alias_param_types, diagnostics);
             if let Some(else_block) = else_block {
-                validate_block_adapter_calls(else_block, alias_arity, diagnostics);
+                validate_block_adapter_calls(
+                    else_block,
+                    alias_arity,
+                    alias_param_types,
+                    diagnostics,
+                );
             }
         }
         Stmt::While { condition, body } => {
-            validate_expr_adapter_calls(condition, alias_arity, diagnostics);
-            validate_block_adapter_calls(body, alias_arity, diagnostics);
+            validate_expr_adapter_calls(condition, alias_arity, alias_param_types, diagnostics);
+            validate_block_adapter_calls(body, alias_arity, alias_param_types, diagnostics);
         }
         Stmt::For { iter, body, .. } => {
-            validate_expr_adapter_calls(iter, alias_arity, diagnostics);
-            validate_block_adapter_calls(body, alias_arity, diagnostics);
+            validate_expr_adapter_calls(iter, alias_arity, alias_param_types, diagnostics);
+            validate_block_adapter_calls(body, alias_arity, alias_param_types, diagnostics);
         }
-        Stmt::Loop { body } => validate_block_adapter_calls(body, alias_arity, diagnostics),
+        Stmt::Loop { body } => {
+            validate_block_adapter_calls(body, alias_arity, alias_param_types, diagnostics)
+        }
         Stmt::Break | Stmt::Continue | Stmt::RustBlock(_) => {}
         Stmt::Expr(expr) | Stmt::TailExpr(expr) => {
-            validate_expr_adapter_calls(expr, alias_arity, diagnostics)
+            validate_expr_adapter_calls(expr, alias_arity, alias_param_types, diagnostics)
         }
     }
 }
@@ -346,6 +394,7 @@ fn validate_stmt_adapter_calls(
 fn validate_expr_adapter_calls(
     expr: &Expr,
     alias_arity: &HashMap<String, usize>,
+    alias_param_types: &HashMap<String, Vec<ContractType>>,
     diagnostics: &mut Vec<crate::diag::Diagnostic>,
 ) {
     match expr {
@@ -363,52 +412,72 @@ fn validate_expr_adapter_calls(
                         crate::diag::Span::new(0, 0),
                     ));
                 }
+                if let Some(expected_types) = alias_param_types.get(&alias) {
+                    for (index, (arg, expected_ty)) in args.iter().zip(expected_types).enumerate() {
+                        let actual_ty = infer_contract_expr_type(arg);
+                        if !contract_types_compatible(actual_ty, *expected_ty) {
+                            diagnostics.push(crate::diag::Diagnostic::new(
+                                format!(
+                                    "interop adapter `{alias}` arg {} expected `{}`, got `{}`",
+                                    index + 1,
+                                    format_contract_type(*expected_ty),
+                                    format_contract_type(actual_ty)
+                                ),
+                                crate::diag::Span::new(0, 0),
+                            ));
+                        }
+                    }
+                }
             }
-            validate_expr_adapter_calls(callee, alias_arity, diagnostics);
+            validate_expr_adapter_calls(callee, alias_arity, alias_param_types, diagnostics);
             for arg in args {
-                validate_expr_adapter_calls(arg, alias_arity, diagnostics);
+                validate_expr_adapter_calls(arg, alias_arity, alias_param_types, diagnostics);
             }
         }
         Expr::MacroCall { args, .. } => {
             for arg in args {
-                validate_expr_adapter_calls(arg, alias_arity, diagnostics);
+                validate_expr_adapter_calls(arg, alias_arity, alias_param_types, diagnostics);
             }
         }
-        Expr::Field { base, .. } => validate_expr_adapter_calls(base, alias_arity, diagnostics),
+        Expr::Field { base, .. } => {
+            validate_expr_adapter_calls(base, alias_arity, alias_param_types, diagnostics)
+        }
         Expr::Index { base, index } => {
-            validate_expr_adapter_calls(base, alias_arity, diagnostics);
-            validate_expr_adapter_calls(index, alias_arity, diagnostics);
+            validate_expr_adapter_calls(base, alias_arity, alias_param_types, diagnostics);
+            validate_expr_adapter_calls(index, alias_arity, alias_param_types, diagnostics);
         }
         Expr::Match { scrutinee, arms } => {
-            validate_expr_adapter_calls(scrutinee, alias_arity, diagnostics);
+            validate_expr_adapter_calls(scrutinee, alias_arity, alias_param_types, diagnostics);
             for arm in arms {
-                validate_expr_adapter_calls(&arm.value, alias_arity, diagnostics);
+                validate_expr_adapter_calls(&arm.value, alias_arity, alias_param_types, diagnostics);
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) => {
-            validate_expr_adapter_calls(expr, alias_arity, diagnostics)
+            validate_expr_adapter_calls(expr, alias_arity, alias_param_types, diagnostics)
         }
         Expr::Binary { left, right, .. } => {
-            validate_expr_adapter_calls(left, alias_arity, diagnostics);
-            validate_expr_adapter_calls(right, alias_arity, diagnostics);
+            validate_expr_adapter_calls(left, alias_arity, alias_param_types, diagnostics);
+            validate_expr_adapter_calls(right, alias_arity, alias_param_types, diagnostics);
         }
         Expr::Array(items) | Expr::Tuple(items) => {
             for item in items {
-                validate_expr_adapter_calls(item, alias_arity, diagnostics);
+                validate_expr_adapter_calls(item, alias_arity, alias_param_types, diagnostics);
             }
         }
         Expr::StructLiteral { fields, .. } => {
             for StructLiteralField { value, .. } in fields {
-                validate_expr_adapter_calls(value, alias_arity, diagnostics);
+                validate_expr_adapter_calls(value, alias_arity, alias_param_types, diagnostics);
             }
         }
-        Expr::Closure { body, .. } => validate_block_adapter_calls(body, alias_arity, diagnostics),
+        Expr::Closure { body, .. } => {
+            validate_block_adapter_calls(body, alias_arity, alias_param_types, diagnostics)
+        }
         Expr::Range { start, end, .. } => {
             if let Some(start) = start {
-                validate_expr_adapter_calls(start, alias_arity, diagnostics);
+                validate_expr_adapter_calls(start, alias_arity, alias_param_types, diagnostics);
             }
             if let Some(end) = end {
-                validate_expr_adapter_calls(end, alias_arity, diagnostics);
+                validate_expr_adapter_calls(end, alias_arity, alias_param_types, diagnostics);
             }
         }
         Expr::Path(_) | Expr::Int(_) | Expr::Bool(_) | Expr::String(_) => {}
@@ -418,18 +487,62 @@ fn validate_expr_adapter_calls(
 fn validate_assign_target_adapter_calls(
     target: &crate::ast::AssignTarget,
     alias_arity: &HashMap<String, usize>,
+    alias_param_types: &HashMap<String, Vec<ContractType>>,
     diagnostics: &mut Vec<crate::diag::Diagnostic>,
 ) {
     match target {
         crate::ast::AssignTarget::Path(_) => {}
         crate::ast::AssignTarget::Field { base, .. } => {
-            validate_expr_adapter_calls(base, alias_arity, diagnostics)
+            validate_expr_adapter_calls(base, alias_arity, alias_param_types, diagnostics)
         }
         crate::ast::AssignTarget::Tuple(items) => {
             for item in items {
-                validate_assign_target_adapter_calls(item, alias_arity, diagnostics);
+                validate_assign_target_adapter_calls(
+                    item,
+                    alias_arity,
+                    alias_param_types,
+                    diagnostics,
+                );
             }
         }
+    }
+}
+
+fn parse_contract_type(raw: &str) -> ContractType {
+    let normalized = raw.trim().replace(' ', "");
+    match normalized.as_str() {
+        "i64" => ContractType::I64,
+        "bool" => ContractType::Bool,
+        "String" => ContractType::String,
+        "&str" => ContractType::StrRef,
+        _ => ContractType::Unknown,
+    }
+}
+
+fn infer_contract_expr_type(expr: &Expr) -> ContractType {
+    match expr {
+        Expr::Int(_) => ContractType::I64,
+        Expr::Bool(_) => ContractType::Bool,
+        Expr::String(_) => ContractType::String,
+        _ => ContractType::Unknown,
+    }
+}
+
+fn contract_types_compatible(actual: ContractType, expected: ContractType) -> bool {
+    match (actual, expected) {
+        (_, ContractType::Unknown) | (ContractType::Unknown, _) => true,
+        (ContractType::String, ContractType::StrRef) => true,
+        _ => actual == expected,
+    }
+}
+
+fn format_contract_type(ty: ContractType) -> &'static str {
+    match ty {
+        ContractType::I64 => "i64",
+        ContractType::Bool => "bool",
+        ContractType::String => "String",
+        ContractType::StrRef => "&str",
+        ContractType::Unknown => "_",
     }
 }
 
@@ -1370,6 +1483,32 @@ mod tests {
 
         let error = transpile_ers_crate(&root).expect_err("expected arity validation failure");
         assert!(error.contains("interop adapter `elevate::max_i64` expects 2 args, got 1"));
+    }
+
+    #[test]
+    fn transpile_reports_adapter_call_type_mismatch_for_literals() {
+        let root = create_temp_dir("elevate-interop-routing-types");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "pub fn run() -> bool {\n    elevate::is_enabled(1)\n}\n",
+        )
+        .expect("write lib.ers should succeed");
+        fs::write(
+            root.join("elevate.interop"),
+            "adapter elevate::is_enabled => crate::is_enabled (bool) -> bool\n",
+        )
+        .expect("write interop contract should succeed");
+
+        let error = transpile_ers_crate(&root).expect_err("expected type validation failure");
+        assert!(
+            error.contains("interop adapter `elevate::is_enabled` arg 1 expected `bool`, got `i64`")
+        );
     }
 
     #[test]
