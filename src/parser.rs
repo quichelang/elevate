@@ -456,6 +456,11 @@ impl Parser {
         let mut arms = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let pattern = self.parse_pattern()?;
+            let guard = if self.match_kind(TokenKind::If) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
             self.expect(TokenKind::FatArrow, "Expected `=>` in match arm")?;
             let value = if self.at(TokenKind::LBrace) {
                 let body = self.parse_block()?;
@@ -474,7 +479,11 @@ impl Parser {
                 TokenKind::Semicolon,
                 "Expected ';' after match arm expression",
             )?;
-            arms.push(MatchArm { pattern, value });
+            arms.push(MatchArm {
+                pattern,
+                guard,
+                value,
+            });
         }
         self.expect(TokenKind::RBrace, "Expected '}' after match arms")?;
         Some(Expr::Match {
@@ -484,6 +493,18 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Option<Pattern> {
+        let mut patterns = vec![self.parse_pattern_atom()?];
+        while self.match_kind(TokenKind::Pipe) {
+            patterns.push(self.parse_pattern_atom()?);
+        }
+        if patterns.len() == 1 {
+            Some(patterns.remove(0))
+        } else {
+            Some(Pattern::Or(patterns))
+        }
+    }
+
+    fn parse_pattern_atom(&mut self) -> Option<Pattern> {
         if self.match_kind(TokenKind::Underscore) {
             return Some(Pattern::Wildcard);
         }
@@ -1125,6 +1146,21 @@ mod tests {
                 return match v {
                     0 => { 1 };
                     _ => { 2 };
+                };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_match_or_patterns_and_guards() {
+        let source = r#"
+            fn f(v: i64) -> i64 {
+                return match v {
+                    0 | 1 if v == 1 => 10;
+                    _ => 0;
                 };
             }
         "#;

@@ -205,6 +205,7 @@ pub enum TypedBinaryOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedMatchArm {
     pub pattern: TypedPattern,
+    pub guard: Option<TypedExpr>,
     pub value: TypedExpr,
 }
 
@@ -216,6 +217,7 @@ pub enum TypedPattern {
     Bool(bool),
     String(String),
     Tuple(Vec<TypedPattern>),
+    Or(Vec<TypedPattern>),
     Variant {
         path: Vec<String>,
         payload: Option<Box<TypedPattern>>,

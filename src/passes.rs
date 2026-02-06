@@ -1400,6 +1400,20 @@ fn infer_expr(
                     &mut arm_locals,
                     diagnostics,
                 );
+                let typed_guard = arm.guard.as_ref().map(|guard| {
+                    let (typed_guard, guard_ty) =
+                        infer_expr(guard, context, &mut arm_locals, return_ty, diagnostics);
+                    if !is_compatible(&guard_ty, &named_type("bool")) {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Match guard must be `bool`, got `{}`",
+                                type_to_string(&guard_ty)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                    typed_guard
+                });
                 let (typed_value, arm_ty) =
                     infer_expr(&arm.value, context, &mut arm_locals, return_ty, diagnostics);
                 resolved_arm_ty = match resolved_arm_ty {
@@ -1408,6 +1422,7 @@ fn infer_expr(
                 };
                 typed_arms.push(TypedMatchArm {
                     pattern: typed_pattern,
+                    guard: typed_guard,
                     value: typed_value,
                 });
             }
@@ -2258,6 +2273,12 @@ fn lower_expr_with_context(
                 .iter()
                 .map(|arm| RustMatchArm {
                     pattern: lower_pattern_to_rust(&arm.pattern),
+                    guard: arm
+                        .guard
+                        .as_ref()
+                        .map(|guard| {
+                            lower_expr_with_context(guard, context, ExprPosition::Value, state)
+                        }),
                     value: lower_expr_with_context(&arm.value, context, ExprPosition::Value, state),
                 })
                 .collect(),
@@ -3041,6 +3062,38 @@ fn lower_pattern(
                 )
             }
         }
+        Pattern::Or(items) => {
+            let mut lowered = Vec::new();
+            let mut binding_sets = Vec::new();
+            for item in items {
+                let mut alt_locals = locals.clone();
+                let lowered_item =
+                    lower_pattern(item, scrutinee_ty, context, &mut alt_locals, diagnostics);
+                lowered.push(lowered_item);
+                let new_bindings = alt_locals
+                    .iter()
+                    .filter(|(name, _)| !locals.contains_key(*name))
+                    .map(|(name, ty)| (name.clone(), ty.clone()))
+                    .collect::<HashMap<_, _>>();
+                binding_sets.push(new_bindings);
+            }
+
+            if let Some(first) = binding_sets.first() {
+                let all_same = binding_sets.iter().all(|set| set == first);
+                if all_same {
+                    for (name, ty) in first {
+                        locals.insert(name.clone(), ty.clone());
+                    }
+                } else if binding_sets.iter().any(|set| !set.is_empty()) {
+                    diagnostics.push(Diagnostic::new(
+                        "Or-pattern alternatives must bind the same names with the same types",
+                        Span::new(0, 0),
+                    ));
+                }
+            }
+
+            TypedPattern::Or(lowered)
+        }
         Pattern::Variant { path, payload } => {
             let mut enum_name_opt: Option<String> = None;
             let mut variant_name_opt: Option<String> = None;
@@ -3346,6 +3399,9 @@ fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
         TypedPattern::String(value) => RustPattern::String(value.clone()),
         TypedPattern::Tuple(items) => {
             RustPattern::Tuple(items.iter().map(lower_pattern_to_rust).collect())
+        }
+        TypedPattern::Or(items) => {
+            RustPattern::Or(items.iter().map(lower_pattern_to_rust).collect())
         }
         TypedPattern::Variant { path, payload } => RustPattern::Variant {
             path: path.clone(),

@@ -201,6 +201,7 @@ pub enum RustBinaryOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustMatchArm {
     pub pattern: RustPattern,
+    pub guard: Option<RustExpr>,
     pub value: RustExpr,
 }
 
@@ -212,6 +213,7 @@ pub enum RustPattern {
     Bool(bool),
     String(String),
     Tuple(Vec<RustPattern>),
+    Or(Vec<RustPattern>),
     Variant {
         path: Vec<String>,
         payload: Option<Box<RustPattern>>,

@@ -224,6 +224,7 @@ pub enum BinaryOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    pub guard: Option<Expr>,
     pub value: Expr,
 }
 
@@ -235,6 +236,7 @@ pub enum Pattern {
     Bool(bool),
     String(String),
     Tuple(Vec<Pattern>),
+    Or(Vec<Pattern>),
     Variant {
         path: Vec<String>,
         payload: Option<Box<Pattern>>,

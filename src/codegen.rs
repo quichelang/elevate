@@ -255,6 +255,10 @@ fn emit_expr(expr: &RustExpr) -> String {
             text.push_str(" { ");
             for arm in arms {
                 text.push_str(&emit_pattern(&arm.pattern));
+                if let Some(guard) = &arm.guard {
+                    text.push_str(" if ");
+                    text.push_str(&emit_expr(guard));
+                }
                 text.push_str(" => ");
                 text.push_str(&emit_expr(&arm.value));
                 text.push_str(", ");
@@ -375,6 +379,7 @@ fn emit_pattern(pattern: &RustPattern) -> String {
                 .join(", ");
             format!("({inner})")
         }
+        RustPattern::Or(items) => items.iter().map(emit_pattern).collect::<Vec<_>>().join(" | "),
         RustPattern::Variant { path, payload } => {
             if let Some(payload) = payload {
                 format!("{}({})", path.join("::"), emit_pattern(payload))

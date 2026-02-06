@@ -871,6 +871,22 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_match_or_patterns_and_guards() {
+        let source = r#"
+            fn classify(v: i64) -> i64 {
+                return match v {
+                    0 | 1 if v == 1 => 10;
+                    _ => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("0 | 1 if (v == 1) => 10"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_matching_imported_rust_enums() {
         let source = r#"
             rust use std::cmp::Ordering;
