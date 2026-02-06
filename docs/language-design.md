@@ -17,7 +17,15 @@ Process note:
 
 ## Requires Your Input
 
-### Open Language Decisions
+### Still Open Decisions
+
+1. **Specialization overflow policy**
+- Decide default behavior when specialization budget is exceeded:
+- Option A: hard compile error.
+- Option B: fallback to boxed/internal representation.
+- Current preference: Option A.
+
+### Decided Inputs
 
 1. **Constrained generic syntax**
 - Decision: support both Option A and Option C for maximum expressiveness.
@@ -26,25 +34,16 @@ Process note:
 - Note: Option A is preferred when reuse across multiple parameters/returns reduces duplication.
 - Note: Option C is preferred for concise single-use shape constraints.
 
-2. **Specialization overflow policy**
-- Decide default behavior when specialization budget is exceeded:
-- Option A: hard compile error.
-- Option B: fallback to boxed/internal representation.
-- Current preference: Option A.
+2. **Rust interop trait strategy**
+- No traits in Elevate source language.
+- MVP mechanism: external wrapper `.rs` files for Rust trait integration.
+- MVP+1 mechanism: inline `rust { ... }` escape blocks.
 
-3. **Rust interop trait strategy**
-- We will not support traits in the Elevate source language.
-- We do need interoperability with Rust crates/frameworks that require trait implementations.
-- Decision: Option A for MVP.
-- Option A: external wrapper `.rs` files.
-- Option B remains MVP+1: inline `rust { ... }` escape blocks.
+3. **Source extension**
+- `.ers` is canonical.
 
-### Immediate Product Input Needed
-
-1. Confirm `.ers` as the canonical source file extension (current implementation now uses `.ers` examples).
- - Decision: confirmed.
-2. Confirm whether generic function definitions are required for MVP completion or can ship in MVP+1.
- - Decision: required for MVP.
+4. **Generic function definitions**
+- Required for MVP.
 
 ## Stable (Unlikely To Change Frequently)
 

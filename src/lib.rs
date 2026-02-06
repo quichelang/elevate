@@ -69,9 +69,9 @@ mod tests {
     #[test]
     fn compile_smoke_test() {
         let source = r#"
-            struct Point { x: i64; y: i64; }
+            pub struct Point { x: i64; y: i64; }
 
-            fn id(v: i64) -> i64 {
+            pub fn id(v: i64) -> i64 {
                 return v;
             }
         "#;
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn compile_infers_return_type_when_annotation_is_missing() {
         let source = r#"
-            fn id(v: i64) {
+            pub fn id(v: i64) {
                 return v;
             }
         "#;
@@ -220,6 +220,33 @@ mod tests {
 
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("match value"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_visibility_if_and_while() {
+        let source = r#"
+            pub fn choose(flag: bool) -> i64 {
+                if flag {
+                    return 1;
+                } else {
+                    return 0;
+                }
+            }
+
+            fn spin(flag: bool) -> i64 {
+                while flag {
+                    return 1;
+                }
+                return 0;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("pub fn choose"));
+        assert!(output.rust_code.contains("\nfn spin("));
+        assert!(output.rust_code.contains("if flag"));
+        assert!(output.rust_code.contains("while flag"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

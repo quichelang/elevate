@@ -16,6 +16,10 @@ pub enum TokenKind {
     Const,
     Static,
     Return,
+    If,
+    Else,
+    While,
+    Pub,
     Match,
     True,
     False,
@@ -206,6 +210,10 @@ impl<'a> Lexer<'a> {
             "const" => TokenKind::Const,
             "static" => TokenKind::Static,
             "return" => TokenKind::Return,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
+            "while" => TokenKind::While,
+            "pub" => TokenKind::Pub,
             "match" => TokenKind::Match,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
@@ -306,5 +314,15 @@ mod tests {
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Match)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Underscore)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::FatArrow)));
+    }
+
+    #[test]
+    fn lex_visibility_and_flow_tokens() {
+        let source = "pub fn f() { if true { } else { } while false { } }";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Pub)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::If)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Else)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::While)));
     }
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::{Expr, Item, Module, Pattern, Stmt, Type};
+use crate::ast::{Block, Expr, Item, Module, Pattern, Stmt, Type, Visibility};
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
     RustConst, RustEnum, RustExpr, RustField, RustFunction, RustItem, RustMatchArm, RustModule,
@@ -65,6 +65,7 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
                 path: def.path.clone(),
             }),
             TypedItem::Struct(def) => RustItem::Struct(RustStruct {
+                is_public: def.is_public,
                 name: def.name.clone(),
                 fields: def
                     .fields
@@ -76,6 +77,7 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
                     .collect(),
             }),
             TypedItem::Enum(def) => RustItem::Enum(RustEnum {
+                is_public: def.is_public,
                 name: def.name.clone(),
                 variants: def
                     .variants
@@ -87,6 +89,7 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
                     .collect(),
             }),
             TypedItem::Function(def) => RustItem::Function(RustFunction {
+                is_public: def.is_public,
                 name: def.name.clone(),
                 params: def
                     .params
@@ -100,11 +103,13 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
                 body: def.body.iter().map(lower_stmt).collect(),
             }),
             TypedItem::Const(def) => RustItem::Const(RustConst {
+                is_public: def.is_public,
                 name: def.name.clone(),
                 ty: def.ty.clone(),
                 value: lower_expr(&def.value),
             }),
             TypedItem::Static(def) => RustItem::Static(RustStatic {
+                is_public: def.is_public,
                 name: def.name.clone(),
                 ty: def.ty.clone(),
                 value: lower_expr(&def.value),
@@ -168,6 +173,7 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
             path: def.path.clone(),
         })),
         Item::Struct(def) => Some(TypedItem::Struct(TypedStruct {
+            is_public: def.visibility == Visibility::Public,
             name: def.name.clone(),
             fields: def
                 .fields
@@ -179,6 +185,7 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                 .collect(),
         })),
         Item::Enum(def) => Some(TypedItem::Enum(TypedEnum {
+            is_public: def.visibility == Visibility::Public,
             name: def.name.clone(),
             variants: def
                 .variants
@@ -224,6 +231,7 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                 ));
             }
             Some(TypedItem::Const(TypedConst {
+                is_public: def.visibility == Visibility::Public,
                 name: def.name.clone(),
                 ty: type_to_string(&final_ty),
                 value: typed_value,
@@ -255,6 +263,7 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                 ));
             }
             Some(TypedItem::Static(TypedStatic {
+                is_public: def.visibility == Visibility::Public,
                 name: def.name.clone(),
                 ty: type_to_string(&declared),
                 value: typed_value,
@@ -268,12 +277,8 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
             let declared_return_ty = def.return_type.as_ref().map(type_from_ast);
             let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
             let mut body = Vec::new();
-            let mut has_explicit_return = false;
             let mut inferred_returns = Vec::new();
             for statement in &def.body.statements {
-                if matches!(statement, Stmt::Return(_)) {
-                    has_explicit_return = true;
-                }
                 if let Some(stmt) = lower_stmt_with_types(
                     statement,
                     context,
@@ -297,7 +302,7 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                     Span::new(0, 0),
                 ));
             }
-            if final_return_ty != SemType::Unit && !has_explicit_return {
+            if final_return_ty != SemType::Unit && inferred_returns.is_empty() {
                 diagnostics.push(Diagnostic::new(
                     format!(
                         "Function `{}` must explicitly return `{}`",
@@ -309,6 +314,7 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
             }
 
             Some(TypedItem::Function(TypedFunction {
+                is_public: def.visibility == Visibility::Public,
                 name: def.name.clone(),
                 params: def
                     .params
@@ -355,6 +361,7 @@ fn lower_stmt_with_types(
             };
             locals.insert(def.name.clone(), final_ty.clone());
             Some(TypedStmt::Const(TypedConst {
+                is_public: false,
                 name: def.name.clone(),
                 ty: type_to_string(&final_ty),
                 value: typed_value,
@@ -392,6 +399,54 @@ fn lower_stmt_with_types(
         Stmt::Expr(expr) => {
             let (typed_expr, _) = infer_expr(expr, context, locals, return_ty, diagnostics);
             Some(TypedStmt::Expr(typed_expr))
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            let (typed_condition, condition_ty) =
+                infer_expr(condition, context, locals, return_ty, diagnostics);
+            if !is_compatible(&condition_ty, &named_type("bool")) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "`if` condition must be `bool`, got `{}`",
+                        type_to_string(&condition_ty)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+
+            let then_body =
+                lower_block_with_types(then_block, context, locals, return_ty, inferred_returns, diagnostics);
+            let else_body = else_block.as_ref().map(|block| {
+                lower_block_with_types(block, context, locals, return_ty, inferred_returns, diagnostics)
+            });
+
+            Some(TypedStmt::If {
+                condition: typed_condition,
+                then_body,
+                else_body,
+            })
+        }
+        Stmt::While { condition, body } => {
+            let (typed_condition, condition_ty) =
+                infer_expr(condition, context, locals, return_ty, diagnostics);
+            if !is_compatible(&condition_ty, &named_type("bool")) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "`while` condition must be `bool`, got `{}`",
+                        type_to_string(&condition_ty)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+            let typed_body =
+                lower_block_with_types(body, context, locals, return_ty, inferred_returns, diagnostics);
+            Some(TypedStmt::While {
+                condition: typed_condition,
+                body: typed_body,
+            })
         }
     }
 }
@@ -803,11 +858,27 @@ fn resolve_try_type(inner: &SemType, return_ty: &SemType, diagnostics: &mut Vec<
 fn lower_stmt(stmt: &TypedStmt) -> RustStmt {
     match stmt {
         TypedStmt::Const(def) => RustStmt::Const(RustConst {
+            is_public: false,
             name: def.name.clone(),
             ty: def.ty.clone(),
             value: lower_expr(&def.value),
         }),
         TypedStmt::Return(value) => RustStmt::Return(value.as_ref().map(lower_expr)),
+        TypedStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => RustStmt::If {
+            condition: lower_expr(condition),
+            then_body: then_body.iter().map(lower_stmt).collect(),
+            else_body: else_body
+                .as_ref()
+                .map(|block| block.iter().map(lower_stmt).collect()),
+        },
+        TypedStmt::While { condition, body } => RustStmt::While {
+            condition: lower_expr(condition),
+            body: body.iter().map(lower_stmt).collect(),
+        },
         TypedStmt::Expr(expr) => RustStmt::Expr(lower_expr(expr)),
     }
 }
@@ -1084,6 +1155,31 @@ fn infer_return_type(returns: &[SemType], diagnostics: &mut Vec<Diagnostic>, fun
         }
     }
     current
+}
+
+fn lower_block_with_types(
+    block: &Block,
+    context: &Context,
+    locals: &HashMap<String, SemType>,
+    return_ty: &SemType,
+    inferred_returns: &mut Vec<SemType>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<TypedStmt> {
+    let mut block_locals = locals.clone();
+    let mut out = Vec::new();
+    for statement in &block.statements {
+        if let Some(stmt) = lower_stmt_with_types(
+            statement,
+            context,
+            &mut block_locals,
+            return_ty,
+            inferred_returns,
+            diagnostics,
+        ) {
+            out.push(stmt);
+        }
+    }
+    out
 }
 
 fn contains_unknown(ty: &SemType) -> bool {

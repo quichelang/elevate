@@ -3,6 +3,12 @@ pub struct Module {
     pub items: Vec<Item>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     RustUse(RustUse),
@@ -20,12 +26,14 @@ pub struct RustUse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDef {
+    pub visibility: Visibility,
     pub name: String,
     pub fields: Vec<Field>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDef {
+    pub visibility: Visibility,
     pub name: String,
     pub variants: Vec<EnumVariant>,
 }
@@ -44,6 +52,7 @@ pub struct Field {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionDef {
+    pub visibility: Visibility,
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
@@ -65,11 +74,21 @@ pub struct Block {
 pub enum Stmt {
     Const(ConstDef),
     Return(Option<Expr>),
+    If {
+        condition: Expr,
+        then_block: Block,
+        else_block: Option<Block>,
+    },
+    While {
+        condition: Expr,
+        body: Block,
+    },
     Expr(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstDef {
+    pub visibility: Visibility,
     pub name: String,
     pub ty: Option<Type>,
     pub value: Expr,
@@ -77,6 +96,7 @@ pub struct ConstDef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticDef {
+    pub visibility: Visibility,
     pub name: String,
     pub ty: Type,
     pub value: Expr,

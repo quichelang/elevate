@@ -29,7 +29,7 @@ fn emit_use(def: &RustUse, out: &mut String) {
 
 fn emit_struct(def: &RustStruct, out: &mut String) {
     out.push_str("#[derive(Debug, Clone)]\n");
-    out.push_str(&format!("pub struct {} {{\n", def.name));
+    out.push_str(&format!("{}struct {} {{\n", vis(def.is_public), def.name));
     for field in &def.fields {
         out.push_str(&format!("    pub {}: {},\n", field.name, field.ty));
     }
@@ -38,7 +38,7 @@ fn emit_struct(def: &RustStruct, out: &mut String) {
 
 fn emit_enum(def: &RustEnum, out: &mut String) {
     out.push_str("#[derive(Debug, Clone)]\n");
-    out.push_str(&format!("pub enum {} {{\n", def.name));
+    out.push_str(&format!("{}enum {} {{\n", vis(def.is_public), def.name));
     for variant in &def.variants {
         match &variant.payload {
             Some(payload) => out.push_str(&format!("    {}({}),\n", variant.name, payload)),
@@ -55,7 +55,7 @@ fn emit_function(def: &RustFunction, out: &mut String) {
         .map(|p| format!("{}: {}", p.name, p.ty))
         .collect::<Vec<_>>()
         .join(", ");
-    out.push_str(&format!("pub fn {}({})", def.name, params));
+    out.push_str(&format!("{}fn {}({})", vis(def.is_public), def.name, params));
     out.push_str(&format!(" -> {}", def.return_type));
     out.push_str(" {\n");
     for stmt in &def.body {
@@ -80,6 +80,32 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
         RustStmt::Return(None) => {
             out.push_str("    return;\n");
         }
+        RustStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            out.push_str(&format!("    if {} {{\n", emit_expr(condition)));
+            for stmt in then_body {
+                emit_stmt_with_indent(stmt, out, 2);
+            }
+            out.push_str("    }");
+            if let Some(else_body) = else_body {
+                out.push_str(" else {\n");
+                for stmt in else_body {
+                    emit_stmt_with_indent(stmt, out, 2);
+                }
+                out.push_str("    }");
+            }
+            out.push('\n');
+        }
+        RustStmt::While { condition, body } => {
+            out.push_str(&format!("    while {} {{\n", emit_expr(condition)));
+            for stmt in body {
+                emit_stmt_with_indent(stmt, out, 2);
+            }
+            out.push_str("    }\n");
+        }
         RustStmt::Expr(expr) => {
             out.push_str(&format!("    {};\n", emit_expr(expr)));
         }
@@ -87,7 +113,8 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
 }
 
 fn emit_const(def: &RustConst, out: &mut String) {
-    out.push_str("pub const ");
+    out.push_str(vis(def.is_public));
+    out.push_str("const ");
     out.push_str(&def.name);
     out.push_str(&format!(": {}", def.ty));
     out.push_str(" = ");
@@ -97,7 +124,8 @@ fn emit_const(def: &RustConst, out: &mut String) {
 
 fn emit_static(def: &RustStatic, out: &mut String) {
     out.push_str(&format!(
-        "pub static {}: {} = {};\n",
+        "{}static {}: {} = {};\n",
+        vis(def.is_public),
         def.name,
         def.ty,
         emit_expr(&def.value)
@@ -143,5 +171,56 @@ fn emit_pattern(pattern: &RustPattern) -> String {
                 path.join("::")
             }
         }
+    }
+}
+
+fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
+    let pad = "    ".repeat(indent);
+    match stmt {
+        RustStmt::Const(def) => {
+            out.push_str(&format!(
+                "{pad}let {}: {} = {};\n",
+                def.name,
+                def.ty,
+                emit_expr(&def.value)
+            ));
+        }
+        RustStmt::Return(Some(expr)) => out.push_str(&format!("{pad}return {};\n", emit_expr(expr))),
+        RustStmt::Return(None) => out.push_str(&format!("{pad}return;\n")),
+        RustStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            out.push_str(&format!("{pad}if {} {{\n", emit_expr(condition)));
+            for nested in then_body {
+                emit_stmt_with_indent(nested, out, indent + 1);
+            }
+            out.push_str(&format!("{pad}}}"));
+            if let Some(else_body) = else_body {
+                out.push_str(" else {\n");
+                for nested in else_body {
+                    emit_stmt_with_indent(nested, out, indent + 1);
+                }
+                out.push_str(&format!("{pad}}}"));
+            }
+            out.push('\n');
+        }
+        RustStmt::While { condition, body } => {
+            out.push_str(&format!("{pad}while {} {{\n", emit_expr(condition)));
+            for nested in body {
+                emit_stmt_with_indent(nested, out, indent + 1);
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        RustStmt::Expr(expr) => out.push_str(&format!("{pad}{};\n", emit_expr(expr))),
+    }
+}
+
+fn vis(is_public: bool) -> &'static str {
+    if is_public {
+        "pub "
+    } else {
+        ""
     }
 }

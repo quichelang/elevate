@@ -20,6 +20,7 @@ pub struct TypedRustUse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedStruct {
+    pub is_public: bool,
     pub name: String,
     pub fields: Vec<TypedField>,
 }
@@ -32,6 +33,7 @@ pub struct TypedField {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedEnum {
+    pub is_public: bool,
     pub name: String,
     pub variants: Vec<TypedVariant>,
 }
@@ -44,6 +46,7 @@ pub struct TypedVariant {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedFunction {
+    pub is_public: bool,
     pub name: String,
     pub params: Vec<TypedParam>,
     pub return_type: String,
@@ -60,11 +63,21 @@ pub struct TypedParam {
 pub enum TypedStmt {
     Const(TypedConst),
     Return(Option<TypedExpr>),
+    If {
+        condition: TypedExpr,
+        then_body: Vec<TypedStmt>,
+        else_body: Option<Vec<TypedStmt>>,
+    },
+    While {
+        condition: TypedExpr,
+        body: Vec<TypedStmt>,
+    },
     Expr(TypedExpr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedConst {
+    pub is_public: bool,
     pub name: String,
     pub ty: String,
     pub value: TypedExpr,
@@ -72,6 +85,7 @@ pub struct TypedConst {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedStatic {
+    pub is_public: bool,
     pub name: String,
     pub ty: String,
     pub value: TypedExpr,

@@ -20,6 +20,7 @@ pub struct RustUse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustStruct {
+    pub is_public: bool,
     pub name: String,
     pub fields: Vec<RustField>,
 }
@@ -32,6 +33,7 @@ pub struct RustField {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustEnum {
+    pub is_public: bool,
     pub name: String,
     pub variants: Vec<RustVariant>,
 }
@@ -44,6 +46,7 @@ pub struct RustVariant {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustFunction {
+    pub is_public: bool,
     pub name: String,
     pub params: Vec<RustParam>,
     pub return_type: String,
@@ -60,11 +63,21 @@ pub struct RustParam {
 pub enum RustStmt {
     Const(RustConst),
     Return(Option<RustExpr>),
+    If {
+        condition: RustExpr,
+        then_body: Vec<RustStmt>,
+        else_body: Option<Vec<RustStmt>>,
+    },
+    While {
+        condition: RustExpr,
+        body: Vec<RustStmt>,
+    },
     Expr(RustExpr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustConst {
+    pub is_public: bool,
     pub name: String,
     pub ty: String,
     pub value: RustExpr,
@@ -72,6 +85,7 @@ pub struct RustConst {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustStatic {
+    pub is_public: bool,
     pub name: String,
     pub ty: String,
     pub value: RustExpr,

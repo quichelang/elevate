@@ -1,6 +1,6 @@
 use crate::ast::{
     Block, ConstDef, EnumDef, EnumVariant, Expr, Field, FunctionDef, Item, MatchArm, Module, Param,
-    Pattern, RustUse, StaticDef, Stmt, StructDef, Type,
+    Pattern, RustUse, StaticDef, Stmt, StructDef, Type, Visibility,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -43,23 +43,36 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Option<Item> {
+        let visibility = if self.match_kind(TokenKind::Pub) {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        };
+
         if self.match_kind(TokenKind::Rust) {
+            if visibility == Visibility::Public {
+                self.error_current("`pub rust use` is not supported; use `rust use`");
+            }
             return self.parse_rust_use().map(Item::RustUse);
         }
         if self.match_kind(TokenKind::Struct) {
-            return self.parse_struct().map(Item::Struct);
+            return self.parse_struct(visibility).map(Item::Struct);
         }
         if self.match_kind(TokenKind::Enum) {
-            return self.parse_enum().map(Item::Enum);
+            return self.parse_enum(visibility).map(Item::Enum);
         }
         if self.match_kind(TokenKind::Fn) {
-            return self.parse_function().map(Item::Function);
+            return self.parse_function(visibility).map(Item::Function);
         }
         if self.match_kind(TokenKind::Const) {
-            return self.parse_const_item().map(Item::Const);
+            return self.parse_const_item(visibility).map(Item::Const);
         }
         if self.match_kind(TokenKind::Static) {
-            return self.parse_static_item().map(Item::Static);
+            return self.parse_static_item(visibility).map(Item::Static);
+        }
+        if visibility == Visibility::Public {
+            self.error_current("Expected item after `pub`");
+            return None;
         }
 
         self.error_current("Expected top-level item (`rust use`, `struct`, `enum`, `fn`, `const`, `static`)");
@@ -73,7 +86,7 @@ impl Parser {
         Some(RustUse { path })
     }
 
-    fn parse_struct(&mut self) -> Option<StructDef> {
+    fn parse_struct(&mut self, visibility: Visibility) -> Option<StructDef> {
         let name = self.expect_ident("Expected struct name")?;
         self.expect(TokenKind::LBrace, "Expected '{' after struct name")?;
         let mut fields = Vec::new();
@@ -88,10 +101,14 @@ impl Parser {
             });
         }
         self.expect(TokenKind::RBrace, "Expected '}' after struct body")?;
-        Some(StructDef { name, fields })
+        Some(StructDef {
+            visibility,
+            name,
+            fields,
+        })
     }
 
-    fn parse_enum(&mut self) -> Option<EnumDef> {
+    fn parse_enum(&mut self, visibility: Visibility) -> Option<EnumDef> {
         let name = self.expect_ident("Expected enum name")?;
         self.expect(TokenKind::LBrace, "Expected '{' after enum name")?;
         let mut variants = Vec::new();
@@ -111,10 +128,14 @@ impl Parser {
             });
         }
         self.expect(TokenKind::RBrace, "Expected '}' after enum body")?;
-        Some(EnumDef { name, variants })
+        Some(EnumDef {
+            visibility,
+            name,
+            variants,
+        })
     }
 
-    fn parse_function(&mut self) -> Option<FunctionDef> {
+    fn parse_function(&mut self, visibility: Visibility) -> Option<FunctionDef> {
         let name = self.expect_ident("Expected function name")?;
         self.expect(TokenKind::LParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
@@ -138,6 +159,7 @@ impl Parser {
         };
         let body = self.parse_block()?;
         Some(FunctionDef {
+            visibility,
             name,
             params,
             return_type,
@@ -145,7 +167,7 @@ impl Parser {
         })
     }
 
-    fn parse_const_item(&mut self) -> Option<ConstDef> {
+    fn parse_const_item(&mut self, visibility: Visibility) -> Option<ConstDef> {
         let name = self.expect_ident("Expected const name")?;
         let ty = if self.match_kind(TokenKind::Colon) {
             Some(self.parse_type()?)
@@ -155,17 +177,27 @@ impl Parser {
         self.expect(TokenKind::Equal, "Expected '=' after const declaration")?;
         let value = self.parse_expr()?;
         self.expect(TokenKind::Semicolon, "Expected ';' after const item")?;
-        Some(ConstDef { name, ty, value })
+        Some(ConstDef {
+            visibility,
+            name,
+            ty,
+            value,
+        })
     }
 
-    fn parse_static_item(&mut self) -> Option<StaticDef> {
+    fn parse_static_item(&mut self, visibility: Visibility) -> Option<StaticDef> {
         let name = self.expect_ident("Expected static name")?;
         self.expect(TokenKind::Colon, "Expected ':' after static name")?;
         let ty = self.parse_type()?;
         self.expect(TokenKind::Equal, "Expected '=' after static type")?;
         let value = self.parse_expr()?;
         self.expect(TokenKind::Semicolon, "Expected ';' after static item")?;
-        Some(StaticDef { name, ty, value })
+        Some(StaticDef {
+            visibility,
+            name,
+            ty,
+            value,
+        })
     }
 
     fn parse_block(&mut self) -> Option<Block> {
@@ -190,7 +222,12 @@ impl Parser {
             self.expect(TokenKind::Equal, "Expected '=' after const declaration")?;
             let value = self.parse_expr()?;
             self.expect(TokenKind::Semicolon, "Expected ';' after const statement")?;
-            return Some(Stmt::Const(ConstDef { name, ty, value }));
+            return Some(Stmt::Const(ConstDef {
+                visibility: Visibility::Private,
+                name,
+                ty,
+                value,
+            }));
         }
         if self.match_kind(TokenKind::Return) {
             if self.match_kind(TokenKind::Semicolon) {
@@ -199,6 +236,25 @@ impl Parser {
             let expr = self.parse_expr()?;
             self.expect(TokenKind::Semicolon, "Expected ';' after return value")?;
             return Some(Stmt::Return(Some(expr)));
+        }
+        if self.match_kind(TokenKind::If) {
+            let condition = self.parse_expr()?;
+            let then_block = self.parse_block()?;
+            let else_block = if self.match_kind(TokenKind::Else) {
+                Some(self.parse_block()?)
+            } else {
+                None
+            };
+            return Some(Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            });
+        }
+        if self.match_kind(TokenKind::While) {
+            let condition = self.parse_expr()?;
+            let body = self.parse_block()?;
+            return Some(Stmt::While { condition, body });
         }
 
         let expr = self.parse_expr()?;
@@ -399,6 +455,7 @@ impl Parser {
                 return;
             }
             if self.at(TokenKind::Rust)
+                || self.at(TokenKind::Pub)
                 || self.at(TokenKind::Struct)
                 || self.at(TokenKind::Enum)
                 || self.at(TokenKind::Fn)
@@ -424,6 +481,10 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Const, Const)
             | (Static, Static)
             | (Return, Return)
+            | (If, If)
+            | (Else, Else)
+            | (While, While)
+            | (Pub, Pub)
             | (Match, Match)
             | (True, True)
             | (False, False)
@@ -491,6 +552,29 @@ mod tests {
                     Maybe::None => 0;
                     _ => 0;
                 };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
+    }
+
+    #[test]
+    fn parse_visibility_and_control_flow() {
+        let source = r#"
+            pub fn choose(flag: bool) -> i64 {
+                if flag {
+                    return 1;
+                } else {
+                    return 0;
+                }
+            }
+
+            fn spin(flag: bool) -> i64 {
+                while flag {
+                    return 1;
+                }
+                return 0;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");
