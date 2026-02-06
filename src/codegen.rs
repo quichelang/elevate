@@ -178,6 +178,15 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
             }
             out.push_str("    }\n");
         }
+        RustStmt::Loop { body } => {
+            out.push_str("    loop {\n");
+            for stmt in body {
+                emit_stmt_with_indent(stmt, out, 2);
+            }
+            out.push_str("    }\n");
+        }
+        RustStmt::Break => out.push_str("    break;\n"),
+        RustStmt::Continue => out.push_str("    continue;\n"),
         RustStmt::Expr(expr) => {
             out.push_str(&format!("    {};\n", emit_expr(expr)));
         }
@@ -470,6 +479,15 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
             }
             out.push_str(&format!("{pad}}}\n"));
         }
+        RustStmt::Loop { body } => {
+            out.push_str(&format!("{pad}loop {{\n"));
+            for nested in body {
+                emit_stmt_with_indent(nested, out, indent + 1);
+            }
+            out.push_str(&format!("{pad}}}\n"));
+        }
+        RustStmt::Break => out.push_str(&format!("{pad}break;\n")),
+        RustStmt::Continue => out.push_str(&format!("{pad}continue;\n")),
         RustStmt::Expr(expr) => out.push_str(&format!("{pad}{};\n", emit_expr(expr))),
     }
 }
@@ -586,8 +604,15 @@ fn collect_mutated_paths_in_stmt(
                 collect_mutated_paths_in_stmt(stmt, out);
             }
         }
+        RustStmt::Loop { body } => {
+            for stmt in body {
+                collect_mutated_paths_in_stmt(stmt, out);
+            }
+        }
         RustStmt::Const(_)
         | RustStmt::DestructureConst { .. }
+        | RustStmt::Break
+        | RustStmt::Continue
         | RustStmt::Return(_)
         | RustStmt::Expr(_) => {}
     }

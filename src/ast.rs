@@ -99,6 +99,11 @@ pub enum Stmt {
         condition: Expr,
         body: Block,
     },
+    Loop {
+        body: Block,
+    },
+    Break,
+    Continue,
     Expr(Expr),
     TailExpr(Expr),
 }

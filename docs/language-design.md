@@ -158,7 +158,7 @@ Implemented:
 - `Option`/`Result` constructors plus `?` validation.
 - Enum `match` expressions.
 - Visibility controls for top-level items (`pub` vs private defaults).
-- Control-flow statements: `if` / `else` and `while`.
+- Control-flow statements: `if` / `else`, `while`, and `loop` (`break` / `continue`).
 - Struct functions via `impl` blocks (associated methods).
 - Struct literal expressions (`Type { field: value }`) including support for imported Rust struct paths.
 - Logical boolean operators: `and`, `or`, `!`, `not`.
@@ -276,7 +276,7 @@ Quality gates:
 
 - Ownership lowering policy implementation is not complete.
 - Generic function definitions and constrained bounds are not complete.
-- Additional loop forms beyond `while` are not complete.
+- `for` loops and iterator-driven loop sugar are not complete.
 - Slices are not complete.
 - Deep destructuring coverage (all contexts) is not complete.
 - Full exhaustiveness diagnostics are not complete.

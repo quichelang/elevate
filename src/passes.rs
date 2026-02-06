@@ -1133,6 +1133,20 @@ fn lower_stmt_with_types(
                 body: typed_body,
             })
         }
+        Stmt::Loop { body } => {
+            let typed_body = lower_block_with_types(
+                body,
+                context,
+                locals,
+                immutable_locals,
+                return_ty,
+                inferred_returns,
+                diagnostics,
+            );
+            Some(TypedStmt::Loop { body: typed_body })
+        }
+        Stmt::Break => Some(TypedStmt::Break),
+        Stmt::Continue => Some(TypedStmt::Continue),
     }
 }
 
@@ -2208,6 +2222,14 @@ fn lower_stmt_with_context(
                 .map(|stmt| lower_stmt_with_context(stmt, context, state))
                 .collect(),
         },
+        TypedStmt::Loop { body } => RustStmt::Loop {
+            body: body
+                .iter()
+                .map(|stmt| lower_stmt_with_context(stmt, context, state))
+                .collect(),
+        },
+        TypedStmt::Break => RustStmt::Break,
+        TypedStmt::Continue => RustStmt::Continue,
         TypedStmt::Expr(expr) => RustStmt::Expr(lower_expr_with_context(
             expr,
             context,
@@ -2787,6 +2809,12 @@ fn collect_path_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<String, usize>
                 collect_path_uses_in_stmt(stmt, uses);
             }
         }
+        TypedStmt::Loop { body } => {
+            for stmt in body {
+                collect_path_uses_in_stmt(stmt, uses);
+            }
+        }
+        TypedStmt::Break | TypedStmt::Continue => {}
         TypedStmt::Expr(expr) => collect_path_uses_in_expr(expr, uses),
     }
 }

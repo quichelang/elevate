@@ -306,6 +306,18 @@ impl Parser {
             let body = self.parse_block()?;
             return Some(Stmt::While { condition, body });
         }
+        if self.match_kind(TokenKind::Loop) {
+            let body = self.parse_block()?;
+            return Some(Stmt::Loop { body });
+        }
+        if self.match_kind(TokenKind::Break) {
+            self.expect(TokenKind::Semicolon, "Expected ';' after `break`")?;
+            return Some(Stmt::Break);
+        }
+        if self.match_kind(TokenKind::Continue) {
+            self.expect(TokenKind::Semicolon, "Expected ';' after `continue`")?;
+            return Some(Stmt::Continue);
+        }
 
         let expr = self.parse_expr()?;
         if self.match_kind(TokenKind::Equal) || self.match_kind(TokenKind::PlusEqual) {
@@ -942,6 +954,9 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (If, If)
             | (Else, Else)
             | (While, While)
+            | (Loop, Loop)
+            | (Break, Break)
+            | (Continue, Continue)
             | (Pub, Pub)
             | (Match, Match)
             | (And, And)
@@ -1051,6 +1066,24 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 2);
+    }
+
+    #[test]
+    fn parse_loop_break_continue() {
+        let source = r#"
+            fn spin(flag: bool) -> i64 {
+                loop {
+                    if flag {
+                        break;
+                    }
+                    continue;
+                }
+                return 0;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
     }
 
     #[test]

@@ -309,6 +309,10 @@ fn rewrite_stmt_adapter_calls(stmt: &mut Stmt, adapter_map: &HashMap<String, Vec
             rewrite_expr_adapter_calls(condition, adapter_map);
             rewrite_block_adapter_calls(body, adapter_map);
         }
+        Stmt::Loop { body } => {
+            rewrite_block_adapter_calls(body, adapter_map);
+        }
+        Stmt::Break | Stmt::Continue => {}
         Stmt::Expr(expr) | Stmt::TailExpr(expr) => rewrite_expr_adapter_calls(expr, adapter_map),
     }
 }

@@ -697,6 +697,27 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_loop_break_continue() {
+        let source = r#"
+            fn spin(flag: bool) -> i64 {
+                loop {
+                    if flag {
+                        break;
+                    }
+                    continue;
+                }
+                return 0;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("loop {"));
+        assert!(output.rust_code.contains("break;"));
+        assert!(output.rust_code.contains("continue;"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_impl_methods() {
         let source = r#"
             pub struct Point { x: i64; }
