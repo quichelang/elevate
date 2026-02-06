@@ -159,7 +159,7 @@ Implemented:
 - Enum `match` expressions.
 - Visibility controls for top-level items (`pub` vs private defaults).
 - Control-flow statements: `if` / `else`, `while`, and `loop` (`break` / `continue`).
-- `for ... in ...` loops (range, `Vec`, and `Vec` iterator-method forms like `.iter()` / `.into_iter()` lower directly to Rust `for`).
+- `for ... in ...` loops (range, `Vec`, `Vec` iterator-method forms like `.iter()` / `.into_iter()`, and `String::chars()` lower directly to Rust `for`).
 - Struct functions via `impl` blocks (associated methods).
 - Struct literal expressions (`Type { field: value }`) including support for imported Rust struct paths.
 - Logical boolean operators: `and`, `or`, `!`, `not`.

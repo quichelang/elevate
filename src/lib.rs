@@ -1228,6 +1228,22 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_for_loop_string_chars() {
+        let source = r#"
+            fn walk(text: String) -> i64 {
+                for ch in text.chars() {
+                    std::mem::drop(ch);
+                }
+                0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for ch in text.chars()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_reports_slice_destructure_type_mismatch() {
         let source = r#"
             fn bad(v: i64) -> i64 {

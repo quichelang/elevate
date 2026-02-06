@@ -2535,6 +2535,10 @@ fn resolve_method_call_type(
                         args: vec![named_type("u8")],
                     };
                 }
+                "chars" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return SemType::Iter(Box::new(named_type("char")));
+                }
                 _ => {}
             },
             "Vec" => match method {
