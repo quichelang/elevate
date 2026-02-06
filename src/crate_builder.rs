@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::{collections::BTreeSet, fmt::Write as _};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildSummary {
@@ -9,6 +10,28 @@ pub struct BuildSummary {
     pub generated_root: PathBuf,
     pub transpiled_files: usize,
     pub copied_files: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct InteropContract {
+    allowed_paths: BTreeSet<String>,
+    adapters: Vec<InteropAdapter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InteropAdapter {
+    alias: String,
+    target: String,
+    params: Vec<String>,
+    return_type: String,
+    transform: InteropTransform,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteropTransform {
+    Direct,
+    UnwrapToOwnedString,
+    UnwrapSplitOnceToOwnedTuple,
 }
 
 pub fn build_ers_crate(crate_root: &Path, release: bool) -> Result<BuildSummary, String> {
@@ -21,6 +44,7 @@ pub fn transpile_ers_crate(crate_root: &Path) -> Result<BuildSummary, String> {
     let source_root = canonicalize(crate_root)?;
     let source_manifest = source_root.join("Cargo.toml");
     let source_src = source_root.join("src");
+    let interop_contract = load_interop_contract(&source_root)?;
 
     if !source_manifest.is_file() {
         return Err(format!(
@@ -70,7 +94,9 @@ pub fn transpile_ers_crate(crate_root: &Path) -> Result<BuildSummary, String> {
         &source_src,
         &generated_root.join("src"),
         &mut summary,
+        &interop_contract,
     )?;
+    emit_interop_adapter_module(&generated_root.join("src"), &interop_contract)?;
     Ok(summary)
 }
 
@@ -110,6 +136,7 @@ fn process_src_dir(
     current: &Path,
     generated_src: &Path,
     summary: &mut BuildSummary,
+    interop_contract: &InteropContract,
 ) -> Result<(), String> {
     let entries = fs::read_dir(current)
         .map_err(|error| format!("failed to read directory {}: {error}", current.display()))?;
@@ -134,13 +161,14 @@ fn process_src_dir(
                     target.display()
                 )
             })?;
-            process_src_dir(root_src, &path, generated_src, summary)?;
+            process_src_dir(root_src, &path, generated_src, summary, interop_contract)?;
             continue;
         }
 
         if path.extension() == Some(OsStr::new("ers")) {
             let source = fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+            validate_interop_contract_for_source(&source, &path, interop_contract)?;
             let output = crate::compile_source(&source).map_err(|error| {
                 format_compile_error_with_context(&path, &source, &error)
             })?;
@@ -183,6 +211,393 @@ fn process_src_dir(
 
 fn canonicalize(path: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|error| format!("failed to access {}: {error}", path.display()))
+}
+
+const INTEROP_CONTRACT_FILE: &str = "elevate.interop";
+
+fn load_interop_contract(source_root: &Path) -> Result<InteropContract, String> {
+    let path = source_root.join(INTEROP_CONTRACT_FILE);
+    if !path.is_file() {
+        return Ok(InteropContract::default());
+    }
+
+    let content = fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "failed to read interop contract {}: {error}",
+            path.display()
+        )
+    })?;
+    parse_interop_contract(&content, &path)
+}
+
+fn parse_interop_contract(content: &str, path: &Path) -> Result<InteropContract, String> {
+    let mut contract = InteropContract::default();
+    let mut seen_aliases = BTreeSet::new();
+    for (line_index, raw_line) in content.lines().enumerate() {
+        let line_no = line_index + 1;
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("allow ") {
+            let allowed = rest.trim();
+            if !is_valid_allow_pattern(allowed) {
+                return Err(format!(
+                    "invalid interop contract path at {}:{}: `{}`",
+                    path.display(),
+                    line_no,
+                    allowed
+                ));
+            }
+            contract.allowed_paths.insert(allowed.to_string());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("adapter ") {
+            let adapter = parse_adapter_contract_line(rest, path, line_no)?;
+            if !seen_aliases.insert(adapter.alias.clone()) {
+                return Err(format!(
+                    "duplicate adapter alias `{}` at {}:{}",
+                    adapter.alias,
+                    path.display(),
+                    line_no
+                ));
+            }
+            contract.adapters.push(adapter);
+            continue;
+        }
+        return Err(format!(
+            "unknown interop contract directive at {}:{}: `{}`",
+            path.display(),
+            line_no,
+            line
+        ));
+    }
+    contract.adapters.sort_by(|a, b| a.alias.cmp(&b.alias));
+    Ok(contract)
+}
+
+fn parse_adapter_contract_line(
+    line: &str,
+    path: &Path,
+    line_no: usize,
+) -> Result<InteropAdapter, String> {
+    let (signature, transform) = if let Some((lhs, rhs)) = line.rsplit_once(" using ") {
+        let transform = match rhs.trim() {
+            "direct" => InteropTransform::Direct,
+            "unwrap_to_owned_string" => InteropTransform::UnwrapToOwnedString,
+            "unwrap_split_once_to_owned_tuple" => InteropTransform::UnwrapSplitOnceToOwnedTuple,
+            other => {
+                return Err(format!(
+                    "unknown interop adapter transform `{}` at {}:{}",
+                    other,
+                    path.display(),
+                    line_no
+                ));
+            }
+        };
+        (lhs.trim(), transform)
+    } else {
+        (line.trim(), InteropTransform::Direct)
+    };
+
+    let (alias, rhs) = signature.split_once("=>").ok_or_else(|| {
+        format!(
+            "invalid adapter syntax at {}:{}: expected `adapter <alias> => <target> (<params>) -> <ret>`",
+            path.display(),
+            line_no
+        )
+    })?;
+    let alias = alias.trim();
+    if !is_valid_rust_path(alias) {
+        return Err(format!(
+            "invalid adapter alias path at {}:{}: `{}`",
+            path.display(),
+            line_no,
+            alias
+        ));
+    }
+
+    let (target_and_params, return_type) = rhs.split_once("->").ok_or_else(|| {
+        format!(
+            "invalid adapter signature at {}:{}: missing `->` return type",
+            path.display(),
+            line_no
+        )
+    })?;
+    let return_type = return_type.trim();
+    if return_type.is_empty() {
+        return Err(format!(
+            "invalid adapter return type at {}:{}: return type cannot be empty",
+            path.display(),
+            line_no
+        ));
+    }
+
+    let target_and_params = target_and_params.trim();
+    let open = target_and_params.find('(').ok_or_else(|| {
+        format!(
+            "invalid adapter signature at {}:{}: expected parameter list `( ... )`",
+            path.display(),
+            line_no
+        )
+    })?;
+    if !target_and_params.ends_with(')') {
+        return Err(format!(
+            "invalid adapter signature at {}:{}: parameter list must end with `)`",
+            path.display(),
+            line_no
+        ));
+    }
+    let target = target_and_params[..open].trim();
+    if !is_valid_rust_path(target) {
+        return Err(format!(
+            "invalid adapter target path at {}:{}: `{}`",
+            path.display(),
+            line_no,
+            target
+        ));
+    }
+    let params_body = &target_and_params[open + 1..target_and_params.len() - 1];
+    let params = split_signature_list(params_body)
+        .into_iter()
+        .map(|part| part.to_string())
+        .collect();
+
+    Ok(InteropAdapter {
+        alias: alias.to_string(),
+        target: target.to_string(),
+        params,
+        return_type: return_type.to_string(),
+        transform,
+    })
+}
+
+fn split_signature_list(input: &str) -> Vec<&str> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Vec::new();
+    }
+    let mut items = Vec::new();
+    let mut start = 0usize;
+    let mut depth_angle = 0usize;
+    let mut depth_paren = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => depth_angle = depth_angle.saturating_sub(1),
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            ',' if depth_angle == 0 && depth_paren == 0 => {
+                let item = input[start..idx].trim();
+                if !item.is_empty() {
+                    items.push(item);
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        items.push(tail);
+    }
+    items
+}
+
+fn validate_interop_contract_for_source(
+    source: &str,
+    source_path: &Path,
+    contract: &InteropContract,
+) -> Result<(), String> {
+    if contract.allowed_paths.is_empty() {
+        return Ok(());
+    }
+
+    let mut violations = Vec::new();
+    for (line_idx, line) in source.lines().enumerate() {
+        let Some((path, col)) = parse_rust_use_line(line) else {
+            continue;
+        };
+        if !path_allowed_by_contract(&path, &contract.allowed_paths) {
+            violations.push((line_idx + 1, col, path));
+        }
+    }
+
+    if violations.is_empty() {
+        return Ok(());
+    }
+
+    let mut message = format!(
+        "interop contract violation in {} ({}):",
+        source_path.display(),
+        INTEROP_CONTRACT_FILE
+    );
+    for (line, col, path) in violations {
+        let _ = write!(
+            &mut message,
+            "\n  - `rust use {}` is not allowed (line {}, col {}). add `allow {}` to {}",
+            path,
+            line,
+            col,
+            path,
+            INTEROP_CONTRACT_FILE
+        );
+    }
+    Err(message)
+}
+
+fn parse_rust_use_line(line: &str) -> Option<(String, usize)> {
+    let indent = line.len() - line.trim_start().len();
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix("rust use ")?;
+    let path = rest.strip_suffix(';')?.trim();
+    if !is_valid_rust_path(path) {
+        return None;
+    }
+    Some((path.to_string(), indent + "rust use ".len() + 1))
+}
+
+fn path_allowed_by_contract(path: &str, allowed: &BTreeSet<String>) -> bool {
+    if allowed.contains(path) {
+        return true;
+    }
+    for pattern in allowed {
+        if let Some(prefix) = pattern.strip_suffix("::*")
+            && (path == prefix || path.starts_with(&format!("{prefix}::")))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_valid_rust_path(path: &str) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    for segment in path.split("::") {
+        if segment.is_empty() {
+            return false;
+        }
+        let mut chars = segment.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        if !(first == '_' || first.is_ascii_alphabetic()) {
+            return false;
+        }
+        if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_valid_allow_pattern(pattern: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix("::*") {
+        return !prefix.is_empty() && is_valid_rust_path(prefix);
+    }
+    is_valid_rust_path(pattern)
+}
+
+fn emit_interop_adapter_module(generated_src: &Path, contract: &InteropContract) -> Result<(), String> {
+    if contract.adapters.is_empty() {
+        return Ok(());
+    }
+
+    let module_path = generated_src.join("__elevate_interop.rs");
+    let mut out = String::new();
+    out.push_str("// Generated by elevate interop contract.\n");
+    out.push_str("// Do not edit generated output manually.\n");
+    out.push_str("#![allow(dead_code)]\n\n");
+    for adapter in &contract.adapters {
+        emit_adapter_fn(adapter, &mut out);
+        out.push('\n');
+    }
+    fs::write(&module_path, out.as_bytes()).map_err(|error| {
+        format!(
+            "failed to write generated interop adapter module {}: {error}",
+            module_path.display()
+        )
+    })?;
+
+    inject_interop_module_decl(generated_src)?;
+    Ok(())
+}
+
+fn emit_adapter_fn(adapter: &InteropAdapter, out: &mut String) {
+    let fn_name = adapter_fn_name(&adapter.alias);
+    let params = adapter
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| format!("__arg{index}: {ty}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let args = (0..adapter.params.len())
+        .map(|index| format!("__arg{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(out, "// adapter {} => {}", adapter.alias, adapter.target);
+    let _ = writeln!(
+        out,
+        "pub fn {fn_name}({params}) -> {} {{",
+        adapter.return_type
+    );
+    match adapter.transform {
+        InteropTransform::Direct => {
+            let _ = writeln!(out, "    return {}({args});", adapter.target);
+        }
+        InteropTransform::UnwrapToOwnedString => {
+            let _ = writeln!(
+                out,
+                "    return {}({args}).expect(\"interop adapter unwrap failed\").to_string();",
+                adapter.target
+            );
+        }
+        InteropTransform::UnwrapSplitOnceToOwnedTuple => {
+            let _ = writeln!(
+                out,
+                "    let (__left, __right) = {}({args}).expect(\"interop adapter unwrap failed\");",
+                adapter.target
+            );
+            let _ = writeln!(
+                out,
+                "    return (__left.to_string(), __right.to_string());"
+            );
+        }
+    }
+    out.push_str("}\n");
+}
+
+fn adapter_fn_name(alias: &str) -> String {
+    let mut out = "__elevate_adapter_".to_string();
+    for ch in alias.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+    out
+}
+
+fn inject_interop_module_decl(generated_src: &Path) -> Result<(), String> {
+    for entry in ["lib.rs", "main.rs"] {
+        let file = generated_src.join(entry);
+        if !file.is_file() {
+            continue;
+        }
+        let content =
+            fs::read_to_string(&file).map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+        if content.contains("mod __elevate_interop;") {
+            continue;
+        }
+        let rewritten = format!("mod __elevate_interop;\n\n{content}");
+        fs::write(&file, rewritten.as_bytes())
+            .map_err(|error| format!("failed to rewrite {}: {error}", file.display()))?;
+    }
+    Ok(())
 }
 
 fn format_compile_error_with_context(path: &Path, source: &str, error: &crate::CompileError) -> String {
@@ -279,6 +694,62 @@ mod tests {
         assert!(generated.join("lib.rs").exists());
         assert!(generated.join("net/http.rs").exists());
         assert!(generated.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn transpile_rejects_rust_use_not_allowed_by_interop_contract() {
+        let root = create_temp_dir("elevate-interop-contract");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "rust use std::mem::drop;\nfn cleanup(v: String) {\n    std::mem::drop(v);\n}\n",
+        )
+        .expect("write lib.ers should succeed");
+        fs::write(root.join("elevate.interop"), "allow std::collections::*\n")
+            .expect("write interop contract should succeed");
+
+        let error = transpile_ers_crate(&root).expect_err("expected contract validation failure");
+        assert!(error.contains("interop contract violation"));
+        assert!(error.contains("rust use std::mem::drop"));
+        assert!(error.contains("line 1"));
+        assert!(error.contains("allow std::mem::drop"));
+    }
+
+    #[test]
+    fn transpile_generates_interop_adapter_module_from_contract() {
+        let root = create_temp_dir("elevate-interop-adapter");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "pub fn identity(v: i64) -> i64 { v }\n",
+        )
+        .expect("write lib.ers should succeed");
+        fs::write(
+            root.join("elevate.interop"),
+            "adapter str::len_alias => std::str::len (&str) -> usize\n",
+        )
+        .expect("write interop contract should succeed");
+
+        let summary = transpile_ers_crate(&root).expect("transpile should succeed");
+        let generated_src = summary.generated_root.join("src");
+        let adapter_module = fs::read_to_string(generated_src.join("__elevate_interop.rs"))
+            .expect("adapter module should exist");
+        assert!(adapter_module.contains("pub fn __elevate_adapter_str__len_alias"));
+        assert!(adapter_module.contains("std::str::len(__arg0)"));
+
+        let generated_lib =
+            fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");
+        assert!(generated_lib.contains("mod __elevate_interop;"));
     }
 
     fn create_temp_dir(prefix: &str) -> PathBuf {
