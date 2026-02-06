@@ -118,6 +118,10 @@ pub enum TypedExprKind {
         callee: Box<TypedExpr>,
         args: Vec<TypedExpr>,
     },
+    MacroCall {
+        path: Vec<String>,
+        args: Vec<TypedExpr>,
+    },
     Field {
         base: Box<TypedExpr>,
         field: String,

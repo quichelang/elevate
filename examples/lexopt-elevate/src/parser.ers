@@ -15,11 +15,6 @@ pub enum RawArgClass {
     Value(String);
 }
 
-pub enum MaybeString {
-    Some(String);
-    None;
-}
-
 pub enum LongPrefixSplit {
     Long(String);
     Other(String);
@@ -77,22 +72,22 @@ pub fn next(handle: i64) -> Result<Option<Arg>, ParseError> {
 fn next_internal(handle: i64) -> Result<Option<Arg>, ParseError> {
     const pending = runtime_core::take_pending_value(handle);
     match pending {
-        MaybeString::Some(value) => pending_unexpected_value(handle, value);
-        MaybeString::None => next_after_pending(handle);
+        Option::Some(value) => pending_unexpected_value(handle, value);
+        Option::None => next_after_pending(handle);
     }
 }
 
 fn pending_unexpected_value(handle: i64, value: String) -> Result<Option<Arg>, ParseError> {
     Result::Err(ParseError::UnexpectedValue(
-        runtime_core::format_unexpected_value_for_last(handle, value),
+        format_unexpected_value_for_last(handle, value),
     ))
 }
 
 fn next_after_pending(handle: i64) -> Result<Option<Arg>, ParseError> {
     const cluster = runtime_core::take_short_cluster(handle);
     match cluster {
-        MaybeString::Some(cluster_text) => next_from_cluster(handle, cluster_text);
-        MaybeString::None => next_from_stream(handle);
+        Option::Some(cluster_text) => next_from_cluster(handle, cluster_text);
+        Option::None => next_from_stream(handle);
     }
 }
 
@@ -111,14 +106,15 @@ fn emit_short_from_parts(handle: i64, parts: ClusterParts) -> Result<Option<Arg>
 }
 
 fn emit_short(handle: i64, short: String) -> Result<Option<Arg>, ParseError> {
-    Result::Ok(Option::Some(runtime_core::finalize_short(handle, short)))
+    runtime_core::set_last_short_option(handle, short);
+    Result::Ok(Option::Some(Arg::Short(short)))
 }
 
 fn next_from_stream(handle: i64) -> Result<Option<Arg>, ParseError> {
     const next_arg = runtime_core::take_next_arg(handle);
     match next_arg {
-        MaybeString::Some(arg) => next_from_taken_arg(handle, arg);
-        MaybeString::None => Result::Ok(Option::None);
+        Option::Some(arg) => next_from_taken_arg(handle, arg);
+        Option::None => Result::Ok(Option::None);
     }
 }
 
@@ -152,8 +148,8 @@ fn classify_arg(arg: String) -> RawArgClass {
 fn classify_long_rest(rest: String) -> RawArgClass {
     const maybe_text = nonempty_text(rest);
     match maybe_text {
-        MaybeString::Some(text) => classify_nonempty_long(text);
-        MaybeString::None => RawArgClass::DashDash;
+        Option::Some(text) => classify_nonempty_long(text);
+        Option::None => RawArgClass::DashDash;
     }
 }
 
@@ -179,14 +175,19 @@ fn after_dashdash(handle: i64) -> Result<Option<Arg>, ParseError> {
 }
 
 fn emit_long(handle: i64, name: String) -> Result<Option<Arg>, ParseError> {
-    Result::Ok(Option::Some(runtime_core::finalize_long(handle, name)))
+    runtime_core::set_last_long_option(handle, name);
+    Result::Ok(Option::Some(Arg::Long(name)))
 }
 
 fn emit_long_with_value(
     handle: i64,
     payload: LongWithValue,
 ) -> Result<Option<Arg>, ParseError> {
-    Result::Ok(Option::Some(runtime_core::finalize_long_with_value(handle, payload)))
+    const name = payload.name;
+    const value = payload.value;
+    runtime_core::set_last_long_option(handle, name);
+    runtime_core::set_pending_value(handle, value);
+    Result::Ok(Option::Some(Arg::Long(name)))
 }
 
 fn continue_short_cluster(handle: i64, cluster: String) -> Result<Option<Arg>, ParseError> {
@@ -202,54 +203,54 @@ fn emit_value(handle: i64, value: String) -> Result<Option<Arg>, ParseError> {
 pub fn value(handle: i64) -> Result<String, ParseError> {
     const maybe = optional_value_internal(handle);
     match maybe {
-        MaybeString::Some(value) => Result::Ok(value);
-        MaybeString::None => value_from_stream_or_error(handle);
+        Option::Some(value) => Result::Ok(value);
+        Option::None => value_from_stream_or_error(handle);
     }
 }
 
 fn value_from_stream_or_error(handle: i64) -> Result<String, ParseError> {
     const raw_next = runtime_core::take_next_arg(handle);
     match raw_next {
-        MaybeString::Some(value) => Result::Ok(value);
-        MaybeString::None => Result::Err(ParseError::MissingValue(
-            runtime_core::format_missing_value_for_last(handle),
+        Option::Some(value) => Result::Ok(value);
+        Option::None => Result::Err(ParseError::MissingValue(
+            format_missing_value_for_last(handle),
         ));
     }
 }
 
 pub fn optional_value(handle: i64) -> Option<String> {
-    maybe_to_option(optional_value_internal(handle))
+    optional_value_internal(handle)
 }
 
-fn optional_value_internal(handle: i64) -> MaybeString {
+fn optional_value_internal(handle: i64) -> Option<String> {
     const pending = runtime_core::take_pending_value(handle);
     match pending {
-        MaybeString::Some(value) => MaybeString::Some(value);
-        MaybeString::None => optional_from_cluster(handle);
+        Option::Some(value) => Option::Some(value);
+        Option::None => optional_from_cluster(handle);
     }
 }
 
-fn optional_from_cluster(handle: i64) -> MaybeString {
+fn optional_from_cluster(handle: i64) -> Option<String> {
     const cluster = runtime_core::take_short_cluster(handle);
     match cluster {
-        MaybeString::Some(text) => MaybeString::Some(cluster_optional_value(text));
-        MaybeString::None => MaybeString::None;
+        Option::Some(text) => Option::Some(cluster_optional_value(text));
+        Option::None => Option::None;
     }
 }
 
 pub fn values(handle: i64) -> Result<Option<String>, ParseError> {
     const maybe = optional_value_internal(handle);
     match maybe {
-        MaybeString::Some(value) => Result::Ok(Option::Some(value));
-        MaybeString::None => values_from_stream_or_error(handle);
+        Option::Some(value) => Result::Ok(Option::Some(value));
+        Option::None => values_from_stream_or_error(handle);
     }
 }
 
 fn values_from_stream_or_error(handle: i64) -> Result<Option<String>, ParseError> {
     const peeked = runtime_core::peek_next_arg(handle);
     match peeked {
-        MaybeString::Some(candidate) => values_from_candidate(handle, candidate);
-        MaybeString::None => missing_value_result(handle);
+        Option::Some(candidate) => values_from_candidate(handle, candidate);
+        Option::None => missing_value_result(handle);
     }
 }
 
@@ -273,14 +274,33 @@ fn consume_and_return_value(handle: i64, value: String) -> Result<Option<String>
 
 fn missing_value_result(handle: i64) -> Result<Option<String>, ParseError> {
     Result::Err(ParseError::MissingValue(
-        runtime_core::format_missing_value_for_last(handle),
+        format_missing_value_for_last(handle),
     ))
 }
 
-fn maybe_to_option(value: MaybeString) -> Option<String> {
+fn format_missing_value_for_last(handle: i64) -> String {
+    format_missing_value(runtime_core::last_option(handle))
+}
+
+fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
+    format_unexpected_value(runtime_core::last_option(handle), value)
+}
+
+fn format_missing_value(value: Option<String>) -> String {
     match value {
-        MaybeString::Some(text) => Option::Some(text);
-        MaybeString::None => Option::None;
+        Option::Some(option) => format!("missing value for option {}", option);
+        Option::None => "missing value";
+    }
+}
+
+fn format_unexpected_value(option: Option<String>, value: String) -> String {
+    match option {
+        Option::Some(option_name) => format!(
+            "unexpected argument for option '{}': {}",
+            option_name,
+            value,
+        );
+        Option::None => format!("unexpected argument: {}", value);
     }
 }
 
@@ -315,11 +335,11 @@ fn split_long_prefix(arg: String) -> LongPrefixSplit {
     LongPrefixSplit::Other(arg)
 }
 
-fn nonempty_text(text: String) -> MaybeString {
+fn nonempty_text(text: String) -> Option<String> {
     if text.is_empty() {
-        return MaybeString::None;
+        return Option::None;
     }
-    MaybeString::Some(text)
+    Option::Some(text)
 }
 
 fn split_long_eq(text: String) -> LongEqSplit {

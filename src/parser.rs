@@ -497,6 +497,26 @@ impl Parser {
     fn parse_postfix_expr(&mut self) -> Option<Expr> {
         let mut expr = self.parse_primary_expr()?;
         loop {
+            if self.match_kind(TokenKind::Bang) {
+                let Expr::Path(path) = &expr else {
+                    self.error_current("Macro invocation requires a path before '!'");
+                    return None;
+                };
+                self.expect(TokenKind::LParen, "Expected '(' after macro '!'")?;
+                let mut args = Vec::new();
+                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                    args.push(self.parse_expr()?);
+                    if !self.match_kind(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen, "Expected ')' after macro arguments")?;
+                expr = Expr::MacroCall {
+                    path: path.clone(),
+                    args,
+                };
+                continue;
+            }
             if self.match_kind(TokenKind::LParen) {
                 let mut args = Vec::new();
                 while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
@@ -1004,6 +1024,18 @@ world"#;
                 return msg;
             }
         "##;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_macro_invocation_expression() {
+        let source = r#"
+            fn render(value: i64) -> String {
+                return format!("v={}", value);
+            }
+        "#;
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 1);

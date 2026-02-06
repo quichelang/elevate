@@ -114,6 +114,10 @@ pub enum RustExpr {
         callee: Box<RustExpr>,
         args: Vec<RustExpr>,
     },
+    MacroCall {
+        path: Vec<String>,
+        args: Vec<RustExpr>,
+    },
     Field {
         base: Box<RustExpr>,
         field: String,

@@ -130,6 +130,10 @@ pub enum Expr {
         callee: Box<Expr>,
         args: Vec<Expr>,
     },
+    MacroCall {
+        path: Vec<String>,
+        args: Vec<Expr>,
+    },
     Field {
         base: Box<Expr>,
         field: String,

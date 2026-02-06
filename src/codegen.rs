@@ -202,6 +202,25 @@ fn emit_expr(expr: &RustExpr) -> String {
             };
             format!("{callee_text}({args})")
         }
+        RustExpr::MacroCall { path, args } => {
+            let args = if path.len() == 1 && path[0] == "format" {
+                args.iter()
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        if index == 0 {
+                            if let RustExpr::String(value) = arg {
+                                return format!("{value:?}");
+                            }
+                        }
+                        emit_expr(arg)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                args.iter().map(emit_expr).collect::<Vec<_>>().join(", ")
+            };
+            format!("{}!({args})", path.join("::"))
+        }
         RustExpr::Field { base, field } => format!("{}.{}", emit_expr(base), field),
         RustExpr::Match { scrutinee, arms } => {
             let mut text = String::new();

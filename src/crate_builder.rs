@@ -302,6 +302,11 @@ fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec
                 }
             }
         }
+        Expr::MacroCall { args, .. } => {
+            for arg in args {
+                rewrite_expr_adapter_calls(arg, adapter_map);
+            }
+        }
         Expr::Field { base, .. } => rewrite_expr_adapter_calls(base, adapter_map),
         Expr::Match { scrutinee, arms } => {
             rewrite_expr_adapter_calls(scrutinee, adapter_map);

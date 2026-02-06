@@ -1231,6 +1231,28 @@ fn infer_expr(
                 resolved,
             )
         }
+        Expr::MacroCall { path, args } => {
+            let mut typed_args = Vec::new();
+            for arg in args {
+                let (typed_arg, _) = infer_expr(arg, context, locals, return_ty, diagnostics);
+                typed_args.push(typed_arg);
+            }
+            let resolved = if path.len() == 1 && path[0] == "format" {
+                named_type("String")
+            } else {
+                SemType::Unknown
+            };
+            (
+                TypedExpr {
+                    kind: TypedExprKind::MacroCall {
+                        path: path.clone(),
+                        args: typed_args,
+                    },
+                    ty: type_to_string(&resolved),
+                },
+                resolved,
+            )
+        }
         Expr::Match { scrutinee, arms } => {
             let (typed_scrutinee, scrutinee_ty) =
                 infer_expr(scrutinee, context, locals, return_ty, diagnostics);
@@ -1972,6 +1994,13 @@ fn lower_expr_with_context(
                     .collect(),
             }
         }
+        TypedExprKind::MacroCall { path, args } => RustExpr::MacroCall {
+            path: path.clone(),
+            args: args
+                .iter()
+                .map(|arg| lower_expr_with_context(arg, context, ExprPosition::Value, state))
+                .collect(),
+        },
         TypedExprKind::Field { base, field } => RustExpr::Field {
             base: Box::new(lower_expr_with_context(
                 base,
@@ -2488,6 +2517,11 @@ fn collect_path_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<String, usize>
                 collect_path_uses_in_expr(arg, uses);
             }
         }
+        TypedExprKind::MacroCall { args, .. } => {
+            for arg in args {
+                collect_path_uses_in_expr(arg, uses);
+            }
+        }
         TypedExprKind::Field { base, .. } => collect_path_uses_in_expr(base, uses),
         TypedExprKind::Match { scrutinee, arms } => {
             collect_path_uses_in_expr(scrutinee, uses);
@@ -2767,6 +2801,18 @@ fn lower_pattern(
                 }
             };
 
+            if let Some(pattern) = lower_builtin_variant_pattern(
+                &enum_name,
+                &variant_name,
+                payload.as_deref(),
+                scrutinee_ty,
+                context,
+                locals,
+                diagnostics,
+            ) {
+                return pattern;
+            }
+
             if let SemType::Path { path: ty_path, .. } = scrutinee_ty
                 && ty_path.last() != Some(&enum_name)
                 && *scrutinee_ty != SemType::Unknown
@@ -2852,6 +2898,151 @@ fn lower_pattern(
             }
         }
     }
+}
+
+fn lower_builtin_variant_pattern(
+    enum_name: &str,
+    variant_name: &str,
+    payload: Option<&Pattern>,
+    scrutinee_ty: &SemType,
+    context: &Context,
+    locals: &mut HashMap<String, SemType>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<TypedPattern> {
+    if enum_name == "Option" {
+        let expected_payload = if let Some(inner) = option_inner(scrutinee_ty) {
+            inner.clone()
+        } else {
+            if *scrutinee_ty != SemType::Unknown {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Pattern enum `Option` does not match scrutinee type `{}`",
+                        type_to_string(scrutinee_ty)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+            SemType::Unknown
+        };
+        let lowered_payload = match variant_name {
+            "Some" => match payload {
+                Some(payload_pattern) => Some(Box::new(lower_pattern(
+                    payload_pattern,
+                    &expected_payload,
+                    context,
+                    locals,
+                    diagnostics,
+                ))),
+                None => {
+                    diagnostics.push(Diagnostic::new(
+                        "Pattern `Option::Some` requires payload pattern",
+                        Span::new(0, 0),
+                    ));
+                    None
+                }
+            },
+            "None" => {
+                if payload.is_some() {
+                    diagnostics.push(Diagnostic::new(
+                        "Pattern `Option::None` has no payload",
+                        Span::new(0, 0),
+                    ));
+                }
+                None
+            }
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    format!("Unknown variant `Option::{variant_name}` in pattern"),
+                    Span::new(0, 0),
+                ));
+                payload.map(|payload_pattern| {
+                    Box::new(lower_pattern(
+                        payload_pattern,
+                        &SemType::Unknown,
+                        context,
+                        locals,
+                        diagnostics,
+                    ))
+                })
+            }
+        };
+        return Some(TypedPattern::Variant {
+            path: vec!["Option".to_string(), variant_name.to_string()],
+            payload: lowered_payload,
+        });
+    }
+
+    if enum_name == "Result" {
+        let (expected_ok, expected_err) = if let Some((ok, err)) = result_parts(scrutinee_ty) {
+            (ok.clone(), err.clone())
+        } else {
+            if *scrutinee_ty != SemType::Unknown {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Pattern enum `Result` does not match scrutinee type `{}`",
+                        type_to_string(scrutinee_ty)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+            (SemType::Unknown, SemType::Unknown)
+        };
+        let lowered_payload = match variant_name {
+            "Ok" => match payload {
+                Some(payload_pattern) => Some(Box::new(lower_pattern(
+                    payload_pattern,
+                    &expected_ok,
+                    context,
+                    locals,
+                    diagnostics,
+                ))),
+                None => {
+                    diagnostics.push(Diagnostic::new(
+                        "Pattern `Result::Ok` requires payload pattern",
+                        Span::new(0, 0),
+                    ));
+                    None
+                }
+            },
+            "Err" => match payload {
+                Some(payload_pattern) => Some(Box::new(lower_pattern(
+                    payload_pattern,
+                    &expected_err,
+                    context,
+                    locals,
+                    diagnostics,
+                ))),
+                None => {
+                    diagnostics.push(Diagnostic::new(
+                        "Pattern `Result::Err` requires payload pattern",
+                        Span::new(0, 0),
+                    ));
+                    None
+                }
+            },
+            _ => {
+                diagnostics.push(Diagnostic::new(
+                    format!("Unknown variant `Result::{variant_name}` in pattern"),
+                    Span::new(0, 0),
+                ));
+                payload.map(|payload_pattern| {
+                    Box::new(lower_pattern(
+                        payload_pattern,
+                        &SemType::Unknown,
+                        context,
+                        locals,
+                        diagnostics,
+                    ))
+                })
+            }
+        };
+        return Some(TypedPattern::Variant {
+            path: vec!["Result".to_string(), variant_name.to_string()],
+            payload: lowered_payload,
+        });
+    }
+
+    None
 }
 
 fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {

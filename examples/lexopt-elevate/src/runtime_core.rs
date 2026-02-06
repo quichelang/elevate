@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::model::Arg;
-use crate::parser::{LongWithValue, MaybeString};
-
 #[derive(Debug, Clone)]
 struct ParserState {
     args: Vec<String>,
@@ -45,8 +42,8 @@ pub fn reset(handle: i64) {
     });
 }
 
-pub fn take_pending_value(handle: i64) -> MaybeString {
-    from_option(with_state_mut(handle, |state| state.pending_value.take()).flatten())
+pub fn take_pending_value(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| state.pending_value.take()).flatten()
 }
 
 pub fn set_pending_value(handle: i64, value: String) {
@@ -55,8 +52,8 @@ pub fn set_pending_value(handle: i64, value: String) {
     });
 }
 
-pub fn take_short_cluster(handle: i64) -> MaybeString {
-    from_option(with_state_mut(handle, |state| state.short_cluster.take()).flatten())
+pub fn take_short_cluster(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| state.short_cluster.take()).flatten()
 }
 
 pub fn set_short_cluster(handle: i64, cluster: String) {
@@ -65,21 +62,19 @@ pub fn set_short_cluster(handle: i64, cluster: String) {
     });
 }
 
-pub fn take_next_arg(handle: i64) -> MaybeString {
-    let value = with_state_mut(handle, |state| {
+pub fn take_next_arg(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| {
         let arg = state.args.get(state.index).cloned();
         if arg.is_some() {
             state.index += 1;
         }
         arg
     })
-    .flatten();
-    from_option(value)
+    .flatten()
 }
 
-pub fn peek_next_arg(handle: i64) -> MaybeString {
-    let value = with_state_mut(handle, |state| state.args.get(state.index).cloned()).flatten();
-    from_option(value)
+pub fn peek_next_arg(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| state.args.get(state.index).cloned()).flatten()
 }
 
 pub fn is_finished_opts(handle: i64) -> bool {
@@ -98,45 +93,20 @@ pub fn clear_last_option(handle: i64) {
     });
 }
 
-pub fn finalize_short(handle: i64, short: String) -> Arg {
+pub fn set_last_short_option(handle: i64, short: String) {
     with_state_mut(handle, |state| {
         state.last_option = Some(format!("-{short}"));
     });
-    Arg::Short(short)
 }
 
-pub fn finalize_long(handle: i64, name: String) -> Arg {
+pub fn set_last_long_option(handle: i64, name: String) {
     with_state_mut(handle, |state| {
         state.last_option = Some(format!("--{name}"));
     });
-    Arg::Long(name)
 }
 
-pub fn finalize_long_with_value(handle: i64, payload: LongWithValue) -> Arg {
-    with_state_mut(handle, |state| {
-        state.last_option = Some(format!("--{}", payload.name));
-        state.pending_value = Some(payload.value);
-    });
-    Arg::Long(payload.name)
-}
-
-pub fn format_missing_value_for_last(handle: i64) -> String {
-    with_state_mut(handle, |state| match &state.last_option {
-        Some(option) => format!("missing value for option {option}"),
-        None => "missing value".to_string(),
-    })
-    .unwrap_or_else(|| "missing value".to_string())
-}
-
-pub fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
-    with_state_mut(handle, |state| {
-        let option = state
-            .last_option
-            .clone()
-            .unwrap_or_else(|| "<unknown-option>".to_string());
-        format!("unexpected argument for option '{}': {}", option, value)
-    })
-    .unwrap_or_else(|| format!("unexpected argument: {value}"))
+pub fn last_option(handle: i64) -> Option<String> {
+    with_state_mut(handle, |state| state.last_option.clone()).flatten()
 }
 
 pub fn drop_first_char_known(text: String) -> (String, String) {
@@ -145,13 +115,6 @@ pub fn drop_first_char_known(text: String) -> (String, String) {
         .next()
         .expect("text must be non-empty before dropping first char");
     (first.to_string(), chars.collect::<String>())
-}
-
-fn from_option(value: Option<String>) -> MaybeString {
-    match value {
-        Some(value) => MaybeString::Some(value),
-        None => MaybeString::None,
-    }
 }
 
 fn insert_state(args: Vec<String>) -> i64 {
