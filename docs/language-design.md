@@ -192,6 +192,7 @@ Implemented:
 - deterministic generated adapter module (`elevate_interop.rs`) from declared adapter entries.
 - adapter module auto-injection into generated crate root (`lib.rs`/`main.rs`) when present.
 - contract-declared adapter aliases are automatically rewritten at crate transpile time to generated adapter calls.
+- adapter callsites are arity-validated during crate transpile before lowering/codegen.
 - Object-native parser API preview for lexopt via `Parser` impl methods that thread `self`.
 - Native test framework pipeline for `.ers` crates:
 - discovers `test_*` functions,
@@ -289,7 +290,7 @@ Quality gates:
 - Deep destructuring coverage (all contexts) is not complete.
 - Full exhaustiveness diagnostics are not complete (current checks focus on bool/tuple-bool and enum variants).
 - Full Rust-pattern parity for match is not complete (remaining work includes ref/binding-mode patterns and richer guard/exhaustiveness combinations).
-- Interop contract signature verification currently validates declaration shape, but not full type-level callsite compatibility across all compiler phases.
+- Interop contract signature verification validates declaration shape and callsite arity, but not full type-level compatibility across all compiler phases.
 - Object-native parser APIs are in preview form (lexopt example) and are not yet generalized as a standard library pattern.
 - Borrow/reference features remain intentionally unsupported.
 

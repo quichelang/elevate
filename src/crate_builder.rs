@@ -243,8 +243,194 @@ fn compile_source_with_interop_contract(
     let tokens = crate::lexer::lex(source).map_err(|diagnostics| crate::CompileError { diagnostics })?;
     let mut module = crate::parser::parse_module(tokens)
         .map_err(|diagnostics| crate::CompileError { diagnostics })?;
+    let validation = validate_adapter_callsites(&module, contract);
+    if !validation.is_empty() {
+        return Err(crate::CompileError {
+            diagnostics: validation,
+        });
+    }
     rewrite_module_adapter_calls(&mut module, contract);
     crate::compile_ast_with_options(&module, options)
+}
+
+fn validate_adapter_callsites(
+    module: &Module,
+    contract: &InteropContract,
+) -> Vec<crate::diag::Diagnostic> {
+    if contract.adapters.is_empty() {
+        return Vec::new();
+    }
+    let alias_arity = contract
+        .adapters
+        .iter()
+        .map(|adapter| (adapter.alias.clone(), adapter.params.len()))
+        .collect::<HashMap<_, _>>();
+    let mut diagnostics = Vec::new();
+    for item in &module.items {
+        validate_item_adapter_calls(item, &alias_arity, &mut diagnostics);
+    }
+    diagnostics
+}
+
+fn validate_item_adapter_calls(
+    item: &Item,
+    alias_arity: &HashMap<String, usize>,
+    diagnostics: &mut Vec<crate::diag::Diagnostic>,
+) {
+    match item {
+        Item::Function(def) => validate_block_adapter_calls(&def.body, alias_arity, diagnostics),
+        Item::Impl(def) => {
+            for method in &def.methods {
+                validate_block_adapter_calls(&method.body, alias_arity, diagnostics);
+            }
+        }
+        Item::Const(def) => validate_expr_adapter_calls(&def.value, alias_arity, diagnostics),
+        Item::Static(def) => validate_expr_adapter_calls(&def.value, alias_arity, diagnostics),
+        Item::Struct(_) | Item::Enum(_) | Item::RustUse(_) | Item::RustBlock(_) => {}
+    }
+}
+
+fn validate_block_adapter_calls(
+    block: &Block,
+    alias_arity: &HashMap<String, usize>,
+    diagnostics: &mut Vec<crate::diag::Diagnostic>,
+) {
+    for stmt in &block.statements {
+        validate_stmt_adapter_calls(stmt, alias_arity, diagnostics);
+    }
+}
+
+fn validate_stmt_adapter_calls(
+    stmt: &Stmt,
+    alias_arity: &HashMap<String, usize>,
+    diagnostics: &mut Vec<crate::diag::Diagnostic>,
+) {
+    match stmt {
+        Stmt::Const(def) => validate_expr_adapter_calls(&def.value, alias_arity, diagnostics),
+        Stmt::DestructureConst { value, .. } => {
+            validate_expr_adapter_calls(value, alias_arity, diagnostics)
+        }
+        Stmt::Assign { target, value, .. } => {
+            validate_assign_target_adapter_calls(target, alias_arity, diagnostics);
+            validate_expr_adapter_calls(value, alias_arity, diagnostics);
+        }
+        Stmt::Return(Some(expr)) => validate_expr_adapter_calls(expr, alias_arity, diagnostics),
+        Stmt::Return(None) => {}
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            validate_expr_adapter_calls(condition, alias_arity, diagnostics);
+            validate_block_adapter_calls(then_block, alias_arity, diagnostics);
+            if let Some(else_block) = else_block {
+                validate_block_adapter_calls(else_block, alias_arity, diagnostics);
+            }
+        }
+        Stmt::While { condition, body } => {
+            validate_expr_adapter_calls(condition, alias_arity, diagnostics);
+            validate_block_adapter_calls(body, alias_arity, diagnostics);
+        }
+        Stmt::For { iter, body, .. } => {
+            validate_expr_adapter_calls(iter, alias_arity, diagnostics);
+            validate_block_adapter_calls(body, alias_arity, diagnostics);
+        }
+        Stmt::Loop { body } => validate_block_adapter_calls(body, alias_arity, diagnostics),
+        Stmt::Break | Stmt::Continue | Stmt::RustBlock(_) => {}
+        Stmt::Expr(expr) | Stmt::TailExpr(expr) => {
+            validate_expr_adapter_calls(expr, alias_arity, diagnostics)
+        }
+    }
+}
+
+fn validate_expr_adapter_calls(
+    expr: &Expr,
+    alias_arity: &HashMap<String, usize>,
+    diagnostics: &mut Vec<crate::diag::Diagnostic>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            if let Expr::Path(path) = callee.as_ref() {
+                let alias = path.join("::");
+                if let Some(expected) = alias_arity.get(&alias)
+                    && args.len() != *expected
+                {
+                    diagnostics.push(crate::diag::Diagnostic::new(
+                        format!(
+                            "interop adapter `{alias}` expects {expected} args, got {}",
+                            args.len()
+                        ),
+                        crate::diag::Span::new(0, 0),
+                    ));
+                }
+            }
+            validate_expr_adapter_calls(callee, alias_arity, diagnostics);
+            for arg in args {
+                validate_expr_adapter_calls(arg, alias_arity, diagnostics);
+            }
+        }
+        Expr::MacroCall { args, .. } => {
+            for arg in args {
+                validate_expr_adapter_calls(arg, alias_arity, diagnostics);
+            }
+        }
+        Expr::Field { base, .. } => validate_expr_adapter_calls(base, alias_arity, diagnostics),
+        Expr::Index { base, index } => {
+            validate_expr_adapter_calls(base, alias_arity, diagnostics);
+            validate_expr_adapter_calls(index, alias_arity, diagnostics);
+        }
+        Expr::Match { scrutinee, arms } => {
+            validate_expr_adapter_calls(scrutinee, alias_arity, diagnostics);
+            for arm in arms {
+                validate_expr_adapter_calls(&arm.value, alias_arity, diagnostics);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) => {
+            validate_expr_adapter_calls(expr, alias_arity, diagnostics)
+        }
+        Expr::Binary { left, right, .. } => {
+            validate_expr_adapter_calls(left, alias_arity, diagnostics);
+            validate_expr_adapter_calls(right, alias_arity, diagnostics);
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                validate_expr_adapter_calls(item, alias_arity, diagnostics);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for StructLiteralField { value, .. } in fields {
+                validate_expr_adapter_calls(value, alias_arity, diagnostics);
+            }
+        }
+        Expr::Closure { body, .. } => validate_block_adapter_calls(body, alias_arity, diagnostics),
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                validate_expr_adapter_calls(start, alias_arity, diagnostics);
+            }
+            if let Some(end) = end {
+                validate_expr_adapter_calls(end, alias_arity, diagnostics);
+            }
+        }
+        Expr::Path(_) | Expr::Int(_) | Expr::Bool(_) | Expr::String(_) => {}
+    }
+}
+
+fn validate_assign_target_adapter_calls(
+    target: &crate::ast::AssignTarget,
+    alias_arity: &HashMap<String, usize>,
+    diagnostics: &mut Vec<crate::diag::Diagnostic>,
+) {
+    match target {
+        crate::ast::AssignTarget::Path(_) => {}
+        crate::ast::AssignTarget::Field { base, .. } => {
+            validate_expr_adapter_calls(base, alias_arity, diagnostics)
+        }
+        crate::ast::AssignTarget::Tuple(items) => {
+            for item in items {
+                validate_assign_target_adapter_calls(item, alias_arity, diagnostics);
+            }
+        }
+    }
 }
 
 fn rewrite_module_adapter_calls(module: &mut Module, contract: &InteropContract) {
@@ -1160,6 +1346,30 @@ mod tests {
             "let pick_fn = elevate_interop::__elevate_adapter_elevate__max_i64;"
         ));
         assert!(generated_lib.contains("let out: i64 = pick_fn(a, b);"));
+    }
+
+    #[test]
+    fn transpile_reports_adapter_call_arity_mismatch() {
+        let root = create_temp_dir("elevate-interop-routing-arity");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "pub fn pick(a: i64, b: i64) -> i64 {\n    elevate::max_i64(a)\n}\n",
+        )
+        .expect("write lib.ers should succeed");
+        fs::write(
+            root.join("elevate.interop"),
+            "adapter elevate::max_i64 => std::cmp::max (i64, i64) -> i64\n",
+        )
+        .expect("write interop contract should succeed");
+
+        let error = transpile_ers_crate(&root).expect_err("expected arity validation failure");
+        assert!(error.contains("interop adapter `elevate::max_i64` expects 2 args, got 1"));
     }
 
     #[test]
