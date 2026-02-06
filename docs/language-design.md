@@ -292,13 +292,10 @@ Quality gates:
 - Generic constrained bounds are not complete (generic function definitions are implemented, but trait-style bound constraints are still pending).
 - Full iterator-model ergonomics for `for` loops are not complete beyond current lowering support.
 - Slices are not complete (current support focuses on `Vec` literals/index/range expressions and slice-style match patterns).
-- Deep destructuring coverage is expanded (tuple + slice destructuring in const/assignment/for), but not complete across all possible contexts/forms.
-- Slice destructuring materializes both named elements and `..tail` rest bindings as owned values (`clone`/`to_vec` in lowering); further optimization of clone strategy is still pending.
 - Full exhaustiveness diagnostics are not complete (current checks focus on bool/finite-tuple finite domains and enum variants).
 - Full Rust-pattern parity for match is not complete (remaining work includes ref/binding-mode patterns and richer guard/exhaustiveness combinations).
 - Interop contract signature verification validates declaration shape and callsite arity, but not full type-level compatibility across all compiler phases.
 - Object-native parser APIs are in preview form (lexopt example) and are not yet generalized as a standard library pattern.
-- Borrow/reference features remain intentionally unsupported.
 
 ### Experimental Feature Flags (Opt-In)
 
