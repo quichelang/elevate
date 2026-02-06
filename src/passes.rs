@@ -1,20 +1,21 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::ast::{
-    BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern, Stmt, StructLiteralField,
-    Type, UnaryOp, Visibility,
+    AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern,
+    Stmt, StructLiteralField, Type, UnaryOp, Visibility,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
-    RustBinaryOp, RustConst, RustDestructurePattern, RustEnum, RustExpr, RustField, RustFunction,
-    RustImpl, RustItem, RustMatchArm, RustModule, RustParam, RustPattern, RustStatic, RustStmt,
-    RustStruct, RustStructLiteralField, RustUnaryOp, RustUse, RustVariant,
+    RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
+    RustExpr, RustField, RustFunction, RustImpl, RustItem, RustMatchArm, RustModule, RustParam,
+    RustPattern, RustStatic, RustStmt, RustStruct, RustStructLiteralField, RustUnaryOp, RustUse,
+    RustVariant,
 };
 use crate::ir::typed::{
-    TypedBinaryOp, TypedConst, TypedDestructurePattern, TypedEnum, TypedExpr, TypedExprKind,
-    TypedField, TypedFunction, TypedImpl, TypedItem, TypedMatchArm, TypedModule, TypedParam,
-    TypedPattern, TypedRustUse, TypedStatic, TypedStmt, TypedStruct, TypedStructLiteralField,
-    TypedUnaryOp, TypedVariant,
+    TypedAssignOp, TypedAssignTarget, TypedBinaryOp, TypedConst, TypedDestructurePattern,
+    TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedItem,
+    TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedRustUse, TypedStatic, TypedStmt,
+    TypedStruct, TypedStructLiteralField, TypedUnaryOp, TypedVariant,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -647,6 +648,7 @@ fn lower_item(
             let mut methods = Vec::new();
             for method in &def.methods {
                 let mut locals = HashMap::new();
+                let mut immutable_locals = HashSet::new();
                 for param in &method.params {
                     locals.insert(param.name.clone(), type_from_ast(&param.ty));
                 }
@@ -684,6 +686,7 @@ fn lower_item(
                         statement,
                         context,
                         &mut locals,
+                        &mut immutable_locals,
                         &provisional_return_ty,
                         &mut inferred_returns,
                         diagnostics,
@@ -814,6 +817,7 @@ fn lower_item(
         }
         Item::Function(def) => {
             let mut locals = HashMap::new();
+            let mut immutable_locals = HashSet::new();
             for param in &def.params {
                 locals.insert(param.name.clone(), type_from_ast(&param.ty));
             }
@@ -851,6 +855,7 @@ fn lower_item(
                     statement,
                     context,
                     &mut locals,
+                    &mut immutable_locals,
                     &provisional_return_ty,
                     &mut inferred_returns,
                     diagnostics,
@@ -902,6 +907,7 @@ fn lower_stmt_with_types(
     stmt: &Stmt,
     context: &Context,
     locals: &mut HashMap<String, SemType>,
+    immutable_locals: &mut HashSet<String>,
     return_ty: &SemType,
     inferred_returns: &mut Vec<SemType>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -928,6 +934,7 @@ fn lower_stmt_with_types(
                 inferred
             };
             locals.insert(def.name.clone(), final_ty.clone());
+            immutable_locals.insert(def.name.clone());
             Some(TypedStmt::Const(TypedConst {
                 is_public: false,
                 name: def.name.clone(),
@@ -939,8 +946,55 @@ fn lower_stmt_with_types(
             let (typed_value, value_ty) =
                 infer_expr(value, context, locals, return_ty, diagnostics);
             bind_destructure_pattern(pattern, &value_ty, locals, diagnostics);
+            collect_destructure_pattern_names(pattern, immutable_locals);
             Some(TypedStmt::DestructureConst {
                 pattern: lower_destructure_pattern_typed(pattern),
+                value: typed_value,
+            })
+        }
+        Stmt::Assign { target, op, value } => {
+            let (typed_target, target_ty) = infer_assign_target(
+                target,
+                context,
+                locals,
+                immutable_locals,
+                return_ty,
+                diagnostics,
+            )?;
+            let (typed_value, value_ty) = infer_expr(value, context, locals, return_ty, diagnostics);
+            match op {
+                AssignOp::Assign => {
+                    if !is_compatible(&value_ty, &target_ty) {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Assignment type mismatch: expected `{}`, got `{}`",
+                                type_to_string(&target_ty),
+                                type_to_string(&value_ty)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                }
+                AssignOp::AddAssign => {
+                    let sum_ty = resolve_add_type(&target_ty, &value_ty, diagnostics);
+                    if !is_compatible(&sum_ty, &target_ty) {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "`+=` result type `{}` does not match target `{}`",
+                                type_to_string(&sum_ty),
+                                type_to_string(&target_ty)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                }
+            }
+            Some(TypedStmt::Assign {
+                target: typed_target,
+                op: match op {
+                    AssignOp::Assign => TypedAssignOp::Assign,
+                    AssignOp::AddAssign => TypedAssignOp::AddAssign,
+                },
                 value: typed_value,
             })
         }
@@ -1003,6 +1057,7 @@ fn lower_stmt_with_types(
                 then_block,
                 context,
                 locals,
+                immutable_locals,
                 return_ty,
                 inferred_returns,
                 diagnostics,
@@ -1012,6 +1067,7 @@ fn lower_stmt_with_types(
                     block,
                     context,
                     locals,
+                    immutable_locals,
                     return_ty,
                     inferred_returns,
                     diagnostics,
@@ -1040,6 +1096,7 @@ fn lower_stmt_with_types(
                 body,
                 context,
                 locals,
+                immutable_locals,
                 return_ty,
                 inferred_returns,
                 diagnostics,
@@ -1048,6 +1105,53 @@ fn lower_stmt_with_types(
                 condition: typed_condition,
                 body: typed_body,
             })
+        }
+    }
+}
+
+fn infer_assign_target(
+    target: &AssignTarget,
+    context: &Context,
+    locals: &mut HashMap<String, SemType>,
+    immutable_locals: &HashSet<String>,
+    return_ty: &SemType,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<(TypedAssignTarget, SemType)> {
+    match target {
+        AssignTarget::Path(name) => {
+            if immutable_locals.contains(name) {
+                diagnostics.push(Diagnostic::new(
+                    format!("Cannot assign to immutable const `{name}`"),
+                    Span::new(0, 0),
+                ));
+            }
+            if context.globals.contains_key(name) {
+                diagnostics.push(Diagnostic::new(
+                    format!("Cannot assign to global item `{name}`"),
+                    Span::new(0, 0),
+                ));
+            }
+            let ty = locals.get(name).cloned().or_else(|| context.globals.get(name).cloned());
+            if let Some(ty) = ty {
+                Some((TypedAssignTarget::Path(name.clone()), ty))
+            } else {
+                diagnostics.push(Diagnostic::new(
+                    format!("Unknown assignment target `{name}`"),
+                    Span::new(0, 0),
+                ));
+                None
+            }
+        }
+        AssignTarget::Field { base, field } => {
+            let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
+            let resolved_ty = resolve_field_type(&base_ty, field, context, diagnostics);
+            Some((
+                TypedAssignTarget::Field {
+                    base: typed_base,
+                    field: field.clone(),
+                },
+                resolved_ty,
+            ))
         }
     }
 }
@@ -1327,6 +1431,10 @@ fn infer_expr(
             let (typed_right, right_ty) =
                 infer_expr(right, context, locals, return_ty, diagnostics);
             let (typed_op, out_ty) = match op {
+                BinaryOp::Add => {
+                    let out_ty = resolve_add_type(&left_ty, &right_ty, diagnostics);
+                    (TypedBinaryOp::Add, out_ty)
+                }
                 BinaryOp::And | BinaryOp::Or => {
                     if !is_compatible(&left_ty, &named_type("bool"))
                         || !is_compatible(&right_ty, &named_type("bool"))
@@ -1414,6 +1522,7 @@ fn infer_expr(
             body,
         } => {
             let mut closure_locals = locals.clone();
+            let mut closure_immutable_locals = HashSet::new();
             let param_types = params
                 .iter()
                 .map(|p| type_from_ast(&p.ty))
@@ -1456,6 +1565,7 @@ fn infer_expr(
                     statement,
                     context,
                     &mut closure_locals,
+                    &mut closure_immutable_locals,
                     &provisional_return_ty,
                     &mut inferred_returns,
                     diagnostics,
@@ -1910,6 +2020,24 @@ fn resolve_try_type(
     SemType::Unknown
 }
 
+fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
+    if is_compatible(left, &named_type("i64")) && is_compatible(right, &named_type("i64")) {
+        return named_type("i64");
+    }
+    if is_compatible(left, &named_type("String")) && is_compatible(right, &named_type("String")) {
+        return named_type("String");
+    }
+    diagnostics.push(Diagnostic::new(
+        format!(
+            "`+` expects `i64 + i64` or `String + String`, got `{}` and `{}`",
+            type_to_string(left),
+            type_to_string(right)
+        ),
+        Span::new(0, 0),
+    ));
+    SemType::Unknown
+}
+
 fn lower_stmt_with_context(
     stmt: &TypedStmt,
     context: &mut LoweringContext,
@@ -1924,6 +2052,14 @@ fn lower_stmt_with_context(
         }),
         TypedStmt::DestructureConst { pattern, value } => RustStmt::DestructureConst {
             pattern: lower_destructure_pattern(pattern),
+            value: lower_expr_with_context(value, context, ExprPosition::Value, state),
+        },
+        TypedStmt::Assign { target, op, value } => RustStmt::Assign {
+            target: lower_assign_target(target, context, state),
+            op: match op {
+                TypedAssignOp::Assign => RustAssignOp::Assign,
+                TypedAssignOp::AddAssign => RustAssignOp::AddAssign,
+            },
             value: lower_expr_with_context(value, context, ExprPosition::Value, state),
         },
         TypedStmt::Return(value) => RustStmt::Return(
@@ -2038,6 +2174,7 @@ fn lower_expr_with_context(
         },
         TypedExprKind::Binary { op, left, right } => RustExpr::Binary {
             op: match op {
+                TypedBinaryOp::Add => RustBinaryOp::Add,
                 TypedBinaryOp::And => RustBinaryOp::And,
                 TypedBinaryOp::Or => RustBinaryOp::Or,
                 TypedBinaryOp::Eq => RustBinaryOp::Eq,
@@ -2479,6 +2616,12 @@ fn collect_path_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<String, usize>
     match stmt {
         TypedStmt::Const(def) => collect_path_uses_in_expr(&def.value, uses),
         TypedStmt::DestructureConst { value, .. } => collect_path_uses_in_expr(value, uses),
+        TypedStmt::Assign { target, value, .. } => {
+            collect_path_uses_in_expr(value, uses);
+            if let TypedAssignTarget::Field { base, .. } = target {
+                collect_path_uses_in_expr(base, uses);
+            }
+        }
         TypedStmt::Return(Some(expr)) => collect_path_uses_in_expr(expr, uses),
         TypedStmt::Return(None) => {}
         TypedStmt::If {
@@ -3082,6 +3225,20 @@ fn lower_destructure_pattern(pattern: &TypedDestructurePattern) -> RustDestructu
     }
 }
 
+fn lower_assign_target(
+    target: &TypedAssignTarget,
+    context: &mut LoweringContext,
+    state: &mut LoweringState,
+) -> RustAssignTarget {
+    match target {
+        TypedAssignTarget::Path(name) => RustAssignTarget::Path(name.clone()),
+        TypedAssignTarget::Field { base, field } => RustAssignTarget::Field {
+            base: lower_expr_with_context(base, context, ExprPosition::Value, state),
+            field: field.clone(),
+        },
+    }
+}
+
 fn bind_destructure_pattern(
     pattern: &DestructurePattern,
     value_ty: &SemType,
@@ -3123,6 +3280,23 @@ fn bind_destructure_pattern(
                     ),
                     Span::new(0, 0),
                 ));
+            }
+        }
+    }
+}
+
+fn collect_destructure_pattern_names(
+    pattern: &DestructurePattern,
+    names: &mut HashSet<String>,
+) {
+    match pattern {
+        DestructurePattern::Name(name) => {
+            names.insert(name.clone());
+        }
+        DestructurePattern::Ignore => {}
+        DestructurePattern::Tuple(items) => {
+            for item in items {
+                collect_destructure_pattern_names(item, names);
             }
         }
     }
@@ -3224,17 +3398,20 @@ fn lower_block_with_types(
     block: &Block,
     context: &Context,
     locals: &HashMap<String, SemType>,
+    immutable_locals: &HashSet<String>,
     return_ty: &SemType,
     inferred_returns: &mut Vec<SemType>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<TypedStmt> {
     let mut block_locals = locals.clone();
+    let mut block_immutable_locals = immutable_locals.clone();
     let mut out = Vec::new();
     for statement in &block.statements {
         if let Some(stmt) = lower_stmt_with_types(
             statement,
             context,
             &mut block_locals,
+            &mut block_immutable_locals,
             return_ty,
             inferred_returns,
             diagnostics,

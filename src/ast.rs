@@ -84,6 +84,11 @@ pub enum Stmt {
         pattern: DestructurePattern,
         value: Expr,
     },
+    Assign {
+        target: AssignTarget,
+        op: AssignOp,
+        value: Expr,
+    },
     Return(Option<Expr>),
     If {
         condition: Expr,
@@ -176,6 +181,21 @@ pub struct StructLiteralField {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssignTarget {
+    Path(String),
+    Field {
+        base: Box<Expr>,
+        field: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignOp {
+    Assign,
+    AddAssign,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DestructurePattern {
     Name(String),
     Ignore,
@@ -189,6 +209,7 @@ pub enum UnaryOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryOp {
+    Add,
     And,
     Or,
     Eq,

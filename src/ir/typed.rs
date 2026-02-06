@@ -73,6 +73,11 @@ pub enum TypedStmt {
         pattern: TypedDestructurePattern,
         value: TypedExpr,
     },
+    Assign {
+        target: TypedAssignTarget,
+        op: TypedAssignOp,
+        value: TypedExpr,
+    },
     Return(Option<TypedExpr>),
     If {
         condition: TypedExpr,
@@ -84,6 +89,21 @@ pub enum TypedStmt {
         body: Vec<TypedStmt>,
     },
     Expr(TypedExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedAssignTarget {
+    Path(String),
+    Field {
+        base: TypedExpr,
+        field: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedAssignOp {
+    Assign,
+    AddAssign,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +190,7 @@ pub enum TypedUnaryOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedBinaryOp {
+    Add,
     And,
     Or,
     Eq,

@@ -44,6 +44,8 @@ pub enum TokenKind {
     DotDotEq,
     Pipe,
     Bang,
+    Plus,
+    PlusEqual,
     Equal,
     EqualEqual,
     BangEqual,
@@ -113,6 +115,17 @@ impl<'a> Lexer<'a> {
                 ';' => self.push_simple(TokenKind::Semicolon, start),
                 ',' => self.push_simple(TokenKind::Comma, start),
                 '|' => self.push_simple(TokenKind::Pipe, start),
+                '+' => {
+                    if self.peek_char() == Some('=') {
+                        self.advance();
+                        self.tokens.push(Token {
+                            kind: TokenKind::PlusEqual,
+                            span: Span::new(start, self.cursor),
+                        });
+                    } else {
+                        self.push_simple(TokenKind::Plus, start);
+                    }
+                }
                 '.' => {
                     if self.peek_char() == Some('.') {
                         self.advance();
@@ -526,6 +539,14 @@ mod tests {
         );
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::LtEqual)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::GtEqual)));
+    }
+
+    #[test]
+    fn lex_add_and_add_assign_tokens() {
+        let source = "x = a + b; x += 1;";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Plus)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::PlusEqual)));
     }
 
     #[test]

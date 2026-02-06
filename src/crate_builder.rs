@@ -267,6 +267,10 @@ fn rewrite_stmt_adapter_calls(stmt: &mut Stmt, adapter_map: &HashMap<String, Vec
     match stmt {
         Stmt::Const(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
         Stmt::DestructureConst { value, .. } => rewrite_expr_adapter_calls(value, adapter_map),
+        Stmt::Assign { target, value, .. } => {
+            rewrite_assign_target_adapter_calls(target, adapter_map);
+            rewrite_expr_adapter_calls(value, adapter_map);
+        }
         Stmt::Return(Some(expr)) => rewrite_expr_adapter_calls(expr, adapter_map),
         Stmt::Return(None) => {}
         Stmt::If {
@@ -339,6 +343,15 @@ fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec
             }
         }
         Expr::Int(_) | Expr::Bool(_) | Expr::String(_) | Expr::Path(_) => {}
+    }
+}
+
+fn rewrite_assign_target_adapter_calls(
+    target: &mut crate::ast::AssignTarget,
+    adapter_map: &HashMap<String, Vec<String>>,
+) {
+    if let crate::ast::AssignTarget::Field { base, .. } = target {
+        rewrite_expr_adapter_calls(base, adapter_map);
     }
 }
 

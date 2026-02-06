@@ -74,6 +74,11 @@ pub enum RustStmt {
         pattern: RustDestructurePattern,
         value: RustExpr,
     },
+    Assign {
+        target: RustAssignTarget,
+        op: RustAssignOp,
+        value: RustExpr,
+    },
     Return(Option<RustExpr>),
     If {
         condition: RustExpr,
@@ -85,6 +90,21 @@ pub enum RustStmt {
         body: Vec<RustStmt>,
     },
     Expr(RustExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustAssignTarget {
+    Path(String),
+    Field {
+        base: RustExpr,
+        field: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RustAssignOp {
+    Assign,
+    AddAssign,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +186,7 @@ pub enum RustUnaryOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustBinaryOp {
+    Add,
     And,
     Or,
     Eq,

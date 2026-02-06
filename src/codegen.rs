@@ -1,7 +1,7 @@
 use crate::ir::lowered::{
-    RustBinaryOp, RustConst, RustDestructurePattern, RustEnum, RustExpr, RustFunction, RustImpl,
-    RustItem, RustModule, RustPattern, RustStatic, RustStmt, RustStruct, RustStructLiteralField,
-    RustUnaryOp, RustUse,
+    RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
+    RustExpr, RustFunction, RustImpl, RustItem, RustModule, RustPattern, RustStatic, RustStmt,
+    RustStruct, RustStructLiteralField, RustUnaryOp, RustUse,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -59,10 +59,17 @@ fn emit_enum(def: &RustEnum, out: &mut String) {
 }
 
 fn emit_function(def: &RustFunction, out: &mut String) {
+    let mutated = collect_mutated_paths_in_stmts(&def.body);
     let params = def
         .params
         .iter()
-        .map(|p| format!("{}: {}", p.name, p.ty))
+        .map(|p| {
+            if mutated.contains(&p.name) {
+                format!("mut {}: {}", p.name, p.ty)
+            } else {
+                format!("{}: {}", p.name, p.ty)
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ");
     out.push_str(&format!(
@@ -82,10 +89,17 @@ fn emit_function(def: &RustFunction, out: &mut String) {
 fn emit_impl(def: &RustImpl, out: &mut String) {
     out.push_str(&format!("impl {} {{\n", def.target));
     for method in &def.methods {
+        let mutated = collect_mutated_paths_in_stmts(&method.body);
         let params = method
             .params
             .iter()
-            .map(|p| format!("{}: {}", p.name, p.ty))
+            .map(|p| {
+                if mutated.contains(&p.name) {
+                    format!("mut {}: {}", p.name, p.ty)
+                } else {
+                    format!("{}: {}", p.name, p.ty)
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         out.push_str(&format!(
@@ -123,6 +137,18 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
             out.push_str(&format!(
                 "    let {} = {};\n",
                 emit_destructure_pattern(pattern),
+                emit_expr(value)
+            ));
+        }
+        RustStmt::Assign { target, op, value } => {
+            let op = match op {
+                RustAssignOp::Assign => "=",
+                RustAssignOp::AddAssign => "+=",
+            };
+            out.push_str(&format!(
+                "    {} {} {};\n",
+                emit_assign_target(target),
+                op,
                 emit_expr(value)
             ));
         }
@@ -243,6 +269,7 @@ fn emit_expr(expr: &RustExpr) -> String {
             let symbol = match op {
                 RustBinaryOp::And => "&&",
                 RustBinaryOp::Or => "||",
+                RustBinaryOp::Add => "+",
                 RustBinaryOp::Eq => "==",
                 RustBinaryOp::Ne => "!=",
                 RustBinaryOp::Lt => "<",
@@ -273,9 +300,16 @@ fn emit_expr(expr: &RustExpr) -> String {
             return_type,
             body,
         } => {
+            let mutated = collect_mutated_paths_in_stmts(body);
             let params = params
                 .iter()
-                .map(|p| format!("{}: {}", p.name, p.ty))
+                .map(|p| {
+                    if mutated.contains(&p.name) {
+                        format!("mut {}: {}", p.name, p.ty)
+                    } else {
+                        format!("{}: {}", p.name, p.ty)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             let mut text = format!("|{params}| -> {return_type} {{\n");
@@ -301,6 +335,13 @@ fn emit_expr(expr: &RustExpr) -> String {
 
 fn emit_struct_literal_field(field: &RustStructLiteralField) -> String {
     format!("{}: {}", field.name, emit_expr(&field.value))
+}
+
+fn emit_assign_target(target: &RustAssignTarget) -> String {
+    match target {
+        RustAssignTarget::Path(name) => name.clone(),
+        RustAssignTarget::Field { base, field } => format!("{}.{}", emit_expr(base), field),
+    }
 }
 
 fn emit_pattern(pattern: &RustPattern) -> String {
@@ -362,6 +403,18 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
             out.push_str(&format!(
                 "{pad}let {} = {};\n",
                 emit_destructure_pattern(pattern),
+                emit_expr(value)
+            ));
+        }
+        RustStmt::Assign { target, op, value } => {
+            let op = match op {
+                RustAssignOp::Assign => "=",
+                RustAssignOp::AddAssign => "+=",
+            };
+            out.push_str(&format!(
+                "{pad}{} {} {};\n",
+                emit_assign_target(target),
+                op,
                 emit_expr(value)
             ));
         }
@@ -470,4 +523,63 @@ fn strip_outer_parens(text: &str) -> &str {
         }
     }
     text
+}
+
+fn collect_mutated_paths_in_stmts(stmts: &[RustStmt]) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for stmt in stmts {
+        collect_mutated_paths_in_stmt(stmt, &mut out);
+    }
+    out
+}
+
+fn collect_mutated_paths_in_stmt(
+    stmt: &RustStmt,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match stmt {
+        RustStmt::Assign { target, .. } => {
+            match target {
+                RustAssignTarget::Path(name) => {
+                    out.insert(name.clone());
+                }
+                RustAssignTarget::Field { base, .. } => {
+                    if let Some(name) = root_path_name(base) {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        RustStmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for stmt in then_body {
+                collect_mutated_paths_in_stmt(stmt, out);
+            }
+            if let Some(else_body) = else_body {
+                for stmt in else_body {
+                    collect_mutated_paths_in_stmt(stmt, out);
+                }
+            }
+        }
+        RustStmt::While { body, .. } => {
+            for stmt in body {
+                collect_mutated_paths_in_stmt(stmt, out);
+            }
+        }
+        RustStmt::Const(_)
+        | RustStmt::DestructureConst { .. }
+        | RustStmt::Return(_)
+        | RustStmt::Expr(_) => {}
+    }
+}
+
+fn root_path_name(expr: &RustExpr) -> Option<&str> {
+    match expr {
+        RustExpr::Path(path) if path.len() == 1 => Some(path[0].as_str()),
+        RustExpr::Field { base, .. } => root_path_name(base),
+        _ => None,
+    }
 }

@@ -135,6 +135,23 @@ mod tests {
     }
 
     #[test]
+    fn compile_assignment_and_add_assign_statements() {
+        let source = r#"
+            struct Counter { value: i64; }
+
+            fn tick(n: i64, counter: Counter) -> i64 {
+                n += 1;
+                counter.value = n + 1;
+                return counter.value;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("n += 1;"));
+        assert!(output.rust_code.contains("counter.value = (n + 1);"));
+    }
+
+    #[test]
     fn compile_rejects_try_when_return_type_is_not_declared() {
         let source = r#"
             fn parse_i64(input: String) -> Result<i64, String> {

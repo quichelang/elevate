@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinaryOp, Block, ConstDef, DestructurePattern, EnumDef, EnumVariant, Expr, Field, FunctionDef,
-    ImplBlock, Item, MatchArm, Module, Param, Pattern, RustUse, StaticDef, Stmt,
+    AssignOp, AssignTarget, BinaryOp, Block, ConstDef, DestructurePattern, EnumDef, EnumVariant,
+    Expr, Field, FunctionDef, ImplBlock, Item, MatchArm, Module, Param, Pattern, RustUse, StaticDef, Stmt,
     StructLiteralField, StructDef, Type, UnaryOp, Visibility,
 };
 use crate::diag::Diagnostic;
@@ -297,6 +297,17 @@ impl Parser {
         }
 
         let expr = self.parse_expr()?;
+        if self.match_kind(TokenKind::Equal) || self.match_kind(TokenKind::PlusEqual) {
+            let op = if matches!(self.tokens[self.cursor - 1].kind, TokenKind::PlusEqual) {
+                AssignOp::AddAssign
+            } else {
+                AssignOp::Assign
+            };
+            let value = self.parse_expr()?;
+            self.expect(TokenKind::Semicolon, "Expected ';' after assignment statement")?;
+            let target = self.expr_to_assign_target(expr)?;
+            return Some(Stmt::Assign { target, op, value });
+        }
         if self.match_kind(TokenKind::Semicolon) {
             return Some(Stmt::Expr(expr));
         }
@@ -373,7 +384,7 @@ impl Parser {
     }
 
     fn parse_cmp_expr(&mut self) -> Option<Expr> {
-        let mut expr = self.parse_unary_expr()?;
+        let mut expr = self.parse_add_expr()?;
         loop {
             let op = if self.match_kind(TokenKind::EqualEqual) {
                 Some(BinaryOp::Eq)
@@ -391,7 +402,7 @@ impl Parser {
                 None
             };
             if let Some(op) = op {
-                let right = self.parse_unary_expr()?;
+                let right = self.parse_add_expr()?;
                 expr = Expr::Binary {
                     op,
                     left: Box::new(expr),
@@ -400,6 +411,19 @@ impl Parser {
             } else {
                 break;
             }
+        }
+        Some(expr)
+    }
+
+    fn parse_add_expr(&mut self) -> Option<Expr> {
+        let mut expr = self.parse_unary_expr()?;
+        while self.match_kind(TokenKind::Plus) {
+            let right = self.parse_unary_expr()?;
+            expr = Expr::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
         }
         Some(expr)
     }
@@ -733,6 +757,24 @@ impl Parser {
             || self.at(TokenKind::FatArrow))
     }
 
+    fn expr_to_assign_target(&mut self, expr: Expr) -> Option<AssignTarget> {
+        match expr {
+            Expr::Path(path) => {
+                if path.len() == 1 {
+                    Some(AssignTarget::Path(path[0].clone()))
+                } else {
+                    self.error_current("Assignment target path must be a local identifier");
+                    None
+                }
+            }
+            Expr::Field { base, field } => Some(AssignTarget::Field { base, field }),
+            _ => {
+                self.error_current("Invalid assignment target; expected identifier or field access");
+                None
+            }
+        }
+    }
+
     fn expect_ident(&mut self, message: &str) -> Option<String> {
         let token = self.peek().clone();
         match token.kind {
@@ -852,6 +894,8 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (DotDotEq, DotDotEq)
             | (Pipe, Pipe)
             | (Bang, Bang)
+            | (Plus, Plus)
+            | (PlusEqual, PlusEqual)
             | (Equal, Equal)
             | (EqualEqual, EqualEqual)
             | (BangEqual, BangEqual)
@@ -976,6 +1020,20 @@ mod tests {
                 const r1 = a..b;
                 const r2 = a..=b;
                 return a;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_assignment_and_add_assign_statements() {
+        let source = r#"
+            fn bump(n: i64) -> i64 {
+                n = n + 1;
+                n += 1;
+                return n;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");
