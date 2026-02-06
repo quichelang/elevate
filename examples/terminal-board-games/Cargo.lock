@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "game-ai"
+version = "0.1.0"
+
+[[package]]
 name = "game-core"
 version = "0.1.0"
 
@@ -18,6 +22,7 @@ version = "0.1.0"
 name = "game-sudoku"
 version = "0.1.0"
 dependencies = [
+ "game-ai",
  "game-core",
  "game-save",
  "game-ui-term",

@@ -1,6 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
+use game_ai::HintEngine;
 use game_core::{App, AppCommand, Frame, Key, Style};
 use game_save::{Snapshot, read_snapshot, write_snapshot};
 use game_ui_term::{Rect, draw_panel, draw_text};
@@ -16,6 +17,16 @@ pub struct SudokuBoard {
     cells: [u8; 81],
     fixed: [bool; 81],
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SudokuHint {
+    pub row: usize,
+    pub col: usize,
+    pub value: u8,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SudokuHintEngine;
 
 impl SudokuBoard {
     pub fn from_puzzle(puzzle: &str) -> Self {
@@ -85,6 +96,49 @@ impl SudokuBoard {
         false
     }
 
+    pub fn is_candidate_valid(&self, row: usize, col: usize, value: u8) -> bool {
+        if !(1..=9).contains(&value) {
+            return false;
+        }
+
+        for c in 0..9 {
+            if c != col && self.get(row, c) == value {
+                return false;
+            }
+        }
+        for r in 0..9 {
+            if r != row && self.get(r, col) == value {
+                return false;
+            }
+        }
+
+        let box_row = (row / 3) * 3;
+        let box_col = (col / 3) * 3;
+        for r in box_row..box_row + 3 {
+            for c in box_col..box_col + 3 {
+                if (r != row || c != col) && self.get(r, c) == value {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    pub fn candidates_for_cell(&self, row: usize, col: usize) -> Vec<u8> {
+        if self.get(row, col) != 0 {
+            return Vec::new();
+        }
+
+        let mut out = Vec::new();
+        for value in 1..=9 {
+            if self.is_candidate_valid(row, col, value) {
+                out.push(value);
+            }
+        }
+        out
+    }
+
     pub fn is_complete(&self) -> bool {
         for row in 0..9 {
             for col in 0..9 {
@@ -127,9 +181,79 @@ impl SudokuBoard {
     }
 }
 
+impl HintEngine<SudokuBoard> for SudokuHintEngine {
+    type Hint = SudokuHint;
+
+    fn hint(&self, state: &SudokuBoard) -> Option<Self::Hint> {
+        let mut solved = state.clone();
+        if !solve_board(&mut solved) {
+            return None;
+        }
+
+        for row in 0..9 {
+            for col in 0..9 {
+                if state.get(row, col) == 0 {
+                    let value = solved.get(row, col);
+                    if value != 0 {
+                        return Some(SudokuHint { row, col, value });
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
+fn solve_board(board: &mut SudokuBoard) -> bool {
+    let Some((row, col, candidates)) = pick_best_empty_cell(board) else {
+        return true;
+    };
+
+    if candidates.is_empty() {
+        return false;
+    }
+
+    for candidate in candidates {
+        if !board.set(row, col, candidate) {
+            continue;
+        }
+        if solve_board(board) {
+            return true;
+        }
+        let _ = board.clear(row, col);
+    }
+
+    false
+}
+
+fn pick_best_empty_cell(board: &SudokuBoard) -> Option<(usize, usize, Vec<u8>)> {
+    let mut best: Option<(usize, usize, Vec<u8>)> = None;
+
+    for row in 0..9 {
+        for col in 0..9 {
+            if board.get(row, col) != 0 {
+                continue;
+            }
+
+            let candidates = board.candidates_for_cell(row, col);
+            match best {
+                None => best = Some((row, col, candidates)),
+                Some((_, _, ref current)) if candidates.len() < current.len() => {
+                    best = Some((row, col, candidates));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    best
+}
+
 pub struct SudokuGame {
     puzzle_index: usize,
     board: SudokuBoard,
+    hint_engine: SudokuHintEngine,
     cursor_row: usize,
     cursor_col: usize,
     message: String,
@@ -147,9 +271,10 @@ impl SudokuGame {
         Self {
             puzzle_index: 0,
             board,
+            hint_engine: SudokuHintEngine,
             cursor_row: 0,
             cursor_col: 0,
-            message: "Arrows/WASD/HJKL move, 1-9 set, 0 clear, c check, n next, r reset, p save, o load, q quit"
+            message: "Arrows/WASD/HJKL move, 1-9 set, 0 clear, c check, Shift+H hint, n next, r reset, p save, o load, q quit"
                 .to_string(),
         }
     }
@@ -195,6 +320,25 @@ impl SudokuGame {
             return;
         }
         self.message = "No conflict in current cell. Keep going.".to_string();
+    }
+
+    fn apply_hint(&mut self) {
+        match self.hint_engine.hint(&self.board) {
+            Some(hint) => {
+                self.cursor_row = hint.row;
+                self.cursor_col = hint.col;
+                let _ = self.board.set(hint.row, hint.col, hint.value);
+                self.message = format!(
+                    "Hint applied at row {}, col {} -> {}",
+                    hint.row + 1,
+                    hint.col + 1,
+                    hint.value
+                );
+            }
+            None => {
+                self.message = "No hint available (puzzle may be solved or invalid)".to_string();
+            }
+        }
     }
 
     fn make_snapshot(&self) -> Snapshot {
@@ -316,6 +460,7 @@ impl App for SudokuGame {
                 self.message = "Puzzle reset".to_string();
             }
             Key::Char('c') => self.check_status(),
+            Key::Char('H') => self.apply_hint(),
             Key::Char('p') => {
                 let path = Self::save_path();
                 let snapshot = self.make_snapshot();
@@ -378,7 +523,7 @@ impl App for SudokuGame {
                     x: 30,
                     y: 2,
                     width: side_width,
-                    height: 12,
+                    height: 13,
                 },
                 Some("Controls"),
                 Style::default(),
@@ -393,10 +538,11 @@ impl App for SudokuGame {
                 Style::default(),
             );
             draw_text(frame, 32, 7, "Check: c", Style::default());
-            draw_text(frame, 32, 8, "Next puzzle: n", Style::default());
-            draw_text(frame, 32, 9, "Reset puzzle: r", Style::default());
-            draw_text(frame, 32, 10, "Save: p   Load: o", Style::default());
-            draw_text(frame, 32, 11, "Quit: q / Esc / Ctrl+C", Style::default());
+            draw_text(frame, 32, 8, "Hint: Shift+H", Style::default());
+            draw_text(frame, 32, 9, "Next puzzle: n", Style::default());
+            draw_text(frame, 32, 10, "Reset puzzle: r", Style::default());
+            draw_text(frame, 32, 11, "Save: p   Load: o", Style::default());
+            draw_text(frame, 32, 12, "Quit: q / Esc / Ctrl+C", Style::default());
         }
 
         draw_panel(
@@ -488,5 +634,24 @@ mod tests {
             restored.board.to_compact_string(),
             original.board.to_compact_string()
         );
+    }
+
+    #[test]
+    fn hint_engine_returns_valid_move() {
+        let board = SudokuBoard::from_puzzle(PUZZLES[0]);
+        let engine = SudokuHintEngine;
+        let hint = engine.hint(&board).expect("hint");
+
+        assert_eq!(board.get(hint.row, hint.col), 0);
+        assert!(board.is_candidate_valid(hint.row, hint.col, hint.value));
+    }
+
+    #[test]
+    fn hint_engine_returns_none_for_complete_board() {
+        let solved =
+            "534678912672195348198342567859761423426853791713924856961537284287419635345286179";
+        let board = SudokuBoard::from_puzzle(solved);
+        let engine = SudokuHintEngine;
+        assert!(engine.hint(&board).is_none());
     }
 }

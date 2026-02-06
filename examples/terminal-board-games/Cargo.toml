@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/game-core",
+  "crates/game-ai",
   "crates/game-loop",
   "crates/game-save",
   "crates/game-ui-term",

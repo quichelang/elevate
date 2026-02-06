@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+game-ai = { path = "../game-ai" }
 game-core = { path = "../game-core" }
 game-save = { path = "../game-save" }
 game-ui-term = { path = "../game-ui-term" }
