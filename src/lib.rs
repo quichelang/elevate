@@ -653,6 +653,26 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_match_range_patterns() {
+        let source = r#"
+            fn classify(v: i64) -> i64 {
+                return match v {
+                    0..10 => 1;
+                    10..=20 => 2;
+                    ..0 => 3;
+                    _ => 4;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("0..10"));
+        assert!(output.rust_code.contains("10..=20"));
+        assert!(output.rust_code.contains("..0"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_emits_multi_value_variant_payload_patterns() {
         let source = r#"
             rust use crate::Pair;

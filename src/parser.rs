@@ -520,8 +520,36 @@ impl Parser {
         if self.match_kind(TokenKind::Underscore) {
             return Some(Pattern::Wildcard);
         }
+        if self.match_kind(TokenKind::DotDot) || self.match_kind(TokenKind::DotDotEq) {
+            let inclusive = matches!(self.tokens[self.cursor - 1].kind, TokenKind::DotDotEq);
+            let end = if let TokenKind::IntLiteral(value) = self.peek().kind.clone() {
+                self.advance();
+                Some(value)
+            } else {
+                None
+            };
+            return Some(Pattern::Range {
+                start: None,
+                end,
+                inclusive,
+            });
+        }
         if let TokenKind::IntLiteral(value) = self.peek().kind.clone() {
             self.advance();
+            if self.match_kind(TokenKind::DotDot) || self.match_kind(TokenKind::DotDotEq) {
+                let inclusive = matches!(self.tokens[self.cursor - 1].kind, TokenKind::DotDotEq);
+                let end = if let TokenKind::IntLiteral(end_value) = self.peek().kind.clone() {
+                    self.advance();
+                    Some(end_value)
+                } else {
+                    None
+                };
+                return Some(Pattern::Range {
+                    start: Some(value),
+                    end,
+                    inclusive,
+                });
+            }
             return Some(Pattern::Int(value));
         }
         if self.match_kind(TokenKind::True) {
@@ -1228,6 +1256,23 @@ mod tests {
                 return match v {
                     0 | 1 if v == 1 => 10;
                     _ => 0;
+                };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_match_range_patterns() {
+        let source = r#"
+            fn f(v: i64) -> i64 {
+                return match v {
+                    0..10 => 1;
+                    10..=20 => 2;
+                    ..0 => 3;
+                    _ => 4;
                 };
             }
         "#;

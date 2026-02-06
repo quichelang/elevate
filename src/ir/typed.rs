@@ -223,6 +223,11 @@ pub enum TypedPattern {
     String(String),
     Tuple(Vec<TypedPattern>),
     Or(Vec<TypedPattern>),
+    Range {
+        start: Option<i64>,
+        end: Option<i64>,
+        inclusive: bool,
+    },
     Variant {
         path: Vec<String>,
         payload: Option<Box<TypedPattern>>,

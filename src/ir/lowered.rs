@@ -219,6 +219,11 @@ pub enum RustPattern {
     String(String),
     Tuple(Vec<RustPattern>),
     Or(Vec<RustPattern>),
+    Range {
+        start: Option<i64>,
+        end: Option<i64>,
+        inclusive: bool,
+    },
     Variant {
         path: Vec<String>,
         payload: Option<Box<RustPattern>>,

@@ -3153,6 +3153,18 @@ fn lower_pattern(
 
             TypedPattern::Or(lowered)
         }
+        Pattern::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            ensure_pattern_type(scrutinee_ty, &named_type("i64"), "range", diagnostics);
+            TypedPattern::Range {
+                start: *start,
+                end: *end,
+                inclusive: *inclusive,
+            }
+        }
         Pattern::Variant { path, payload } => {
             let mut enum_name_opt: Option<String> = None;
             let mut variant_name_opt: Option<String> = None;
@@ -3462,6 +3474,15 @@ fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
         TypedPattern::Or(items) => {
             RustPattern::Or(items.iter().map(lower_pattern_to_rust).collect())
         }
+        TypedPattern::Range {
+            start,
+            end,
+            inclusive,
+        } => RustPattern::Range {
+            start: *start,
+            end: *end,
+            inclusive: *inclusive,
+        },
         TypedPattern::Variant { path, payload } => RustPattern::Variant {
             path: path.clone(),
             payload: payload.as_ref().map(|p| Box::new(lower_pattern_to_rust(p))),

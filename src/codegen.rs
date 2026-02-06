@@ -389,6 +389,16 @@ fn emit_pattern(pattern: &RustPattern) -> String {
             format!("({inner})")
         }
         RustPattern::Or(items) => items.iter().map(emit_pattern).collect::<Vec<_>>().join(" | "),
+        RustPattern::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let start = start.map(|v| v.to_string()).unwrap_or_default();
+            let end = end.map(|v| v.to_string()).unwrap_or_default();
+            let op = if *inclusive { "..=" } else { ".." };
+            format!("{start}{op}{end}")
+        }
         RustPattern::Variant { path, payload } => {
             if let Some(payload) = payload {
                 if let RustPattern::Tuple(items) = payload.as_ref() {
