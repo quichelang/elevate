@@ -230,9 +230,17 @@ fn emit_expr(expr: &RustExpr) -> String {
 fn emit_pattern(pattern: &RustPattern) -> String {
     match pattern {
         RustPattern::Wildcard => "_".to_string(),
-        RustPattern::Variant { path, binding } => {
-            if let Some(binding) = binding {
-                format!("{}({binding})", path.join("::"))
+        RustPattern::Binding(name) => name.clone(),
+        RustPattern::Int(value) => value.to_string(),
+        RustPattern::Bool(value) => value.to_string(),
+        RustPattern::String(value) => format!("{value:?}"),
+        RustPattern::Tuple(items) => {
+            let inner = items.iter().map(emit_pattern).collect::<Vec<_>>().join(", ");
+            format!("({inner})")
+        }
+        RustPattern::Variant { path, payload } => {
+            if let Some(payload) = payload {
+                format!("{}({})", path.join("::"), emit_pattern(payload))
             } else {
                 path.join("::")
             }

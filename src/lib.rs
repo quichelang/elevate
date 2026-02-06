@@ -315,6 +315,36 @@ mod tests {
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_advanced_match_patterns() {
+        let source = r#"
+            enum Maybe {
+                Some(i64);
+                None;
+            }
+
+            pub fn choose(a: i64, b: i64, m: Maybe) -> i64 {
+                const from_tuple = match (a, b) {
+                    (0, n) => n;
+                    (x, 0) => x;
+                    _ => a;
+                };
+
+                return match m {
+                    Maybe::Some(0) => from_tuple;
+                    Maybe::Some(v) => v;
+                    Maybe::None => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("match (a, b)"));
+        assert!(output.rust_code.contains("Maybe::Some(0)"));
+        assert!(output.rust_code.contains("Maybe::Some(v)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {

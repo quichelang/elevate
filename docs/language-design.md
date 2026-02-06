@@ -164,6 +164,7 @@ Implemented:
 - Tail-expression returns for final function/method expressions.
 - Range expressions: `..` and `..=`.
 - Tuple literals and local tuple destructuring bindings.
+- Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
 - `rust use` imports and external Rust path calls.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 
@@ -246,7 +247,7 @@ Quality gates:
 - Ranges, slices, and spread-like expansion are not complete.
 - Slices are not complete.
 - Deep destructuring coverage (all contexts) is not complete.
-- Advanced match pattern coverage is not complete.
+- Match guards and full exhaustiveness diagnostics are not complete.
 - Full tail-expression return behavior across all nested block forms is not complete.
 - Borrow/reference features remain intentionally unsupported.
 - Closure support is deferred to MVP+1.

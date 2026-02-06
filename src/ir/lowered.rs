@@ -164,9 +164,14 @@ pub struct RustMatchArm {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustPattern {
     Wildcard,
+    Binding(String),
+    Int(i64),
+    Bool(bool),
+    String(String),
+    Tuple(Vec<RustPattern>),
     Variant {
         path: Vec<String>,
-        binding: Option<String>,
+        payload: Option<Box<RustPattern>>,
     },
 }
 

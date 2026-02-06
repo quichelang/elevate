@@ -1393,23 +1393,102 @@ fn lower_pattern(
 ) -> TypedPattern {
     match pattern {
         Pattern::Wildcard => TypedPattern::Wildcard,
-        Pattern::Variant { path, binding } => {
-            if path.len() != 2 {
+        Pattern::Binding(name) => {
+            locals.insert(name.clone(), scrutinee_ty.clone());
+            TypedPattern::Binding(name.clone())
+        }
+        Pattern::Int(value) => {
+            ensure_pattern_type(scrutinee_ty, &named_type("i64"), "int", diagnostics);
+            TypedPattern::Int(*value)
+        }
+        Pattern::Bool(value) => {
+            ensure_pattern_type(scrutinee_ty, &named_type("bool"), "bool", diagnostics);
+            TypedPattern::Bool(*value)
+        }
+        Pattern::String(value) => {
+            ensure_pattern_type(scrutinee_ty, &named_type("String"), "string", diagnostics);
+            TypedPattern::String(value.clone())
+        }
+        Pattern::Tuple(items) => {
+            if let SemType::Tuple(scrutinee_items) = scrutinee_ty {
+                if items.len() != scrutinee_items.len() {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Tuple pattern arity mismatch: pattern has {}, scrutinee has {}",
+                            items.len(),
+                            scrutinee_items.len()
+                        ),
+                        Span::new(0, 0),
+                    ));
+                    return TypedPattern::Tuple(
+                        items
+                            .iter()
+                            .map(|item| lower_pattern(item, &SemType::Unknown, context, locals, diagnostics))
+                            .collect(),
+                    );
+                }
+                TypedPattern::Tuple(
+                    items
+                        .iter()
+                        .zip(scrutinee_items.iter())
+                        .map(|(item, item_ty)| lower_pattern(item, item_ty, context, locals, diagnostics))
+                        .collect(),
+                )
+            } else {
                 diagnostics.push(Diagnostic::new(
-                    "Variant patterns must use `Enum::Variant` form",
+                    format!(
+                        "Tuple pattern requires tuple scrutinee, got `{}`",
+                        type_to_string(scrutinee_ty)
+                    ),
                     Span::new(0, 0),
                 ));
-                return TypedPattern::Variant {
-                    path: path.clone(),
-                    binding: binding.clone(),
-                };
+                TypedPattern::Tuple(
+                    items
+                        .iter()
+                        .map(|item| lower_pattern(item, &SemType::Unknown, context, locals, diagnostics))
+                        .collect(),
+                )
+            }
+        }
+        Pattern::Variant { path, payload } => {
+            let mut enum_name_opt: Option<String> = None;
+            let mut variant_name_opt: Option<String> = None;
+
+            if path.len() >= 2 {
+                enum_name_opt = Some(path[0].clone());
+                variant_name_opt = Some(path[1].clone());
+            } else if path.len() == 1
+                && let SemType::Path { path: ty_path, .. } = scrutinee_ty
+                && let Some(enum_name) = ty_path.last()
+            {
+                enum_name_opt = Some(enum_name.clone());
+                variant_name_opt = Some(path[0].clone());
             }
 
-            let enum_name = &path[0];
-            let variant_name = &path[1];
+            let (enum_name, variant_name) = match (enum_name_opt, variant_name_opt) {
+                (Some(enum_name), Some(variant_name)) => (enum_name, variant_name),
+                _ => {
+                    diagnostics.push(Diagnostic::new(
+                        "Variant pattern must be `Enum::Variant` or inferable from enum scrutinee",
+                        Span::new(0, 0),
+                    ));
+                    return TypedPattern::Variant {
+                        path: path.clone(),
+                        payload: payload.as_ref().map(|p| {
+                            Box::new(lower_pattern(
+                                p,
+                                &SemType::Unknown,
+                                context,
+                                locals,
+                                diagnostics,
+                            ))
+                        }),
+                    };
+                }
+            };
 
             if let SemType::Path { path: ty_path, .. } = scrutinee_ty
-                && ty_path.last() != Some(enum_name)
+                && ty_path.last() != Some(&enum_name)
                 && *scrutinee_ty != SemType::Unknown
             {
                 diagnostics.push(Diagnostic::new(
@@ -1422,41 +1501,74 @@ fn lower_pattern(
                 ));
             }
 
-            if let Some(variants) = context.enums.get(enum_name) {
-                if let Some(payload) = variants.get(variant_name) {
-                    match payload {
-                        Some(payload_ty) => {
-                            if let Some(name) = binding {
-                                locals.insert(name.clone(), payload_ty.clone());
-                            }
+            let lowered_payload = if let Some(variants) = context.enums.get(&enum_name) {
+                if let Some(expected_payload) = variants.get(&variant_name) {
+                    match (expected_payload, payload) {
+                        (Some(expected_ty), Some(payload_pattern)) => Some(Box::new(lower_pattern(
+                            payload_pattern,
+                            expected_ty,
+                            context,
+                            locals,
+                            diagnostics,
+                        ))),
+                        (Some(_), None) => {
+                            diagnostics.push(Diagnostic::new(
+                                format!(
+                                    "Pattern `{enum_name}::{variant_name}` requires payload pattern"
+                                ),
+                                Span::new(0, 0),
+                            ));
+                            None
                         }
-                        None => {
-                            if binding.is_some() {
-                                diagnostics.push(Diagnostic::new(
-                                    format!(
-                                        "Pattern `{enum_name}::{variant_name}` has no payload binding"
-                                    ),
-                                    Span::new(0, 0),
-                                ));
-                            }
+                        (None, Some(_)) => {
+                            diagnostics.push(Diagnostic::new(
+                                format!(
+                                    "Pattern `{enum_name}::{variant_name}` has no payload"
+                                ),
+                                Span::new(0, 0),
+                            ));
+                            None
                         }
+                        (None, None) => None,
                     }
                 } else {
                     diagnostics.push(Diagnostic::new(
                         format!("Unknown variant `{enum_name}::{variant_name}` in pattern"),
                         Span::new(0, 0),
                     ));
+                    payload.as_ref().map(|p| {
+                        Box::new(lower_pattern(
+                            p,
+                            &SemType::Unknown,
+                            context,
+                            locals,
+                            diagnostics,
+                        ))
+                    })
                 }
             } else {
                 diagnostics.push(Diagnostic::new(
                     format!("Unknown enum `{enum_name}` in pattern"),
                     Span::new(0, 0),
                 ));
-            }
+                payload.as_ref().map(|p| {
+                    Box::new(lower_pattern(
+                        p,
+                        &SemType::Unknown,
+                        context,
+                        locals,
+                        diagnostics,
+                    ))
+                })
+            };
 
             TypedPattern::Variant {
-                path: path.clone(),
-                binding: binding.clone(),
+                path: if path.len() >= 2 {
+                    path.clone()
+                } else {
+                    vec![enum_name, variant_name]
+                },
+                payload: lowered_payload,
             }
         }
     }
@@ -1465,9 +1577,16 @@ fn lower_pattern(
 fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
     match pattern {
         TypedPattern::Wildcard => RustPattern::Wildcard,
-        TypedPattern::Variant { path, binding } => RustPattern::Variant {
+        TypedPattern::Binding(name) => RustPattern::Binding(name.clone()),
+        TypedPattern::Int(value) => RustPattern::Int(*value),
+        TypedPattern::Bool(value) => RustPattern::Bool(*value),
+        TypedPattern::String(value) => RustPattern::String(value.clone()),
+        TypedPattern::Tuple(items) => {
+            RustPattern::Tuple(items.iter().map(lower_pattern_to_rust).collect())
+        }
+        TypedPattern::Variant { path, payload } => RustPattern::Variant {
             path: path.clone(),
-            binding: binding.clone(),
+            payload: payload.as_ref().map(|p| Box::new(lower_pattern_to_rust(p))),
         },
     }
 }
@@ -1532,6 +1651,24 @@ fn bind_destructure_pattern(
                 ));
             }
         }
+    }
+}
+
+fn ensure_pattern_type(
+    actual: &SemType,
+    expected: &SemType,
+    label: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !is_compatible(actual, expected) {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "{label} pattern requires `{}`, got `{}`",
+                type_to_string(expected),
+                type_to_string(actual)
+            ),
+            Span::new(0, 0),
+        ));
     }
 }
 

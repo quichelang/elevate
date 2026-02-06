@@ -431,15 +431,52 @@ impl Parser {
         if self.match_kind(TokenKind::Underscore) {
             return Some(Pattern::Wildcard);
         }
+        if let TokenKind::IntLiteral(value) = self.peek().kind.clone() {
+            self.advance();
+            return Some(Pattern::Int(value));
+        }
+        if self.match_kind(TokenKind::True) {
+            return Some(Pattern::Bool(true));
+        }
+        if self.match_kind(TokenKind::False) {
+            return Some(Pattern::Bool(false));
+        }
+        if let TokenKind::StringLiteral(value) = self.peek().kind.clone() {
+            self.advance();
+            return Some(Pattern::String(value));
+        }
+        if self.match_kind(TokenKind::LParen) {
+            if self.match_kind(TokenKind::RParen) {
+                return Some(Pattern::Tuple(Vec::new()));
+            }
+            let first = self.parse_pattern()?;
+            if self.match_kind(TokenKind::Comma) {
+                let mut items = vec![first];
+                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                    items.push(self.parse_pattern()?);
+                    if !self.match_kind(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen, "Expected ')' after tuple pattern")?;
+                return Some(Pattern::Tuple(items));
+            }
+            self.expect(TokenKind::RParen, "Expected ')' after parenthesized pattern")?;
+            return Some(first);
+        }
+
         let path = self.parse_path("Expected pattern path")?;
-        let binding = if self.match_kind(TokenKind::LParen) {
-            let name = self.expect_ident("Expected binding name in variant pattern")?;
-            self.expect(TokenKind::RParen, "Expected ')' after variant binding")?;
-            Some(name)
+        let payload = if self.match_kind(TokenKind::LParen) {
+            let inner = self.parse_pattern()?;
+            self.expect(TokenKind::RParen, "Expected ')' after variant payload pattern")?;
+            Some(Box::new(inner))
         } else {
             None
         };
-        Some(Pattern::Variant { path, binding })
+        if path.len() == 1 && payload.is_none() {
+            return Some(Pattern::Binding(path[0].clone()));
+        }
+        Some(Pattern::Variant { path, payload })
     }
 
     fn parse_postfix_expr(&mut self) -> Option<Expr> {
@@ -819,6 +856,22 @@ mod tests {
                 const r1 = a..b;
                 const r2 = a..=b;
                 return a;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_advanced_match_patterns() {
+        let source = r#"
+            fn f(a: i64, b: i64) -> i64 {
+                return match (a, b) {
+                    (0, n) => n;
+                    (x, 0) => x;
+                    _ => a;
+                };
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

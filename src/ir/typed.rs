@@ -170,9 +170,14 @@ pub struct TypedMatchArm {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedPattern {
     Wildcard,
+    Binding(String),
+    Int(i64),
+    Bool(bool),
+    String(String),
+    Tuple(Vec<TypedPattern>),
     Variant {
         path: Vec<String>,
-        binding: Option<String>,
+        payload: Option<Box<TypedPattern>>,
     },
 }
 
