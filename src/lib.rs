@@ -318,6 +318,34 @@ mod tests {
     }
 
     #[test]
+    fn compile_auto_clones_reused_imported_nominal_types() {
+        let source = r#"
+            rust use external::Token;
+
+            fn consume(token: Token) {
+                std::mem::drop(token);
+                return;
+            }
+
+            fn demo(token: Token) {
+                consume(token);
+                consume(token);
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("consume(token.clone());"));
+        assert!(output.rust_code.contains("consume(token);"));
+        assert!(
+            output
+                .ownership_notes
+                .iter()
+                .any(|note| note.contains("`token` of type `Token`"))
+        );
+    }
+
+    #[test]
     fn compile_keeps_copy_types_without_clone_in_call_arguments() {
         let source = r#"
             fn use_i64(v: i64) {

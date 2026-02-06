@@ -4,49 +4,49 @@ rust use lexopt_elevate::parser::Parser;
 
 fn main() {
     const parser = Parser::from_env();
-    const handle = Parser::handle(parser);
-    run_loop(handle);
+    run_loop(parser);
 }
 
-fn run_loop(handle: i64) {
-    const next = Parser::next_from_handle(handle);
+fn run_loop(parser: Parser) {
+    const next = Parser::next(parser);
     match next {
-        Result::Ok(value) => run_after_next(handle, value);
+        Result::Ok(value) => run_after_next(parser, value);
         Result::Err(error) => fail_parse(error);
     };
 }
 
-fn run_after_next(handle: i64, value: Option<Arg>) {
+fn run_after_next(parser: Parser, value: Option<Arg>) {
     match value {
-        Option::Some(arg) => emit_arg(handle, arg);
+        Option::Some(arg) => emit_arg(parser, arg);
         Option::None => ();
     };
 }
 
-fn emit_arg(handle: i64, arg: Arg) {
+fn emit_arg(parser: Parser, arg: Arg) {
     match arg {
         Arg::Short(name) => {
             println!("short:{}", name);
-            run_loop(handle);
+            run_loop(parser);
         };
         Arg::Long(name) => {
             println!("long:{}", name);
-            emit_optional_long_value(handle);
-            run_loop(handle);
+            const parser = emit_optional_long_value(parser);
+            run_loop(parser);
         };
         Arg::Value(value) => {
             println!("value:{}", value);
-            run_loop(handle);
+            run_loop(parser);
         };
     };
 }
 
-fn emit_optional_long_value(handle: i64) {
-    const value = Parser::optional_value_from_handle(handle);
+fn emit_optional_long_value(parser: Parser) -> Parser {
+    const value = Parser::optional_value(parser);
     match value {
         Option::Some(text) => println!("long-value:{}", text);
         Option::None => ();
     };
+    parser
 }
 
 fn fail_parse(error: ParseError) {
