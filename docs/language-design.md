@@ -167,6 +167,10 @@ Implemented:
 - Range expressions: `..` and `..=`.
 - Tuple literals and local tuple destructuring bindings.
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
+- Match arm block expressions (`pattern => { ... };`).
+- Match guards (`pattern if condition => ...`).
+- Or-patterns (`p1 | p2`).
+- Imported Rust enum variant pattern matching when scrutinee type is known (for example `Ordering::Less`).
 - Closure expressions and closure calls with typed parameters.
 - Comment support (`//` and `/* ... */`) and raw multiline string literals.
 - `rust use` imports and external Rust path calls.
@@ -181,6 +185,13 @@ Implemented:
 - adapter module auto-injection into generated crate root (`lib.rs`/`main.rs`) when present.
 - contract-declared adapter aliases are automatically rewritten at crate transpile time to generated adapter calls.
 - Host-handle abstraction preview for lexopt via `ParserHandle` wrapper API in Elevate source.
+- Native test framework pipeline for `.ers` crates:
+- discovers `test_*` functions,
+- injects generated test wrappers,
+- transpiles and runs tests via `cargo test`.
+- Native assert function forms in Elevate source (non-macro syntax): `assert(...)`, `assert_eq(...)`, `assert_ne(...)`.
+- CLI support for `test` subcommand and experiment flag toggles.
+- Lexopt case study API now centered on `Parser` impl methods (compatibility wrapper surface removed).
 
 Quality status:
 - Unit tests cover lexer, parser, semantic checks, and codegen behavior.
@@ -192,9 +203,11 @@ Quality status:
 - Build: `cargo build`
 - Test: `cargo test`
 - Run compiler: `cargo run -- <input-file>`
-- Emit to file: `cargo run -- <input-file> --emit-rust <output-file>`
+- Emit Rust to stdout: `cargo run -- <input-file> --emit-rust`
+- Emit Rust to file: `cargo run -- <input-file> --emit-rust <output-file>`
 - Build `.ers` crate (debug): `cargo run -- build <crate-root>`
 - Build `.ers` crate (release): `cargo run -- build <crate-root> --release`
+- Test `.ers` crate: `cargo run -- test <crate-root>`
 
 ### Current Source Extension
 
@@ -266,7 +279,8 @@ Quality gates:
 - Additional loop forms beyond `while` are not complete.
 - Slices are not complete.
 - Deep destructuring coverage (all contexts) is not complete.
-- Match guards and full exhaustiveness diagnostics are not complete.
+- Full exhaustiveness diagnostics are not complete.
+- Full Rust-pattern parity for match is not complete (remaining work includes struct patterns, slice/rest patterns, range patterns in patterns, and binding-at patterns).
 - Inline `rust { ... }` escape blocks are not complete.
 - Interop contract signature verification currently validates declaration shape, but not full type-level callsite compatibility across all compiler phases.
 - Adapter routing currently targets direct path call expressions; broader rewrite coverage (for additional call shapes) is not complete.
