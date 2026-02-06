@@ -166,6 +166,47 @@ mod tests {
     }
 
     #[test]
+    fn compile_inserts_clone_for_reused_string_call_argument() {
+        let source = r#"
+            fn consume(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn demo(text: String) {
+                consume(text);
+                consume(text);
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("consume(text.clone());"));
+        assert!(output.rust_code.contains("consume(text);"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_keeps_copy_types_without_clone_in_call_arguments() {
+        let source = r#"
+            fn use_i64(v: i64) {
+                std::mem::drop(v);
+                return;
+            }
+
+            fn demo(x: i64) {
+                use_i64(x);
+                use_i64(x);
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(!output.rust_code.contains("use_i64(x.clone());"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_rejects_unknown_inferred_return() {
         let source = r#"
             fn maybe_value() {

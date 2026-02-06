@@ -96,54 +96,67 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
             }),
             TypedItem::Impl(def) => RustItem::Impl(RustImpl {
                 target: def.target.clone(),
-                methods: def
-                    .methods
-                    .iter()
-                    .map(|method| RustFunction {
-                        is_public: method.is_public,
-                        name: method.name.clone(),
-                        params: method
-                            .params
-                            .iter()
-                            .map(|param| RustParam {
-                                name: param.name.clone(),
-                                ty: param.ty.clone(),
-                            })
-                            .collect(),
-                        return_type: method.return_type.clone(),
-                        body: method.body.iter().map(lower_stmt).collect(),
-                    })
-                    .collect(),
+                methods: def.methods.iter().map(lower_function).collect(),
             }),
-            TypedItem::Function(def) => RustItem::Function(RustFunction {
-                is_public: def.is_public,
-                name: def.name.clone(),
-                params: def
-                    .params
-                    .iter()
-                    .map(|param| RustParam {
-                        name: param.name.clone(),
-                        ty: param.ty.clone(),
-                    })
-                    .collect(),
-                return_type: def.return_type.clone(),
-                body: def.body.iter().map(lower_stmt).collect(),
-            }),
+            TypedItem::Function(def) => RustItem::Function(lower_function(def)),
             TypedItem::Const(def) => RustItem::Const(RustConst {
                 is_public: def.is_public,
                 name: def.name.clone(),
                 ty: def.ty.clone(),
-                value: lower_expr(&def.value),
+                value: lower_expr_with_context(
+                    &def.value,
+                    &mut LoweringContext::default(),
+                    ExprPosition::Value,
+                ),
             }),
             TypedItem::Static(def) => RustItem::Static(RustStatic {
                 is_public: def.is_public,
                 name: def.name.clone(),
                 ty: def.ty.clone(),
-                value: lower_expr(&def.value),
+                value: lower_expr_with_context(
+                    &def.value,
+                    &mut LoweringContext::default(),
+                    ExprPosition::Value,
+                ),
             }),
         })
         .collect();
     RustModule { items }
+}
+
+#[derive(Debug, Default)]
+struct LoweringContext {
+    remaining_path_uses: HashMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExprPosition {
+    Value,
+    CallArg,
+}
+
+fn lower_function(def: &TypedFunction) -> RustFunction {
+    let mut context = LoweringContext {
+        remaining_path_uses: collect_path_uses_in_stmts(&def.body),
+    };
+    RustFunction {
+        is_public: def.is_public,
+        name: def.name.clone(),
+        params: def
+            .params
+            .iter()
+            .map(|param| RustParam {
+                name: param.name.clone(),
+                ty: param.ty.clone(),
+            })
+            .collect(),
+        return_type: def.return_type.clone(),
+        body: def
+            .body
+            .iter()
+            .map(|stmt| lower_stmt_with_context(stmt, &mut context))
+            .collect(),
+    }
 }
 
 fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mut Vec<Diagnostic>) {
@@ -1315,59 +1328,83 @@ fn resolve_try_type(inner: &SemType, return_ty: &SemType, diagnostics: &mut Vec<
     SemType::Unknown
 }
 
-fn lower_stmt(stmt: &TypedStmt) -> RustStmt {
+fn lower_stmt_with_context(stmt: &TypedStmt, context: &mut LoweringContext) -> RustStmt {
     match stmt {
         TypedStmt::Const(def) => RustStmt::Const(RustConst {
             is_public: false,
             name: def.name.clone(),
             ty: def.ty.clone(),
-            value: lower_expr(&def.value),
+            value: lower_expr_with_context(&def.value, context, ExprPosition::Value),
         }),
         TypedStmt::DestructureConst { pattern, value } => RustStmt::DestructureConst {
             pattern: lower_destructure_pattern(pattern),
-            value: lower_expr(value),
+            value: lower_expr_with_context(value, context, ExprPosition::Value),
         },
-        TypedStmt::Return(value) => RustStmt::Return(value.as_ref().map(lower_expr)),
+        TypedStmt::Return(value) => RustStmt::Return(value.as_ref().map(|expr| {
+            lower_expr_with_context(expr, context, ExprPosition::Value)
+        })),
         TypedStmt::If {
             condition,
             then_body,
             else_body,
         } => RustStmt::If {
-            condition: lower_expr(condition),
-            then_body: then_body.iter().map(lower_stmt).collect(),
-            else_body: else_body
-                .as_ref()
-                .map(|block| block.iter().map(lower_stmt).collect()),
+            condition: lower_expr_with_context(condition, context, ExprPosition::Value),
+            then_body: then_body
+                .iter()
+                .map(|stmt| lower_stmt_with_context(stmt, context))
+                .collect(),
+            else_body: else_body.as_ref().map(|block| {
+                block
+                    .iter()
+                    .map(|stmt| lower_stmt_with_context(stmt, context))
+                    .collect()
+            }),
         },
         TypedStmt::While { condition, body } => RustStmt::While {
-            condition: lower_expr(condition),
-            body: body.iter().map(lower_stmt).collect(),
+            condition: lower_expr_with_context(condition, context, ExprPosition::Value),
+            body: body
+                .iter()
+                .map(|stmt| lower_stmt_with_context(stmt, context))
+                .collect(),
         },
-        TypedStmt::Expr(expr) => RustStmt::Expr(lower_expr(expr)),
+        TypedStmt::Expr(expr) => {
+            RustStmt::Expr(lower_expr_with_context(expr, context, ExprPosition::Value))
+        }
     }
 }
 
-fn lower_expr(expr: &TypedExpr) -> RustExpr {
+fn lower_expr_with_context(
+    expr: &TypedExpr,
+    context: &mut LoweringContext,
+    position: ExprPosition,
+) -> RustExpr {
     match &expr.kind {
         TypedExprKind::Int(value) => RustExpr::Int(*value),
         TypedExprKind::Bool(value) => RustExpr::Bool(*value),
         TypedExprKind::String(value) => RustExpr::String(value.clone()),
-        TypedExprKind::Path(path) => RustExpr::Path(path.clone()),
+        TypedExprKind::Path(path) => lower_path_expr(path, &expr.ty, position, context),
         TypedExprKind::Call { callee, args } => RustExpr::Call {
-            callee: Box::new(lower_expr(callee)),
-            args: args.iter().map(lower_expr).collect(),
+            callee: Box::new(lower_expr_with_context(callee, context, ExprPosition::Value)),
+            args: args
+                .iter()
+                .map(|arg| lower_expr_with_context(arg, context, ExprPosition::CallArg))
+                .collect(),
         },
         TypedExprKind::Field { base, field } => RustExpr::Field {
-            base: Box::new(lower_expr(base)),
+            base: Box::new(lower_expr_with_context(base, context, ExprPosition::Value)),
             field: field.clone(),
         },
         TypedExprKind::Match { scrutinee, arms } => RustExpr::Match {
-            scrutinee: Box::new(lower_expr(scrutinee)),
+            scrutinee: Box::new(lower_expr_with_context(
+                scrutinee,
+                context,
+                ExprPosition::Value,
+            )),
             arms: arms
                 .iter()
                 .map(|arm| RustMatchArm {
                     pattern: lower_pattern_to_rust(&arm.pattern),
-                    value: lower_expr(&arm.value),
+                    value: lower_expr_with_context(&arm.value, context, ExprPosition::Value),
                 })
                 .collect(),
         },
@@ -1375,7 +1412,7 @@ fn lower_expr(expr: &TypedExpr) -> RustExpr {
             op: match op {
                 TypedUnaryOp::Not => RustUnaryOp::Not,
             },
-            expr: Box::new(lower_expr(expr)),
+            expr: Box::new(lower_expr_with_context(expr, context, ExprPosition::Value)),
         },
         TypedExprKind::Binary { op, left, right } => RustExpr::Binary {
             op: match op {
@@ -1388,35 +1425,177 @@ fn lower_expr(expr: &TypedExpr) -> RustExpr {
                 TypedBinaryOp::Gt => RustBinaryOp::Gt,
                 TypedBinaryOp::Ge => RustBinaryOp::Ge,
             },
-            left: Box::new(lower_expr(left)),
-            right: Box::new(lower_expr(right)),
+            left: Box::new(lower_expr_with_context(left, context, ExprPosition::Value)),
+            right: Box::new(lower_expr_with_context(right, context, ExprPosition::Value)),
         },
-        TypedExprKind::Tuple(items) => RustExpr::Tuple(items.iter().map(lower_expr).collect()),
+        TypedExprKind::Tuple(items) => RustExpr::Tuple(
+            items
+                .iter()
+                .map(|item| lower_expr_with_context(item, context, ExprPosition::Value))
+                .collect(),
+        ),
         TypedExprKind::Closure {
             params,
             return_type,
             body,
-        } => RustExpr::Closure {
-            params: params
-                .iter()
-                .map(|p| RustParam {
-                    name: p.name.clone(),
-                    ty: p.ty.clone(),
-                })
-                .collect(),
-            return_type: return_type.clone(),
-            body: body.iter().map(lower_stmt).collect(),
-        },
+        } => {
+            let mut closure_context = LoweringContext {
+                remaining_path_uses: collect_path_uses_in_stmts(body),
+            };
+            RustExpr::Closure {
+                params: params
+                    .iter()
+                    .map(|p| RustParam {
+                        name: p.name.clone(),
+                        ty: p.ty.clone(),
+                    })
+                    .collect(),
+                return_type: return_type.clone(),
+                body: body
+                    .iter()
+                    .map(|stmt| lower_stmt_with_context(stmt, &mut closure_context))
+                    .collect(),
+            }
+        }
         TypedExprKind::Range {
             start,
             end,
             inclusive,
         } => RustExpr::Range {
-            start: start.as_ref().map(|expr| Box::new(lower_expr(expr))),
-            end: end.as_ref().map(|expr| Box::new(lower_expr(expr))),
+            start: start
+                .as_ref()
+                .map(|expr| Box::new(lower_expr_with_context(expr, context, ExprPosition::Value))),
+            end: end
+                .as_ref()
+                .map(|expr| Box::new(lower_expr_with_context(expr, context, ExprPosition::Value))),
             inclusive: *inclusive,
         },
-        TypedExprKind::Try(inner) => RustExpr::Try(Box::new(lower_expr(inner))),
+        TypedExprKind::Try(inner) => RustExpr::Try(Box::new(lower_expr_with_context(
+            inner,
+            context,
+            ExprPosition::Value,
+        ))),
+    }
+}
+
+fn lower_path_expr(
+    path: &[String],
+    ty: &str,
+    position: ExprPosition,
+    context: &mut LoweringContext,
+) -> RustExpr {
+    if path.len() != 1 {
+        return RustExpr::Path(path.to_vec());
+    }
+
+    let name = path[0].clone();
+    let remaining = context.remaining_path_uses.get(&name).copied().unwrap_or(0);
+    if remaining > 0 {
+        context.remaining_path_uses.insert(name.clone(), remaining - 1);
+    }
+
+    let path_expr = RustExpr::Path(path.to_vec());
+    if position == ExprPosition::CallArg && remaining > 1 && should_clone_for_reuse(ty) {
+        return clone_expr(path_expr);
+    }
+    path_expr
+}
+
+fn should_clone_for_reuse(ty: &str) -> bool {
+    ty == "String"
+}
+
+fn clone_expr(expr: RustExpr) -> RustExpr {
+    RustExpr::Call {
+        callee: Box::new(RustExpr::Field {
+            base: Box::new(expr),
+            field: "clone".to_string(),
+        }),
+        args: Vec::new(),
+    }
+}
+
+fn collect_path_uses_in_stmts(stmts: &[TypedStmt]) -> HashMap<String, usize> {
+    let mut uses = HashMap::new();
+    for stmt in stmts {
+        collect_path_uses_in_stmt(stmt, &mut uses);
+    }
+    uses
+}
+
+fn collect_path_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<String, usize>) {
+    match stmt {
+        TypedStmt::Const(def) => collect_path_uses_in_expr(&def.value, uses),
+        TypedStmt::DestructureConst { value, .. } => collect_path_uses_in_expr(value, uses),
+        TypedStmt::Return(Some(expr)) => collect_path_uses_in_expr(expr, uses),
+        TypedStmt::Return(None) => {}
+        TypedStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_path_uses_in_expr(condition, uses);
+            for stmt in then_body {
+                collect_path_uses_in_stmt(stmt, uses);
+            }
+            if let Some(else_body) = else_body {
+                for stmt in else_body {
+                    collect_path_uses_in_stmt(stmt, uses);
+                }
+            }
+        }
+        TypedStmt::While { condition, body } => {
+            collect_path_uses_in_expr(condition, uses);
+            for stmt in body {
+                collect_path_uses_in_stmt(stmt, uses);
+            }
+        }
+        TypedStmt::Expr(expr) => collect_path_uses_in_expr(expr, uses),
+    }
+}
+
+fn collect_path_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<String, usize>) {
+    match &expr.kind {
+        TypedExprKind::Path(path) if path.len() == 1 => {
+            *uses.entry(path[0].clone()).or_insert(0) += 1;
+        }
+        TypedExprKind::Call { callee, args } => {
+            collect_path_uses_in_expr(callee, uses);
+            for arg in args {
+                collect_path_uses_in_expr(arg, uses);
+            }
+        }
+        TypedExprKind::Field { base, .. } => collect_path_uses_in_expr(base, uses),
+        TypedExprKind::Match { scrutinee, arms } => {
+            collect_path_uses_in_expr(scrutinee, uses);
+            for arm in arms {
+                collect_path_uses_in_expr(&arm.value, uses);
+            }
+        }
+        TypedExprKind::Unary { expr, .. } => collect_path_uses_in_expr(expr, uses),
+        TypedExprKind::Binary { left, right, .. } => {
+            collect_path_uses_in_expr(left, uses);
+            collect_path_uses_in_expr(right, uses);
+        }
+        TypedExprKind::Tuple(items) => {
+            for item in items {
+                collect_path_uses_in_expr(item, uses);
+            }
+        }
+        TypedExprKind::Closure { .. } => {}
+        TypedExprKind::Range { start, end, .. } => {
+            if let Some(start) = start {
+                collect_path_uses_in_expr(start, uses);
+            }
+            if let Some(end) = end {
+                collect_path_uses_in_expr(end, uses);
+            }
+        }
+        TypedExprKind::Try(inner) => collect_path_uses_in_expr(inner, uses),
+        TypedExprKind::Int(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::String(_)
+        | TypedExprKind::Path(_) => {}
     }
 }
 
