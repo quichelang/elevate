@@ -3039,6 +3039,10 @@ fn resolve_method_call_type(
         }
     }
 
+    if is_external_method_candidate(base_ty, context) {
+        return infer_external_method_call_type(method, args);
+    }
+
     diagnostics.push(Diagnostic::new(
         format!(
             "Unsupported method call `{}` on type `{}`",
@@ -3047,6 +3051,69 @@ fn resolve_method_call_type(
         ),
         Span::new(0, 0),
     ));
+    SemType::Unknown
+}
+
+fn is_external_method_candidate(base_ty: &SemType, context: &Context) -> bool {
+    let SemType::Path { path, .. } = base_ty else {
+        return false;
+    };
+    let Some(type_name) = path.last() else {
+        return false;
+    };
+    let type_name = type_name.as_str();
+    if is_builtin_method_carrier(type_name) {
+        return false;
+    }
+    !context.structs.contains_key(type_name) && !context.enums.contains_key(type_name)
+}
+
+fn is_builtin_method_carrier(type_name: &str) -> bool {
+    matches!(
+        type_name,
+        "String"
+            | "Vec"
+            | "Option"
+            | "Result"
+            | "HashMap"
+            | "BTreeMap"
+            | "HashSet"
+            | "BTreeSet"
+    )
+}
+
+fn infer_external_method_call_type(method: &str, args: &[SemType]) -> SemType {
+    if matches!(
+        method,
+        "contains"
+            | "contains_key"
+            | "starts_with"
+            | "ends_with"
+            | "is_empty"
+            | "is_some"
+            | "is_none"
+            | "is_ok"
+            | "is_err"
+    ) || method.starts_with("is_")
+        || method.starts_with("has_")
+    {
+        return named_type("bool");
+    }
+    if method == "len" {
+        return named_type("usize");
+    }
+    if matches!(method, "first" | "last" | "get") {
+        return option_type(SemType::Unknown);
+    }
+    if matches!(method, "iter" | "into_iter" | "keys" | "values") {
+        return SemType::Iter(Box::new(SemType::Unknown));
+    }
+    if method_name_suggests_mutating(method) {
+        return SemType::Unit;
+    }
+    if args.is_empty() {
+        return SemType::Unknown;
+    }
     SemType::Unknown
 }
 
@@ -3524,7 +3591,7 @@ fn lower_expr_with_context(
                         .collect(),
                 };
             }
-            let (lowered_callee, arg_modes) = lower_call_callee(callee, args.len(), context, state);
+            let (lowered_callee, arg_modes) = lower_call_callee(callee, args, context, state);
             RustExpr::Call {
                 callee: Box::new(lowered_callee),
                 args: args
@@ -3895,10 +3962,11 @@ fn borrow_expr(expr: RustExpr) -> RustExpr {
 
 fn lower_call_callee(
     callee: &TypedExpr,
-    arg_count: usize,
+    args: &[TypedExpr],
     context: &mut LoweringContext,
     state: &mut LoweringState,
 ) -> (RustExpr, Vec<CallArgMode>) {
+    let arg_count = args.len();
     if let Some(shim) = resolve_interop_shim(callee, state) {
         state.used_shims.insert(shim.name.clone());
         return (
@@ -3906,13 +3974,19 @@ fn lower_call_callee(
             interop_arg_modes(&shim, arg_count),
         );
     }
-    if let Some(modes) = resolve_method_call_modes(callee, arg_count) {
+    if let Some(modes) = resolve_method_call_modes(callee, args, context, state) {
         return (
             lower_method_callee(callee, modes.receiver, context, state),
             modes.args,
         );
     }
     if let Some(modes) = resolve_direct_borrow_arg_modes(callee, state, arg_count) {
+        return (
+            lower_expr_with_context(callee, context, ExprPosition::Value, state),
+            modes,
+        );
+    }
+    if let Some(modes) = resolve_heuristic_path_call_arg_modes(callee, args, context, state) {
         return (
             lower_expr_with_context(callee, context, ExprPosition::Value, state),
             modes,
@@ -3956,16 +4030,25 @@ fn resolve_direct_borrow_arg_modes(
 
 fn resolve_method_call_modes(
     callee: &TypedExpr,
-    arg_count: usize,
+    args: &[TypedExpr],
+    context: &LoweringContext,
+    state: &LoweringState,
 ) -> Option<MethodCallModes> {
     let TypedExprKind::Field { base, field } = &callee.kind else {
         return None;
     };
 
-    let mut arg_modes = vec![CallArgMode::Owned; arg_count];
+    let mut arg_modes = vec![CallArgMode::Owned; args.len()];
     let receiver = if method_receiver_is_borrowed(&base.ty, field) {
         if method_borrows_first_arg(&base.ty, field) {
             set_borrowed(&mut arg_modes, 0);
+        }
+        CallArgMode::Borrowed
+    } else if method_receiver_should_borrow_heuristic(&base.ty, field) {
+        for (index, arg) in args.iter().enumerate() {
+            if method_arg_should_borrow_heuristic(field, arg, context, state) {
+                set_borrowed(&mut arg_modes, index);
+            }
         }
         CallArgMode::Borrowed
     } else {
@@ -3976,6 +4059,36 @@ fn resolve_method_call_modes(
         receiver,
         args: arg_modes,
     })
+}
+
+fn resolve_heuristic_path_call_arg_modes(
+    callee: &TypedExpr,
+    args: &[TypedExpr],
+    context: &LoweringContext,
+    state: &LoweringState,
+) -> Option<Vec<CallArgMode>> {
+    let TypedExprKind::Path(path) = &callee.kind else {
+        return None;
+    };
+    let Some(name) = path.last() else {
+        return None;
+    };
+    if !call_name_suggests_read_only(name) {
+        return None;
+    }
+    let mut modes = vec![CallArgMode::Owned; args.len()];
+    let mut borrowed_any = false;
+    for (index, arg) in args.iter().enumerate() {
+        if method_arg_should_borrow_heuristic(name, arg, context, state) {
+            set_borrowed(&mut modes, index);
+            borrowed_any = true;
+        }
+    }
+    if borrowed_any {
+        Some(modes)
+    } else {
+        None
+    }
 }
 
 fn lower_method_callee(
@@ -4038,6 +4151,128 @@ fn method_borrows_first_arg(base_ty: &str, field: &str) -> bool {
         "HashSet" | "BTreeSet" => matches!(field, "contains"),
         _ => false,
     }
+}
+
+fn method_receiver_should_borrow_heuristic(base_ty: &str, method: &str) -> bool {
+    if method_name_suggests_consuming(method) {
+        return false;
+    }
+    if call_name_suggests_read_only(method) || method_name_suggests_mutating(method) {
+        return true;
+    }
+    !is_copy_primitive_type(last_path_segment(base_ty))
+}
+
+fn method_arg_should_borrow_heuristic(
+    method: &str,
+    arg: &TypedExpr,
+    context: &LoweringContext,
+    state: &LoweringState,
+) -> bool {
+    if !call_name_suggests_read_only(method) {
+        return false;
+    }
+    let remaining_conflicting = context.ownership_plan.remaining_conflicting_for_expr(arg);
+    if remaining_conflicting <= 1 && !type_is_string_like(&arg.ty) {
+        return false;
+    }
+    type_should_prefer_borrow(&arg.ty, state)
+}
+
+fn type_should_prefer_borrow(ty: &str, state: &LoweringState) -> bool {
+    let ty = ty.trim();
+    let (head, args) = split_type_head_and_args(ty);
+    if args.is_empty() && is_copy_primitive_type(head) {
+        return false;
+    }
+    if matches!(
+        last_path_segment(head),
+        "str"
+            | "String"
+            | "Vec"
+            | "HashMap"
+            | "BTreeMap"
+            | "HashSet"
+            | "BTreeSet"
+            | "Option"
+            | "Result"
+    ) {
+        return true;
+    }
+    state.registry.is_clone_candidate(ty)
+}
+
+fn type_is_string_like(ty: &str) -> bool {
+    matches!(last_path_segment(ty.trim()), "str" | "String")
+}
+
+fn call_name_suggests_read_only(name: &str) -> bool {
+    matches!(
+        name,
+        "len"
+            | "is_empty"
+            | "contains"
+            | "contains_key"
+            | "starts_with"
+            | "ends_with"
+            | "strip_prefix"
+            | "split_once"
+            | "first"
+            | "last"
+            | "get"
+            | "find"
+            | "position"
+            | "peek"
+            | "iter"
+            | "keys"
+            | "values"
+            | "as_str"
+            | "as_slice"
+            | "is_some"
+            | "is_none"
+            | "is_ok"
+            | "is_err"
+    ) || name.starts_with("is_")
+        || name.starts_with("has_")
+        || name.starts_with("as_")
+}
+
+fn method_name_suggests_consuming(name: &str) -> bool {
+    matches!(
+        name,
+        "into_inner"
+            | "into_bytes"
+            | "unwrap"
+            | "expect"
+            | "take"
+            | "remove"
+            | "pop"
+            | "drain"
+            | "split_off"
+            | "replace"
+            | "swap_remove"
+            | "finish"
+            | "build"
+            | "collect"
+    ) || name.starts_with("into_")
+}
+
+fn method_name_suggests_mutating(name: &str) -> bool {
+    matches!(
+        name,
+        "push"
+            | "push_str"
+            | "insert"
+            | "append"
+            | "extend"
+            | "clear"
+            | "sort"
+            | "sort_by"
+            | "retain"
+            | "truncate"
+            | "reserve"
+    ) || name.starts_with("set_")
+        || name.starts_with("update_")
 }
 
 fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {

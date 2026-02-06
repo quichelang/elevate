@@ -603,6 +603,58 @@ mod tests {
     }
 
     #[test]
+    fn compile_heuristically_borrows_third_party_method_calls() {
+        let source = r#"
+            rust {
+                pub struct Foreign { pub text: String }
+                impl Foreign {
+                    pub fn has_piece(&self, needle: &str) -> bool {
+                        self.text.contains(needle)
+                    }
+                }
+            }
+
+            fn demo(foreign: Foreign, needle: String) -> bool {
+                std::mem::drop(foreign.has_piece(needle));
+                return foreign.has_piece(needle);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("foreign.has_piece(&needle)"));
+        assert!(!output.rust_code.contains("needle.clone()"));
+        assert!(!output.rust_code.contains("foreign.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_heuristically_borrows_third_party_associated_query_calls() {
+        let source = r#"
+            rust {
+                pub struct Foreign;
+                impl Foreign {
+                    pub fn has_prefix(text: &str, prefix: &str) -> bool {
+                        text.starts_with(prefix)
+                    }
+                }
+            }
+
+            fn demo(text: String, prefix: String) -> bool {
+                std::mem::drop(Foreign::has_prefix(text, prefix));
+                return Foreign::has_prefix(text, prefix);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output
+            .rust_code
+            .contains("Foreign::has_prefix(&text, &prefix)"));
+        assert!(!output.rust_code.contains("text.clone()"));
+        assert!(!output.rust_code.contains("prefix.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_keeps_borrowed_method_receiver_without_clone() {
         let source = r#"
             fn demo(text: String) {
