@@ -606,6 +606,35 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_impl_methods_on_enums() {
+        let source = r#"
+            pub enum Status {
+                Ok;
+                Err(String);
+            }
+
+            impl Status {
+                pub fn is_ok(value: Status) -> bool {
+                    return match value {
+                        Status::Ok => true;
+                        Status::Err(_) => false;
+                    };
+                }
+            }
+
+            pub fn check(value: Status) -> bool {
+                return Status::is_ok(value);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("impl Status"));
+        assert!(output.rust_code.contains("pub fn is_ok"));
+        assert!(output.rust_code.contains("Status::is_ok(value)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_struct_literals() {
         let source = r#"
             pub struct Pair { left: i64; right: i64; }
