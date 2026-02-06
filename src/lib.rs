@@ -770,7 +770,7 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("[head, ..tail]"));
+        assert!(output.rust_code.contains("[head, tail @ ..]"));
         assert!(output.rust_code.contains("[single]"));
         assert!(output.rust_code.contains("[]"));
     }
@@ -990,6 +990,62 @@ mod tests {
 
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("for (left, right) in pairs"));
+    }
+
+    #[test]
+    fn compile_supports_slice_destructure_bindings() {
+        let source = r#"
+            fn head(values: Vec<i64>) -> i64 {
+                const [first, ..rest] = values;
+                std::mem::drop(first);
+                std::mem::drop(rest);
+                0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(
+            output
+                .rust_code
+                .contains("let [first, rest @ ..] = values.as_slice() else")
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_for_slice_destructure_bindings() {
+        let source = r#"
+            fn drive() -> i64 {
+                const out = 0;
+                for [left, right] in [[1, 2], [3, 4]] {
+                    std::mem::drop(left);
+                    std::mem::drop(right);
+                }
+                out
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for __item in vec![vec![1, 2], vec![3, 4]]"));
+        assert!(
+            output
+                .rust_code
+                .contains("let [left, right] = __item.as_slice() else")
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_reports_slice_destructure_type_mismatch() {
+        let source = r#"
+            fn bad(v: i64) -> i64 {
+                const [a, b] = v;
+                a
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(error.to_string().contains("Slice destructure requires Vec value"));
     }
 
     #[test]

@@ -140,11 +140,15 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
             out.push_str("    return;\n");
         }
         RustStmt::DestructureConst { pattern, value } => {
-            out.push_str(&format!(
-                "    let {} = {};\n",
-                emit_destructure_pattern(pattern),
-                emit_expr(value)
-            ));
+            let binding = emit_destructure_pattern(pattern);
+            let value = emit_expr(value);
+            if matches!(pattern, RustDestructurePattern::Slice { .. }) {
+                out.push_str(&format!(
+                    "    let {binding} = {value}.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n"
+                ));
+            } else {
+                out.push_str(&format!("    let {binding} = {value};\n"));
+            }
         }
         RustStmt::Assign { target, op, value } => {
             let op = match op {
@@ -189,15 +193,27 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
             iter,
             body,
         } => {
-            out.push_str(&format!(
-                "    for {} in {} {{\n",
-                emit_destructure_pattern(binding),
-                emit_expr(iter)
-            ));
-            for stmt in body {
-                emit_stmt_with_indent(stmt, out, 2);
+            if matches!(binding, RustDestructurePattern::Slice { .. }) {
+                out.push_str(&format!("    for __item in {} {{\n", emit_expr(iter)));
+                out.push_str(&format!(
+                    "        let {} = __item.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n",
+                    emit_destructure_pattern(binding)
+                ));
+                for stmt in body {
+                    emit_stmt_with_indent(stmt, out, 2);
+                }
+                out.push_str("    }\n");
+            } else {
+                out.push_str(&format!(
+                    "    for {} in {} {{\n",
+                    emit_destructure_pattern(binding),
+                    emit_expr(iter)
+                ));
+                for stmt in body {
+                    emit_stmt_with_indent(stmt, out, 2);
+                }
+                out.push_str("    }\n");
             }
-            out.push_str("    }\n");
         }
         RustStmt::Loop { body } => {
             out.push_str("    loop {\n");
@@ -435,7 +451,7 @@ fn emit_pattern(pattern: &RustPattern) -> String {
             let mut items = Vec::new();
             items.extend(prefix.iter().map(emit_pattern));
             if let Some(name) = rest {
-                items.push(format!("..{name}"));
+                items.push(format!("{name} @ .."));
             } else if !suffix.is_empty() {
                 items.push("..".to_string());
             }
@@ -498,6 +514,21 @@ fn emit_destructure_pattern(pattern: &RustDestructurePattern) -> String {
                 .join(", ");
             format!("({inner})")
         }
+        RustDestructurePattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        } => {
+            let mut items = Vec::new();
+            items.extend(prefix.iter().map(emit_destructure_pattern));
+            if let Some(name) = rest {
+                items.push(format!("{name} @ .."));
+            } else if !suffix.is_empty() {
+                items.push("..".to_string());
+            }
+            items.extend(suffix.iter().map(emit_destructure_pattern));
+            format!("[{}]", items.join(", "))
+        }
     }
 }
 
@@ -517,11 +548,15 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
         }
         RustStmt::Return(None) => out.push_str(&format!("{pad}return;\n")),
         RustStmt::DestructureConst { pattern, value } => {
-            out.push_str(&format!(
-                "{pad}let {} = {};\n",
-                emit_destructure_pattern(pattern),
-                emit_expr(value)
-            ));
+            let binding = emit_destructure_pattern(pattern);
+            let value = emit_expr(value);
+            if matches!(pattern, RustDestructurePattern::Slice { .. }) {
+                out.push_str(&format!(
+                    "{pad}let {binding} = {value}.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n"
+                ));
+            } else {
+                out.push_str(&format!("{pad}let {binding} = {value};\n"));
+            }
         }
         RustStmt::Assign { target, op, value } => {
             let op = match op {
@@ -566,15 +601,27 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
             iter,
             body,
         } => {
-            out.push_str(&format!(
-                "{pad}for {} in {} {{\n",
-                emit_destructure_pattern(binding),
-                emit_expr(iter)
-            ));
-            for nested in body {
-                emit_stmt_with_indent(nested, out, indent + 1);
+            if matches!(binding, RustDestructurePattern::Slice { .. }) {
+                out.push_str(&format!("{pad}for __item in {} {{\n", emit_expr(iter)));
+                out.push_str(&format!(
+                    "{pad}    let {} = __item.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n",
+                    emit_destructure_pattern(binding)
+                ));
+                for nested in body {
+                    emit_stmt_with_indent(nested, out, indent + 1);
+                }
+                out.push_str(&format!("{pad}}}\n"));
+            } else {
+                out.push_str(&format!(
+                    "{pad}for {} in {} {{\n",
+                    emit_destructure_pattern(binding),
+                    emit_expr(iter)
+                ));
+                for nested in body {
+                    emit_stmt_with_indent(nested, out, indent + 1);
+                }
+                out.push_str(&format!("{pad}}}\n"));
             }
-            out.push_str(&format!("{pad}}}\n"));
         }
         RustStmt::Loop { body } => {
             out.push_str(&format!("{pad}loop {{\n"));

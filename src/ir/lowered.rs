@@ -266,4 +266,9 @@ pub enum RustDestructurePattern {
     Name(String),
     Ignore,
     Tuple(Vec<RustDestructurePattern>),
+    Slice {
+        prefix: Vec<RustDestructurePattern>,
+        rest: Option<String>,
+        suffix: Vec<RustDestructurePattern>,
+    },
 }

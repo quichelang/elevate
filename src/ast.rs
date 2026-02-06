@@ -218,6 +218,11 @@ pub enum DestructurePattern {
     Name(String),
     Ignore,
     Tuple(Vec<DestructurePattern>),
+    Slice {
+        prefix: Vec<DestructurePattern>,
+        rest: Option<String>,
+        suffix: Vec<DestructurePattern>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

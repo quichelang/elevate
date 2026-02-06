@@ -4418,6 +4418,15 @@ fn lower_destructure_pattern_typed(pattern: &DestructurePattern) -> TypedDestruc
         DestructurePattern::Tuple(items) => TypedDestructurePattern::Tuple(
             items.iter().map(lower_destructure_pattern_typed).collect(),
         ),
+        DestructurePattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        } => TypedDestructurePattern::Slice {
+            prefix: prefix.iter().map(lower_destructure_pattern_typed).collect(),
+            rest: rest.clone(),
+            suffix: suffix.iter().map(lower_destructure_pattern_typed).collect(),
+        },
     }
 }
 
@@ -4428,6 +4437,15 @@ fn lower_destructure_pattern(pattern: &TypedDestructurePattern) -> RustDestructu
         TypedDestructurePattern::Tuple(items) => {
             RustDestructurePattern::Tuple(items.iter().map(lower_destructure_pattern).collect())
         }
+        TypedDestructurePattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        } => RustDestructurePattern::Slice {
+            prefix: prefix.iter().map(lower_destructure_pattern).collect(),
+            rest: rest.clone(),
+            suffix: suffix.iter().map(lower_destructure_pattern).collect(),
+        },
     }
 }
 
@@ -4494,6 +4512,35 @@ fn bind_destructure_pattern(
                 ));
             }
         }
+        DestructurePattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        } => {
+            let item_ty = if let Some(item) = slice_item_type(value_ty) {
+                item
+            } else {
+                if *value_ty != SemType::Unknown {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Slice destructure requires Vec value, got `{}`",
+                            type_to_string(value_ty)
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+                SemType::Unknown
+            };
+            for item in prefix {
+                bind_destructure_pattern(item, &item_ty, locals, diagnostics);
+            }
+            for item in suffix {
+                bind_destructure_pattern(item, &item_ty, locals, diagnostics);
+            }
+            if let Some(name) = rest {
+                locals.insert(name.clone(), SemType::Unknown);
+            }
+        }
     }
 }
 
@@ -4509,6 +4556,21 @@ fn collect_destructure_pattern_names(
         DestructurePattern::Tuple(items) => {
             for item in items {
                 collect_destructure_pattern_names(item, names);
+            }
+        }
+        DestructurePattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        } => {
+            for item in prefix {
+                collect_destructure_pattern_names(item, names);
+            }
+            for item in suffix {
+                collect_destructure_pattern_names(item, names);
+            }
+            if let Some(name) = rest {
+                names.insert(name.clone());
             }
         }
     }

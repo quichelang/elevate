@@ -270,4 +270,9 @@ pub enum TypedDestructurePattern {
     Name(String),
     Ignore,
     Tuple(Vec<TypedDestructurePattern>),
+    Slice {
+        prefix: Vec<TypedDestructurePattern>,
+        rest: Option<String>,
+        suffix: Vec<TypedDestructurePattern>,
+    },
 }

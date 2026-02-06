@@ -168,6 +168,7 @@ Implemented:
 - Range expressions: `..` and `..=`.
 - `Vec` indexing and range slicing expressions (`values[i]`, `values[a..b]`).
 - Heterogeneous tuple support with Rust-like semantics (tuple literals, tuple type annotations, and tuple destructuring bindings in const/assignment/`for` contexts).
+- Slice destructuring bindings for `Vec` values in `const`/`for` patterns (`[head, ..tail]`, `[left, right]`).
 - Array/vector literals (`[a, b, c]`) with inferred element type and `Vec` lowering.
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
 - Match arm block expressions (`pattern => { ... };`).
@@ -288,7 +289,8 @@ Quality gates:
 - Generic function definitions and constrained bounds are not complete.
 - Full iterator-model ergonomics for `for` loops are not complete beyond current lowering support.
 - Slices are not complete (current support focuses on `Vec` literals/index/range expressions and slice-style match patterns).
-- Deep destructuring coverage (all contexts) is not complete.
+- Deep destructuring coverage is expanded (tuple + slice destructuring in const/assignment/for), but not complete across all possible contexts/forms.
+- Slice destructuring currently lowers element bindings as borrowed Rust values (`&T`), so full Elevate value-style binding semantics in those paths are not complete yet.
 - Full exhaustiveness diagnostics are not complete (current checks focus on bool/finite-tuple finite domains and enum variants).
 - Full Rust-pattern parity for match is not complete (remaining work includes ref/binding-mode patterns and richer guard/exhaustiveness combinations).
 - Interop contract signature verification validates declaration shape and callsite arity, but not full type-level compatibility across all compiler phases.

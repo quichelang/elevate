@@ -259,8 +259,12 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
         if self.match_kind(TokenKind::Const) {
-            if self.match_kind(TokenKind::LParen) {
-                let pattern = self.parse_destructure_pattern_tuple()?;
+            if self.match_kind(TokenKind::LParen) || self.match_kind(TokenKind::LBracket) {
+                let pattern = if matches!(self.tokens[self.cursor - 1].kind, TokenKind::LParen) {
+                    self.parse_destructure_pattern_tuple()?
+                } else {
+                    self.parse_destructure_pattern_slice()?
+                };
                 self.expect(
                     TokenKind::Equal,
                     "Expected '=' after destructuring const pattern",
@@ -987,8 +991,52 @@ impl Parser {
         if self.match_kind(TokenKind::LParen) {
             return self.parse_destructure_pattern_tuple();
         }
+        if self.match_kind(TokenKind::LBracket) {
+            return self.parse_destructure_pattern_slice();
+        }
         let name = self.expect_ident("Expected identifier in destructuring pattern")?;
         Some(DestructurePattern::Name(name))
+    }
+
+    fn parse_destructure_pattern_slice(&mut self) -> Option<DestructurePattern> {
+        let mut prefix = Vec::new();
+        let mut suffix = Vec::new();
+        let mut rest: Option<String> = None;
+        let mut parsing_suffix = false;
+
+        while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+            if self.match_kind(TokenKind::DotDot) {
+                if rest.is_some() {
+                    self.error_current("Destructure slice pattern can contain at most one `..` rest");
+                    return None;
+                }
+                rest = if let TokenKind::Identifier(name) = self.peek().kind.clone() {
+                    self.advance();
+                    Some(name)
+                } else {
+                    None
+                };
+                parsing_suffix = true;
+            } else {
+                let pattern = self.parse_destructure_pattern_atom()?;
+                if parsing_suffix {
+                    suffix.push(pattern);
+                } else {
+                    prefix.push(pattern);
+                }
+            }
+
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+        }
+
+        self.expect(TokenKind::RBracket, "Expected ']' after destructuring slice pattern")?;
+        Some(DestructurePattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        })
     }
 
     fn range_rhs_starts_here(&self) -> bool {
@@ -1286,6 +1334,24 @@ mod tests {
                     total += right;
                 }
                 total
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_slice_destructure_patterns() {
+        let source = r#"
+            fn demo(values: Vec<i64>) -> i64 {
+                const [first, ..rest] = values;
+                for [left, right] in [[1, 2], [3, 4]] {
+                    std::mem::drop(left);
+                    std::mem::drop(right);
+                }
+                std::mem::drop(rest);
+                first
             }
         "#;
         let tokens = lex(source).expect("expected lex success");
