@@ -171,6 +171,7 @@ Implemented:
 - Match guards (`pattern if condition => ...`).
 - Or-patterns (`p1 | p2`).
 - Imported Rust enum variant pattern matching when scrutinee type is known (for example `Ordering::Less`).
+- Baseline match exhaustiveness diagnostics for `bool`, `Option`, `Result`, and known local enums.
 - Closure expressions and closure calls with typed parameters.
 - Comment support (`//` and `/* ... */`) and raw multiline string literals.
 - `rust use` imports and external Rust path calls.
@@ -279,7 +280,7 @@ Quality gates:
 - `for` loops and iterator-driven loop sugar are not complete.
 - Slices are not complete.
 - Deep destructuring coverage (all contexts) is not complete.
-- Full exhaustiveness diagnostics are not complete.
+- Full exhaustiveness diagnostics are not complete (current checks focus on `bool` and enum variants).
 - Full Rust-pattern parity for match is not complete (remaining work includes slice/rest patterns).
 - Inline `rust { ... }` escape blocks are not complete.
 - Interop contract signature verification currently validates declaration shape, but not full type-level callsite compatibility across all compiler phases.

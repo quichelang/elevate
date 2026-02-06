@@ -706,6 +706,40 @@ mod tests {
     }
 
     #[test]
+    fn compile_reports_non_exhaustive_bool_match() {
+        let source = r#"
+            fn classify(flag: bool) -> i64 {
+                return match flag {
+                    true => 1;
+                };
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(error.to_string().contains("Non-exhaustive match on `bool`"));
+    }
+
+    #[test]
+    fn compile_reports_non_exhaustive_enum_match() {
+        let source = r#"
+            enum Maybe {
+                Some(i64);
+                None;
+            }
+
+            fn classify(v: Maybe) -> i64 {
+                return match v {
+                    Maybe::Some(_) => 1;
+                };
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(error.to_string().contains("Non-exhaustive match on `Maybe`"));
+        assert!(error.to_string().contains("None"));
+    }
+
+    #[test]
     fn compile_emits_multi_value_variant_payload_patterns() {
         let source = r#"
             rust use crate::Pair;

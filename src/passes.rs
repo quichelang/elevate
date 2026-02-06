@@ -1456,6 +1456,7 @@ fn infer_expr(
                     value: typed_value,
                 });
             }
+            check_match_exhaustiveness(&scrutinee_ty, &typed_arms, context, diagnostics);
 
             let final_ty = resolved_arm_ty.unwrap_or_else(|| {
                 diagnostics.push(Diagnostic::new(
@@ -1721,6 +1722,148 @@ fn infer_expr(
                 resolved,
             )
         }
+    }
+}
+
+fn check_match_exhaustiveness(
+    scrutinee_ty: &SemType,
+    arms: &[TypedMatchArm],
+    context: &Context,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if match_has_total_pattern(arms) {
+        return;
+    }
+
+    if is_concrete_named_type(scrutinee_ty, "bool") {
+        let mut has_true = false;
+        let mut has_false = false;
+        for arm in arms {
+            if arm.guard.is_some() {
+                continue;
+            }
+            collect_bool_coverage(&arm.pattern, &mut has_true, &mut has_false);
+        }
+        if !(has_true && has_false) {
+            diagnostics.push(Diagnostic::new(
+                "Non-exhaustive match on `bool` (missing `true` or `false`)",
+                Span::new(0, 0),
+            ));
+        }
+        return;
+    }
+
+    let Some(enum_name) = enum_name_from_type(scrutinee_ty) else {
+        return;
+    };
+    let expected_variants = expected_enum_variants(&enum_name, context);
+    if expected_variants.is_empty() {
+        return;
+    }
+
+    let mut covered = HashSet::new();
+    for arm in arms {
+        if arm.guard.is_some() {
+            continue;
+        }
+        collect_enum_coverage(&arm.pattern, &enum_name, &mut covered);
+    }
+
+    if covered.len() != expected_variants.len()
+        || expected_variants.iter().any(|variant| !covered.contains(variant))
+    {
+        let missing = expected_variants
+            .iter()
+            .filter(|variant| !covered.contains(*variant))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        diagnostics.push(Diagnostic::new(
+            format!("Non-exhaustive match on `{enum_name}`; missing variants: {missing}"),
+            Span::new(0, 0),
+        ));
+    }
+}
+
+fn match_has_total_pattern(arms: &[TypedMatchArm]) -> bool {
+    arms.iter()
+        .any(|arm| arm.guard.is_none() && pattern_is_total(&arm.pattern))
+}
+
+fn pattern_is_total(pattern: &TypedPattern) -> bool {
+    match pattern {
+        TypedPattern::Wildcard | TypedPattern::Binding(_) => true,
+        TypedPattern::BindingAt { pattern, .. } => pattern_is_total(pattern),
+        TypedPattern::Or(items) => items.iter().any(pattern_is_total),
+        _ => false,
+    }
+}
+
+fn collect_bool_coverage(pattern: &TypedPattern, has_true: &mut bool, has_false: &mut bool) {
+    match pattern {
+        TypedPattern::Bool(true) => *has_true = true,
+        TypedPattern::Bool(false) => *has_false = true,
+        TypedPattern::Or(items) => {
+            for item in items {
+                collect_bool_coverage(item, has_true, has_false);
+            }
+        }
+        TypedPattern::BindingAt { pattern, .. } => collect_bool_coverage(pattern, has_true, has_false),
+        TypedPattern::Wildcard | TypedPattern::Binding(_) => {
+            *has_true = true;
+            *has_false = true;
+        }
+        _ => {}
+    }
+}
+
+fn enum_name_from_type(ty: &SemType) -> Option<String> {
+    match ty {
+        SemType::Path { path, .. } => path.last().cloned(),
+        _ => None,
+    }
+}
+
+fn is_concrete_named_type(ty: &SemType, name: &str) -> bool {
+    matches!(
+        ty,
+        SemType::Path { path, args }
+            if path.len() == 1 && path[0] == name && args.is_empty()
+    )
+}
+
+fn expected_enum_variants(enum_name: &str, context: &Context) -> Vec<String> {
+    if enum_name == "Option" {
+        return vec!["Some".to_string(), "None".to_string()];
+    }
+    if enum_name == "Result" {
+        return vec!["Ok".to_string(), "Err".to_string()];
+    }
+    context
+        .enums
+        .get(enum_name)
+        .map(|variants| variants.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn collect_enum_coverage(pattern: &TypedPattern, enum_name: &str, covered: &mut HashSet<String>) {
+    match pattern {
+        TypedPattern::Variant { path, .. } if path.len() >= 2 && path[0] == enum_name => {
+            covered.insert(path[1].clone());
+        }
+        TypedPattern::Variant { path, .. } if path.len() == 2 => {
+            if path[0] == enum_name {
+                covered.insert(path[1].clone());
+            }
+        }
+        TypedPattern::Or(items) => {
+            for item in items {
+                collect_enum_coverage(item, enum_name, covered);
+            }
+        }
+        TypedPattern::BindingAt { pattern, .. } => collect_enum_coverage(pattern, enum_name, covered),
+        TypedPattern::Wildcard | TypedPattern::Binding(_) => {}
+        _ => {}
     }
 }
 
