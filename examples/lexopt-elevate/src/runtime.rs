@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::model::Arg;
-use crate::parser::{ClusterHead, LongWithValue, MaybeString, RawArgClass};
+use crate::parser::{
+    ClusterParts, ClusterSplit, LongEqSplit, LongPrefixSplit, LongWithValue, MaybeString,
+    ShortPrefixSplit,
+};
 
 #[derive(Debug, Clone)]
 struct ParserState {
@@ -77,17 +80,8 @@ pub fn take_next_arg(handle: i64) -> MaybeString {
     from_option(value)
 }
 
-pub fn take_next_if_normal(handle: i64) -> MaybeString {
-    let value = with_state_mut(handle, |state| {
-        let arg = state.args.get(state.index).cloned()?;
-        if state.finished_opts || arg == "-" || !arg.starts_with('-') {
-            state.index += 1;
-            Some(arg)
-        } else {
-            None
-        }
-    })
-    .flatten();
+pub fn peek_next_arg(handle: i64) -> MaybeString {
+    let value = with_state_mut(handle, |state| state.args.get(state.index).cloned()).flatten();
     from_option(value)
 }
 
@@ -148,47 +142,54 @@ pub fn format_unexpected_value_for_last(handle: i64, value: String) -> String {
     .unwrap_or_else(|| format!("unexpected argument: {value}"))
 }
 
-pub fn classify_arg(arg: String) -> RawArgClass {
-    if arg == "--" {
-        return RawArgClass::DashDash;
-    }
-
+pub fn split_long_prefix(arg: String) -> LongPrefixSplit {
     if let Some(rest) = arg.strip_prefix("--") {
-        if let Some((name, value)) = rest.split_once('=') {
-            return RawArgClass::LongWithValue(LongWithValue {
-                name: name.to_string(),
-                value: value.to_string(),
-            });
-        }
-        return RawArgClass::Long(rest.to_string());
+        return LongPrefixSplit::Long(rest.to_string());
     }
+    LongPrefixSplit::Other(arg)
+}
 
+pub fn nonempty_text(text: String) -> MaybeString {
+    if text.is_empty() {
+        MaybeString::None
+    } else {
+        MaybeString::Some(text)
+    }
+}
+
+pub fn split_long_eq(text: String) -> LongEqSplit {
+    if let Some((name, value)) = text.split_once('=') {
+        return LongEqSplit::WithValue(LongWithValue {
+            name: name.to_string(),
+            value: value.to_string(),
+        });
+    }
+    LongEqSplit::Plain(text)
+}
+
+pub fn split_short_prefix(arg: String) -> ShortPrefixSplit {
     if arg.starts_with('-') && arg != "-" {
         let cluster = arg.chars().skip(1).collect::<String>();
         if !cluster.is_empty() {
-            return RawArgClass::ShortCluster(cluster);
+            return ShortPrefixSplit::ShortCluster(cluster);
         }
     }
-
-    RawArgClass::Value(arg)
+    ShortPrefixSplit::Value(arg)
 }
 
-pub fn take_cluster_head(handle: i64, cluster: String) -> ClusterHead {
+pub fn split_cluster(cluster: String) -> ClusterSplit {
     if cluster.is_empty() {
-        return ClusterHead::End;
+        return ClusterSplit::End;
     }
 
     if let Some(value) = cluster.strip_prefix('=') {
-        return ClusterHead::UnexpectedValue(value.to_string());
+        return ClusterSplit::UnexpectedValue(value.to_string());
     }
 
     let mut chars = cluster.chars();
     let short = chars.next().expect("cluster is known non-empty").to_string();
     let rest = chars.collect::<String>();
-    if !rest.is_empty() {
-        set_short_cluster(handle, rest);
-    }
-    ClusterHead::Short(short)
+    ClusterSplit::Short(ClusterParts { short, rest })
 }
 
 pub fn cluster_optional_value(cluster: String) -> String {

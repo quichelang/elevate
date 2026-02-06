@@ -15,15 +15,35 @@ pub enum RawArgClass {
     Value(String);
 }
 
-pub enum ClusterHead {
-    End;
-    UnexpectedValue(String);
-    Short(String);
-}
-
 pub enum MaybeString {
     Some(String);
     None;
+}
+
+pub enum LongPrefixSplit {
+    Long(String);
+    Other(String);
+}
+
+pub enum ShortPrefixSplit {
+    ShortCluster(String);
+    Value(String);
+}
+
+pub enum LongEqSplit {
+    WithValue(LongWithValue);
+    Plain(String);
+}
+
+pub struct ClusterParts {
+    short: String;
+    rest: String;
+}
+
+pub enum ClusterSplit {
+    End;
+    UnexpectedValue(String);
+    Short(ClusterParts);
 }
 
 pub fn from_env() -> i64 {
@@ -63,13 +83,18 @@ fn next_after_pending(handle: i64) -> Result<Option<Arg>, ParseError> {
 }
 
 fn next_from_cluster(handle: i64, cluster: String) -> Result<Option<Arg>, ParseError> {
-    const head = runtime::take_cluster_head(handle, cluster);
-    const out = match head {
-        ClusterHead::End => next_internal(handle);
-        ClusterHead::UnexpectedValue(value) => pending_unexpected_value(handle, value);
-        ClusterHead::Short(short) => emit_short(handle, short);
+    const split = runtime::split_cluster(cluster);
+    const out = match split {
+        ClusterSplit::End => next_internal(handle);
+        ClusterSplit::UnexpectedValue(value) => pending_unexpected_value(handle, value);
+        ClusterSplit::Short(parts) => emit_short_from_parts(handle, parts);
     };
     out
+}
+
+fn emit_short_from_parts(handle: i64, parts: ClusterParts) -> Result<Option<Arg>, ParseError> {
+    runtime::set_short_cluster(handle, parts.rest);
+    emit_short(handle, parts.short)
 }
 
 fn emit_short(handle: i64, short: String) -> Result<Option<Arg>, ParseError> {
@@ -94,13 +119,49 @@ fn next_from_taken_arg(handle: i64, arg: String) -> Result<Option<Arg>, ParseErr
 }
 
 fn next_from_classified_arg(handle: i64, arg: String) -> Result<Option<Arg>, ParseError> {
-    const class = runtime::classify_arg(arg);
+    const class = classify_arg(arg);
     const out = match class {
         RawArgClass::DashDash => after_dashdash(handle);
         RawArgClass::Long(name) => emit_long(handle, name);
         RawArgClass::LongWithValue(payload) => emit_long_with_value(handle, payload);
         RawArgClass::ShortCluster(cluster) => continue_short_cluster(handle, cluster);
         RawArgClass::Value(value) => emit_value(handle, value);
+    };
+    out
+}
+
+fn classify_arg(arg: String) -> RawArgClass {
+    const long_split = runtime::split_long_prefix(arg);
+    const out = match long_split {
+        LongPrefixSplit::Long(rest) => classify_long_rest(rest);
+        LongPrefixSplit::Other(other) => classify_short_or_value(other);
+    };
+    out
+}
+
+fn classify_long_rest(rest: String) -> RawArgClass {
+    const maybe_text = runtime::nonempty_text(rest);
+    const out = match maybe_text {
+        MaybeString::Some(text) => classify_nonempty_long(text);
+        MaybeString::None => RawArgClass::DashDash;
+    };
+    out
+}
+
+fn classify_nonempty_long(text: String) -> RawArgClass {
+    const split = runtime::split_long_eq(text);
+    const out = match split {
+        LongEqSplit::WithValue(payload) => RawArgClass::LongWithValue(payload);
+        LongEqSplit::Plain(name) => RawArgClass::Long(name);
+    };
+    out
+}
+
+fn classify_short_or_value(arg: String) -> RawArgClass {
+    const short_split = runtime::split_short_prefix(arg);
+    const out = match short_split {
+        ShortPrefixSplit::ShortCluster(cluster) => RawArgClass::ShortCluster(cluster);
+        ShortPrefixSplit::Value(value) => RawArgClass::Value(value);
     };
     out
 }
@@ -183,14 +244,37 @@ pub fn values(handle: i64) -> Result<Option<String>, ParseError> {
 }
 
 fn values_from_stream_or_error(handle: i64) -> Result<Option<String>, ParseError> {
-    const next_value = runtime::take_next_if_normal(handle);
-    const out = match next_value {
-        MaybeString::Some(value) => Result::Ok(Option::Some(value));
-        MaybeString::None => Result::Err(ParseError::MissingValue(
-            runtime::format_missing_value_for_last(handle),
-        ));
+    const peeked = runtime::peek_next_arg(handle);
+    const out = match peeked {
+        MaybeString::Some(candidate) => values_from_candidate(handle, candidate);
+        MaybeString::None => missing_value_result(handle);
     };
     out
+}
+
+fn values_from_candidate(handle: i64, candidate: String) -> Result<Option<String>, ParseError> {
+    if runtime::is_finished_opts(handle) {
+        runtime::take_next_arg(handle);
+        return Result::Ok(Option::Some(candidate));
+    }
+
+    const class = classify_arg(candidate);
+    const out = match class {
+        RawArgClass::Value(value) => consume_and_return_value(handle, value);
+        _ => missing_value_result(handle);
+    };
+    out
+}
+
+fn consume_and_return_value(handle: i64, value: String) -> Result<Option<String>, ParseError> {
+    runtime::take_next_arg(handle);
+    Result::Ok(Option::Some(value))
+}
+
+fn missing_value_result(handle: i64) -> Result<Option<String>, ParseError> {
+    Result::Err(ParseError::MissingValue(
+        runtime::format_missing_value_for_last(handle),
+    ))
 }
 
 fn maybe_to_option(value: MaybeString) -> Option<String> {
