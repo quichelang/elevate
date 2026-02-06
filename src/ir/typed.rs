@@ -117,6 +117,10 @@ pub enum TypedAssignTarget {
         base: TypedExpr,
         field: String,
     },
+    Index {
+        base: TypedExpr,
+        index: TypedExpr,
+    },
     Tuple(Vec<TypedAssignTarget>),
 }
 
@@ -220,6 +224,7 @@ pub enum TypedBinaryOp {
     Sub,
     Mul,
     Div,
+    Rem,
     And,
     Or,
     Eq,

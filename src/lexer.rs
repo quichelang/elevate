@@ -58,6 +58,7 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
+    Percent,
     Equal,
     EqualEqual,
     BangEqual,
@@ -143,6 +144,7 @@ impl<'a> Lexer<'a> {
                 }
                 '*' => self.push_simple(TokenKind::Star, start),
                 '/' => self.push_simple(TokenKind::Slash, start),
+                '%' => self.push_simple(TokenKind::Percent, start),
                 '.' => {
                     if self.peek_char() == Some('.') {
                         self.advance();
@@ -655,11 +657,12 @@ mod tests {
 
     #[test]
     fn lex_arithmetic_operator_tokens() {
-        let source = "x = a - b * c / d;";
+        let source = "x = a - b * c / d % e;";
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Minus)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Star)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Slash)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Percent)));
     }
 
     #[test]

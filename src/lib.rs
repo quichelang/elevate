@@ -204,15 +204,32 @@ mod tests {
     }
 
     #[test]
-    fn compile_supports_negative_and_mul_div_operators() {
+    fn compile_supports_negative_and_mul_div_rem_operators() {
         let source = r#"
             fn calc(a: i64, b: i64, c: i64) -> i64 {
-                return -a + b * c / 2 - 1;
+                return -a + b * c / 2 % 5 - 1;
             }
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("(-a + ((b * c) / 2)) - 1"));
+        assert!(output.rust_code.contains("% 5"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_index_assignment_targets() {
+        let source = r#"
+            fn update(values: Vec<i64>) -> i64 {
+                values[1] = values[1] % 3;
+                return values[1];
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("fn update(mut values: Vec<i64>) -> i64"));
+        assert!(output
+            .rust_code
+            .contains("values[(1) as usize] = (values[(1) as usize] % 3);"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

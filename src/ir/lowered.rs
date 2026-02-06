@@ -118,6 +118,10 @@ pub enum RustAssignTarget {
         base: RustExpr,
         field: String,
     },
+    Index {
+        base: RustExpr,
+        index: RustExpr,
+    },
     Tuple(Vec<RustAssignTarget>),
 }
 
@@ -220,6 +224,7 @@ pub enum RustBinaryOp {
     Sub,
     Mul,
     Div,
+    Rem,
     And,
     Or,
     Eq,

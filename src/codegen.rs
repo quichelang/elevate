@@ -370,6 +370,7 @@ fn emit_expr(expr: &RustExpr) -> String {
                 RustBinaryOp::Sub => "-",
                 RustBinaryOp::Mul => "*",
                 RustBinaryOp::Div => "/",
+                RustBinaryOp::Rem => "%",
                 RustBinaryOp::Eq => "==",
                 RustBinaryOp::Ne => "!=",
                 RustBinaryOp::Lt => "<",
@@ -453,6 +454,9 @@ fn emit_assign_target(target: &RustAssignTarget) -> String {
     match target {
         RustAssignTarget::Path(name) => name.clone(),
         RustAssignTarget::Field { base, field } => format!("{}.{}", emit_expr(base), field),
+        RustAssignTarget::Index { base, index } => {
+            format!("{}[({}) as usize]", emit_expr(base), emit_expr(index))
+        }
         RustAssignTarget::Tuple(items) => {
             let inner = items
                 .iter()
@@ -842,6 +846,11 @@ fn collect_mutated_paths_in_target(
             out.insert(name.clone());
         }
         RustAssignTarget::Field { base, .. } => {
+            if let Some(name) = root_path_name(base) {
+                out.insert(name.to_string());
+            }
+        }
+        RustAssignTarget::Index { base, .. } => {
             if let Some(name) = root_path_name(base) {
                 out.insert(name.to_string());
             }

@@ -495,6 +495,10 @@ fn validate_assign_target_adapter_calls(
         crate::ast::AssignTarget::Field { base, .. } => {
             validate_expr_adapter_calls(base, alias_arity, alias_param_types, diagnostics)
         }
+        crate::ast::AssignTarget::Index { base, index } => {
+            validate_expr_adapter_calls(base, alias_arity, alias_param_types, diagnostics);
+            validate_expr_adapter_calls(index, alias_arity, alias_param_types, diagnostics);
+        }
         crate::ast::AssignTarget::Tuple(items) => {
             for item in items {
                 validate_assign_target_adapter_calls(
@@ -685,6 +689,10 @@ fn rewrite_assign_target_adapter_calls(
     match target {
         crate::ast::AssignTarget::Path(_) => {}
         crate::ast::AssignTarget::Field { base, .. } => rewrite_expr_adapter_calls(base, adapter_map),
+        crate::ast::AssignTarget::Index { base, index } => {
+            rewrite_expr_adapter_calls(base, adapter_map);
+            rewrite_expr_adapter_calls(index, adapter_map);
+        }
         crate::ast::AssignTarget::Tuple(items) => {
             for item in items {
                 rewrite_assign_target_adapter_calls(item, adapter_map);

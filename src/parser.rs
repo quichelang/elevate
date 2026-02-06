@@ -525,6 +525,8 @@ impl Parser {
                 Some(BinaryOp::Mul)
             } else if self.match_kind(TokenKind::Slash) {
                 Some(BinaryOp::Div)
+            } else if self.match_kind(TokenKind::Percent) {
+                Some(BinaryOp::Rem)
             } else {
                 None
             };
@@ -1137,6 +1139,7 @@ impl Parser {
                 }
             }
             Expr::Field { base, field } => Some(AssignTarget::Field { base, field }),
+            Expr::Index { base, index } => Some(AssignTarget::Index { base, index }),
             Expr::Tuple(items) => {
                 let mut targets = Vec::new();
                 for item in items {
@@ -1146,7 +1149,7 @@ impl Parser {
             }
             _ => {
                 self.error_current(
-                    "Invalid assignment target; expected identifier, field access, or tuple target",
+                    "Invalid assignment target; expected identifier, field access, index access, or tuple target",
                 );
                 None
             }
@@ -1287,6 +1290,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Minus, Minus)
             | (Star, Star)
             | (Slash, Slash)
+            | (Percent, Percent)
             | (Equal, Equal)
             | (EqualEqual, EqualEqual)
             | (BangEqual, BangEqual)
@@ -1556,10 +1560,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_unary_neg_and_mul_div_expressions() {
+    fn parse_unary_neg_and_mul_div_rem_expressions() {
         let source = r#"
             fn calc(a: i64, b: i64, c: i64) -> i64 {
-                return -a + b * c / 2 - 1;
+                return -a + b * c / 2 % 5 - 1;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_index_assignment_target() {
+        let source = r#"
+            fn set(values: Vec<i64>) {
+                values[1] = 3;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

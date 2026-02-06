@@ -211,6 +211,10 @@ pub enum AssignTarget {
         base: Box<Expr>,
         field: String,
     },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
     Tuple(Vec<AssignTarget>),
 }
 
@@ -244,6 +248,7 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Rem,
     And,
     Or,
     Eq,

@@ -1299,6 +1299,46 @@ fn infer_assign_target(
                 resolved_ty,
             ))
         }
+        AssignTarget::Index { base, index } => {
+            let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
+            let (typed_index, index_ty) =
+                infer_expr(index, context, locals, return_ty, diagnostics);
+            let resolved_ty = match &base_ty {
+                SemType::Path { path, args }
+                    if path.len() == 1 && path[0] == "Vec" && args.len() == 1 =>
+                {
+                    if is_compatible(&index_ty, &named_type("i64")) {
+                        args[0].clone()
+                    } else {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Vector index assignment expects `i64` index, got `{}`",
+                                type_to_string(&index_ty)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                        SemType::Unknown
+                    }
+                }
+                _ => {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Index assignment target expects `Vec<T>`, got `{}`",
+                            type_to_string(&base_ty)
+                        ),
+                        Span::new(0, 0),
+                    ));
+                    SemType::Unknown
+                }
+            };
+            Some((
+                TypedAssignTarget::Index {
+                    base: typed_base,
+                    index: typed_index,
+                },
+                resolved_ty,
+            ))
+        }
         AssignTarget::Tuple(items) => {
             let mut typed_items = Vec::with_capacity(items.len());
             let mut tys = Vec::with_capacity(items.len());
@@ -1689,6 +1729,10 @@ fn infer_expr(
                 BinaryOp::Div => {
                     let out_ty = resolve_numeric_binary_type("/", &left_ty, &right_ty, diagnostics);
                     (TypedBinaryOp::Div, out_ty)
+                }
+                BinaryOp::Rem => {
+                    let out_ty = resolve_numeric_binary_type("%", &left_ty, &right_ty, diagnostics);
+                    (TypedBinaryOp::Rem, out_ty)
                 }
                 BinaryOp::And | BinaryOp::Or => {
                     if !is_compatible(&left_ty, &named_type("bool"))
@@ -3457,7 +3501,11 @@ fn lower_expr_with_context(
 
             if matches!(
                 op,
-                TypedBinaryOp::Add | TypedBinaryOp::Sub | TypedBinaryOp::Mul | TypedBinaryOp::Div
+                TypedBinaryOp::Add
+                    | TypedBinaryOp::Sub
+                    | TypedBinaryOp::Mul
+                    | TypedBinaryOp::Div
+                    | TypedBinaryOp::Rem
             ) && is_numeric_type_name(&expr.ty)
             {
                 lowered_left = cast_expr_to_numeric_if_needed(lowered_left, &left.ty, &expr.ty);
@@ -3485,6 +3533,7 @@ fn lower_expr_with_context(
                     TypedBinaryOp::Sub => RustBinaryOp::Sub,
                     TypedBinaryOp::Mul => RustBinaryOp::Mul,
                     TypedBinaryOp::Div => RustBinaryOp::Div,
+                    TypedBinaryOp::Rem => RustBinaryOp::Rem,
                     TypedBinaryOp::And => RustBinaryOp::And,
                     TypedBinaryOp::Or => RustBinaryOp::Or,
                     TypedBinaryOp::Eq => RustBinaryOp::Eq,
@@ -4065,6 +4114,10 @@ fn collect_path_uses_in_assign_target(target: &TypedAssignTarget, uses: &mut Has
     match target {
         TypedAssignTarget::Path(_) => {}
         TypedAssignTarget::Field { base, .. } => collect_path_uses_in_expr(base, uses),
+        TypedAssignTarget::Index { base, index } => {
+            collect_path_uses_in_expr(base, uses);
+            collect_path_uses_in_expr(index, uses);
+        }
         TypedAssignTarget::Tuple(items) => {
             for item in items {
                 collect_path_uses_in_assign_target(item, uses);
@@ -5193,6 +5246,10 @@ fn lower_assign_target(
         TypedAssignTarget::Field { base, field } => RustAssignTarget::Field {
             base: lower_expr_with_context(base, context, ExprPosition::Value, state),
             field: field.clone(),
+        },
+        TypedAssignTarget::Index { base, index } => RustAssignTarget::Index {
+            base: lower_expr_with_context(base, context, ExprPosition::Value, state),
+            index: lower_expr_with_context(index, context, ExprPosition::Value, state),
         },
         TypedAssignTarget::Tuple(items) => RustAssignTarget::Tuple(
             items
