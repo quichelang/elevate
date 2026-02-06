@@ -555,6 +555,40 @@ mod tests {
     }
 
     #[test]
+    fn compile_clones_field_when_whole_struct_is_used_later() {
+        let source = r#"
+            pub struct Pair { left: String; right: String; }
+
+            fn consume_text(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn consume_pair(value: Pair) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn demo(pair: Pair) {
+                consume_text(pair.left);
+                consume_pair(pair);
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("consume_text(pair.left.clone());"));
+        assert!(output.rust_code.contains("consume_pair(pair);"));
+        assert!(
+            output
+                .ownership_notes
+                .iter()
+                .any(|note| note.contains("`pair.left`"))
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_auto_borrows_method_call_arguments_for_string_contains() {
         let source = r#"
             fn demo(text: String, needle: String) -> bool {

@@ -215,6 +215,22 @@ impl OwnershipPlan {
         self.remaining_place_uses.get(place).copied().unwrap_or(0)
     }
 
+    fn remaining_conflicting_for_expr(&self, expr: &TypedExpr) -> usize {
+        let Some(place) = place_for_expr(expr) else {
+            return 0;
+        };
+        self.remaining_place_uses
+            .iter()
+            .filter_map(|(other, remaining)| {
+                if *remaining > 0 && ownership_places_conflict(&place, other) {
+                    Some(*remaining)
+                } else {
+                    None
+                }
+            })
+            .sum()
+    }
+
     fn consume_expr(&mut self, expr: &TypedExpr) -> usize {
         let Some(place) = place_for_expr(expr) else {
             return 0;
@@ -225,6 +241,19 @@ impl OwnershipPlan {
         }
         remaining
     }
+}
+
+fn ownership_places_conflict(a: &OwnershipPlace, b: &OwnershipPlace) -> bool {
+    a.root == b.root
+        && (ownership_projection_prefix(&a.projections, &b.projections)
+            || ownership_projection_prefix(&b.projections, &a.projections))
+}
+
+fn ownership_projection_prefix(
+    prefix: &[OwnershipProjection],
+    candidate: &[OwnershipProjection],
+) -> bool {
+    candidate.starts_with(prefix)
 }
 
 #[derive(Debug, Default)]
@@ -3521,10 +3550,12 @@ fn lower_expr_with_context(
                 .collect(),
         },
         TypedExprKind::Field { base, field } => {
-            let remaining_before = if position == ExprPosition::ProjectionBase {
+            let remaining_conflicting_before = if position == ExprPosition::ProjectionBase {
                 0
             } else {
-                context.ownership_plan.consume_expr(expr)
+                let remaining = context.ownership_plan.remaining_conflicting_for_expr(expr);
+                context.ownership_plan.consume_expr(expr);
+                remaining
             };
             let place_name = place_for_expr(expr).map(|place| place.display_name());
             let lowered_field = RustExpr::Field {
@@ -3537,7 +3568,7 @@ fn lower_expr_with_context(
                 field: field.clone(),
             };
             if position == ExprPosition::CallArgOwned
-                && remaining_before > 1
+                && remaining_conflicting_before > 1
                 && should_clone_for_reuse(&expr.ty, state)
             {
                 if let Some(name) = place_name {
@@ -3557,10 +3588,12 @@ fn lower_expr_with_context(
             }
         }
         TypedExprKind::Index { base, index } => {
-            let remaining_before = if position == ExprPosition::ProjectionBase {
+            let remaining_conflicting_before = if position == ExprPosition::ProjectionBase {
                 0
             } else {
-                context.ownership_plan.consume_expr(expr)
+                let remaining = context.ownership_plan.remaining_conflicting_for_expr(expr);
+                context.ownership_plan.consume_expr(expr);
+                remaining
             };
             let place_name = place_for_expr(expr).map(|place| place.display_name());
             let lowered_index_expr = RustExpr::Index {
@@ -3578,7 +3611,7 @@ fn lower_expr_with_context(
                 )),
             };
             if position == ExprPosition::CallArgOwned
-                && remaining_before > 1
+                && remaining_conflicting_before > 1
                 && should_clone_for_reuse(&expr.ty, state)
             {
                 if let Some(name) = place_name {
@@ -3796,10 +3829,13 @@ fn lower_path_expr(
     }
 
     let name = path[0].clone();
-    let remaining = context.ownership_plan.consume_expr(expr);
+    let remaining_conflicting = context.ownership_plan.remaining_conflicting_for_expr(expr);
+    context.ownership_plan.consume_expr(expr);
 
     let path_expr = RustExpr::Path(path.to_vec());
-    if position == ExprPosition::CallArgOwned && remaining > 1 && should_clone_for_reuse(ty, state)
+    if position == ExprPosition::CallArgOwned
+        && remaining_conflicting > 1
+        && should_clone_for_reuse(ty, state)
     {
         let scope = if context.scope_name.is_empty() {
             "<module>"
