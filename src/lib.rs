@@ -270,6 +270,34 @@ mod tests {
     }
 
     #[test]
+    fn compile_auto_borrows_for_str_prefix_suffix_calls() {
+        let source = r#"
+            fn demo(text: String, prefix: String, suffix: String) -> bool {
+                std::mem::drop(str::starts_with(text, prefix));
+                return str::ends_with(text, suffix);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output
+            .rust_code
+            .contains("__elevate_shim_str_starts_with(&text, &prefix)"));
+        assert!(output
+            .rust_code
+            .contains("__elevate_shim_str_ends_with(&text, &suffix)"));
+        assert!(output.rust_code.contains(
+            "fn __elevate_shim_str_starts_with(__arg0: &str, __arg1: &str) -> bool"
+        ));
+        assert!(output
+            .rust_code
+            .contains("fn __elevate_shim_str_ends_with(__arg0: &str, __arg1: &str) -> bool"));
+        assert!(!output.rust_code.contains("text.clone()"));
+        assert!(!output.rust_code.contains("prefix.clone()"));
+        assert!(!output.rust_code.contains("suffix.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_auto_borrows_string_option_result_associated_calls() {
         let source = r#"
             fn demo(text: String, v: Option<String>, r: Result<String, String>) -> bool {
