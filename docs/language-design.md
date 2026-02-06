@@ -181,10 +181,10 @@ Implemented:
 - Crate build diagnostics now include line/column output (plus symbol declaration hints when span data is coarse).
 - Interop contract preview via crate-level `elevate.interop` file:
 - allow-list validation for `rust use` imports.
-- deterministic generated adapter module (`__elevate_interop.rs`) from declared adapter entries.
+- deterministic generated adapter module (`elevate_interop.rs`) from declared adapter entries.
 - adapter module auto-injection into generated crate root (`lib.rs`/`main.rs`) when present.
 - contract-declared adapter aliases are automatically rewritten at crate transpile time to generated adapter calls.
-- Host-handle abstraction preview for lexopt via `ParserHandle` wrapper API in Elevate source.
+- Object-native parser API preview for lexopt via `Parser` impl methods that thread `self`.
 - Native test framework pipeline for `.ers` crates:
 - discovers `test_*` functions,
 - injects generated test wrappers,
@@ -230,8 +230,8 @@ Behavior:
 - Compilation failures in `.ers` crate builds are reported with source-relative line/column context.
 - Optional interop contract file: `<crate-root>/elevate.interop`.
 - `allow` directives gate which `rust use` imports are permitted.
-- `adapter` directives generate deterministic Rust adapter functions in `target/elevate-gen/src/__elevate_interop.rs`.
-- adapter alias path calls in Elevate source are rewritten to `__elevate_interop` generated functions during transpile.
+- `adapter` directives generate deterministic Rust adapter functions in `target/elevate-gen/src/elevate_interop.rs`.
+- adapter alias path calls in Elevate source are rewritten to `elevate_interop` generated functions during transpile.
 
 Safety:
 - Path collisions between generated `.rs` outputs and copied files are treated as errors.
@@ -284,7 +284,7 @@ Quality gates:
 - Inline `rust { ... }` escape blocks are not complete.
 - Interop contract signature verification currently validates declaration shape, but not full type-level callsite compatibility across all compiler phases.
 - Adapter routing currently targets direct path call expressions; broader rewrite coverage (for additional call shapes) is not complete.
-- Host-handle abstractions are in preview form (lexopt case study) and are not yet generalized as a standard library pattern.
+- Object-native parser APIs are in preview form (lexopt example) and are not yet generalized as a standard library pattern.
 - Borrow/reference features remain intentionally unsupported.
 
 ### Experimental Feature Flags (Opt-In)

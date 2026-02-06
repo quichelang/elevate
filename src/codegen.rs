@@ -382,7 +382,12 @@ fn emit_pattern(pattern: &RustPattern) -> String {
         RustPattern::Or(items) => items.iter().map(emit_pattern).collect::<Vec<_>>().join(" | "),
         RustPattern::Variant { path, payload } => {
             if let Some(payload) = payload {
-                format!("{}({})", path.join("::"), emit_pattern(payload))
+                if let RustPattern::Tuple(items) = payload.as_ref() {
+                    let inner = items.iter().map(emit_pattern).collect::<Vec<_>>().join(", ");
+                    format!("{}({inner})", path.join("::"))
+                } else {
+                    format!("{}({})", path.join("::"), emit_pattern(payload))
+                }
             } else {
                 path.join("::")
             }

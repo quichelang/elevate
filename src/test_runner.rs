@@ -85,7 +85,7 @@ fn inject_dir(
         generated_file.set_extension("rs");
         let existing = fs::read_to_string(&generated_file)
             .map_err(|error| format!("failed to read generated file {}: {error}", generated_file.display()))?;
-        let mut wrapped = existing;
+        let mut wrapped = annotate_test_cfg(&existing, &tests);
         wrapped.push_str(&render_wrappers(&tests));
         fs::write(&generated_file, wrapped.as_bytes()).map_err(|error| {
             format!(
@@ -171,6 +171,27 @@ fn sanitize_wrapper_name(index: usize, test: &str) -> String {
         } else {
             out.push('_');
         }
+    }
+    out
+}
+
+fn annotate_test_cfg(source: &str, tests: &[String]) -> String {
+    let mut out = source.to_string();
+    for test in tests {
+        let name = test.rsplit("::").next().unwrap_or(test.as_str());
+        let pub_sig = format!("pub fn {name}(");
+        let plain_sig = format!("fn {name}(");
+        if out.contains(&pub_sig) {
+            out = out.replace(
+                &pub_sig,
+                &format!("#[cfg(test)]\n#[allow(dead_code)]\npub fn {name}("),
+            );
+            continue;
+        }
+        out = out.replace(
+            &plain_sig,
+            &format!("#[cfg(test)]\n#[allow(dead_code)]\nfn {name}("),
+        );
     }
     out
 }

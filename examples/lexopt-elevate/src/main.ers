@@ -4,12 +4,12 @@ rust use lexopt_elevate::parser::Parser;
 
 fn main() {
     const parser = Parser::from_env();
-    const handle = Parser::handle_id(parser);
+    const handle = Parser::handle(parser);
     run_loop(handle);
 }
 
 fn run_loop(handle: i64) {
-    const next = Parser::next(handle);
+    const next = Parser::next_from_handle(handle);
     match next {
         Result::Ok(value) => run_after_next(handle, value);
         Result::Err(error) => fail_parse(error);
@@ -42,7 +42,7 @@ fn emit_arg(handle: i64, arg: Arg) {
 }
 
 fn emit_optional_long_value(handle: i64) {
-    const value = Parser::optional_value(handle);
+    const value = Parser::optional_value_from_handle(handle);
     match value {
         Option::Some(text) => println!("long-value:{}", text);
         Option::None => ();

@@ -625,6 +625,23 @@ mod tests {
     }
 
     #[test]
+    fn compile_emits_multi_value_variant_payload_patterns() {
+        let source = r#"
+            rust use crate::Pair;
+
+            fn classify(value: Pair) -> i64 {
+                return match value {
+                    Pair::Both(left, right) => left;
+                    _ => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("Pair::Both(left, right)"));
+    }
+
+    #[test]
     fn compile_supports_visibility_if_and_while() {
         let source = r#"
             pub fn choose(flag: bool) -> i64 {

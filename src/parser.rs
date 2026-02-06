@@ -547,12 +547,31 @@ impl Parser {
 
         let path = self.parse_path("Expected pattern path")?;
         let payload = if self.match_kind(TokenKind::LParen) {
-            let inner = self.parse_pattern()?;
-            self.expect(
-                TokenKind::RParen,
-                "Expected ')' after variant payload pattern",
-            )?;
-            Some(Box::new(inner))
+            if self.match_kind(TokenKind::RParen) {
+                self.error_current("Variant payload pattern cannot be empty");
+                return None;
+            }
+            let first = self.parse_pattern()?;
+            if self.match_kind(TokenKind::Comma) {
+                let mut items = vec![first];
+                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                    items.push(self.parse_pattern()?);
+                    if !self.match_kind(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(
+                    TokenKind::RParen,
+                    "Expected ')' after variant payload pattern",
+                )?;
+                Some(Box::new(Pattern::Tuple(items)))
+            } else {
+                self.expect(
+                    TokenKind::RParen,
+                    "Expected ')' after variant payload pattern",
+                )?;
+                Some(Box::new(first))
+            }
         } else {
             None
         };
@@ -1131,6 +1150,21 @@ mod tests {
                     (0, n) => n;
                     (x, 0) => x;
                     _ => a;
+                };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_multi_value_variant_payload_patterns() {
+        let source = r#"
+            fn classify(value: Pair) -> i64 {
+                return match value {
+                    Pair::Both(left, right) => left;
+                    _ => 0;
                 };
             }
         "#;

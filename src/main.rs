@@ -25,17 +25,19 @@ fn run_build(args: &[String]) {
     }
     let crate_root = PathBuf::from(&args[0]);
     let mut release = false;
-    let mut options = CompileOptions::default();
+    let mut non_flag_args = Vec::new();
     for arg in &args[1..] {
         if arg == "--release" {
             release = true;
             continue;
         }
-        if !apply_experiment_flag(arg, &mut options.experiments) {
-            eprintln!("error: unknown argument '{arg}'");
-            process::exit(2);
-        }
+        non_flag_args.push(arg.clone());
     }
+    let options = parse_compile_options(&non_flag_args).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        process::exit(2);
+    }
+    );
 
     match elevate::crate_builder::build_ers_crate_with_options(&crate_root, release, &options) {
         Ok(summary) => {
@@ -60,13 +62,10 @@ fn run_test(args: &[String]) {
         process::exit(2);
     }
     let crate_root = PathBuf::from(&args[0]);
-    let mut options = CompileOptions::default();
-    for arg in &args[1..] {
-        if !apply_experiment_flag(arg, &mut options.experiments) {
-            eprintln!("error: unknown argument '{arg}'");
-            process::exit(2);
-        }
-    }
+    let options = parse_compile_options(&args[1..]).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        process::exit(2);
+    });
 
     match elevate::test_runner::test_ers_crate(&crate_root, &options) {
         Ok(summary) => {
@@ -87,7 +86,7 @@ fn run_test(args: &[String]) {
 fn run_compile(args: &[String]) {
     let input_path = PathBuf::from(&args[0]);
     let mut emit_target = EmitTarget::Stdout;
-    let mut options = CompileOptions::default();
+    let mut options_args = Vec::new();
     let mut idx = 1usize;
     while idx < args.len() {
         if args[idx] == "--emit-rust" {
@@ -100,13 +99,13 @@ fn run_compile(args: &[String]) {
             }
             continue;
         }
-        if apply_experiment_flag(&args[idx], &mut options.experiments) {
-            idx += 1;
-            continue;
-        }
-        eprintln!("error: unknown argument '{}'", args[idx]);
-        process::exit(2);
+        options_args.push(args[idx].clone());
+        idx += 1;
     }
+    let options = parse_compile_options(&options_args).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        process::exit(2);
+    });
 
     let source = match elevate::source::load_file(&input_path) {
         Ok(source) => source,
@@ -171,4 +170,14 @@ fn apply_experiment_flag(flag: &str, experiments: &mut ExperimentFlags) -> bool 
         }
         _ => false,
     }
+}
+
+fn parse_compile_options(args: &[String]) -> Result<CompileOptions, String> {
+    let mut options = CompileOptions::default();
+    for arg in args {
+        if !apply_experiment_flag(arg, &mut options.experiments) {
+            return Err(format!("unknown argument '{arg}'"));
+        }
+    }
+    Ok(options)
 }

@@ -143,15 +143,21 @@ impl Parser {
         }
     }
 
-    pub fn handle_id(self) -> i64 {
-        self.raw
-    }
-
-    pub fn next(handle: i64) -> Result<Option<Arg>, ParseError> {
+    pub fn next(self) -> Result<Option<Arg>, ParseError> {
+        const handle = self.raw;
         Parser::next_internal(handle)
     }
 
-    pub fn value(handle: i64) -> Result<String, ParseError> {
+    pub fn handle(self) -> i64 {
+        self.raw
+    }
+
+    pub fn next_from_handle(handle: i64) -> Result<Option<Arg>, ParseError> {
+        Parser::next_internal(handle)
+    }
+
+    pub fn value(self) -> Result<String, ParseError> {
+        const handle = self.raw;
         const maybe = Parser::optional_value_internal(handle);
         match maybe {
             Option::Some(value) => Result::Ok(value);
@@ -159,11 +165,17 @@ impl Parser {
         }
     }
 
-    pub fn optional_value(handle: i64) -> Option<String> {
+    pub fn optional_value(self) -> Option<String> {
+        const handle = self.raw;
         Parser::optional_value_internal(handle)
     }
 
-    pub fn values(handle: i64) -> Result<Option<String>, ParseError> {
+    pub fn optional_value_from_handle(handle: i64) -> Option<String> {
+        Parser::optional_value_internal(handle)
+    }
+
+    pub fn values(self) -> Result<Option<String>, ParseError> {
+        const handle = self.raw;
         const maybe = Parser::optional_value_internal(handle);
         match maybe {
             Option::Some(value) => Result::Ok(Option::Some(value));
@@ -171,8 +183,9 @@ impl Parser {
         }
     }
 
-    pub fn reset(handle: i64) {
-        elevate_interop::reset(handle);
+    pub fn reset(self) -> Self {
+        elevate_interop::reset(self.raw);
+        self
     }
 
     fn next_internal(handle: i64) -> Result<Option<Arg>, ParseError> {

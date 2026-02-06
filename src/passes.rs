@@ -494,6 +494,15 @@ impl InteropPolicyRegistry {
             return args.iter().all(|arg| self.is_clone_candidate_or_copy(arg));
         }
 
+        // Imported nominal types are treated as optimistic clone candidates so
+        // lowering can preserve source ergonomics for repeated by-value use.
+        let head_last = last_path_segment(head);
+        if is_probably_nominal_type(head_last)
+            && self.import_looks_like_type(head_last)
+        {
+            return args.iter().all(|arg| self.is_clone_candidate_or_copy(arg));
+        }
+
         false
     }
 
@@ -503,6 +512,12 @@ impl InteropPolicyRegistry {
             return true;
         }
         self.is_clone_candidate(ty)
+    }
+
+    fn import_looks_like_type(&self, type_name: &str) -> bool {
+        self.observed_import_paths
+            .iter()
+            .any(|path| last_path_segment(path) == type_name)
     }
 }
 
@@ -2671,6 +2686,13 @@ fn is_copy_primitive_type(head: &str) -> bool {
     )
 }
 
+fn is_probably_nominal_type(head: &str) -> bool {
+    head.chars()
+        .next()
+        .map(|ch| ch.is_ascii_uppercase())
+        .unwrap_or(false)
+}
+
 fn split_type_head_and_args(ty: &str) -> (&str, Vec<&str>) {
     let ty = ty.trim();
     let Some(start) = ty.find('<') else {
@@ -3016,6 +3038,15 @@ fn lower_pattern(
         Pattern::Tuple(items) => {
             if *scrutinee_ty == SemType::Unit && items.is_empty() {
                 TypedPattern::Tuple(Vec::new())
+            } else if *scrutinee_ty == SemType::Unknown {
+                TypedPattern::Tuple(
+                    items
+                        .iter()
+                        .map(|item| {
+                            lower_pattern(item, &SemType::Unknown, context, locals, diagnostics)
+                        })
+                        .collect(),
+                )
             } else if let SemType::Tuple(scrutinee_items) = scrutinee_ty {
                 if items.len() != scrutinee_items.len() {
                     diagnostics.push(Diagnostic::new(
