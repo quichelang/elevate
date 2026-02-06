@@ -229,7 +229,7 @@ fn emit_expr(expr: &RustExpr) -> String {
             format!("{callee_text}({args})")
         }
         RustExpr::MacroCall { path, args } => {
-            let args = if path.len() == 1 && path[0] == "format" {
+            let args = if is_format_style_macro(path) {
                 args.iter()
                     .enumerate()
                     .map(|(index, arg)| {
@@ -331,6 +331,14 @@ fn emit_expr(expr: &RustExpr) -> String {
         }
         RustExpr::Try(inner) => format!("{}?", emit_expr(inner)),
     }
+}
+
+fn is_format_style_macro(path: &[String]) -> bool {
+    path.len() == 1
+        && matches!(
+            path[0].as_str(),
+            "format" | "println" | "eprintln" | "panic"
+        )
 }
 
 fn emit_struct_literal_field(field: &RustStructLiteralField) -> String {

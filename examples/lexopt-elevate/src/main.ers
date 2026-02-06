@@ -1,0 +1,55 @@
+rust use lexopt_elevate::model::Arg;
+rust use lexopt_elevate::model::ParseError;
+rust use lexopt_elevate::parser::Parser;
+
+fn main() {
+    const parser = Parser::from_env();
+    const handle = Parser::handle_id(parser);
+    run_loop(handle);
+}
+
+fn run_loop(handle: i64) {
+    const next = Parser::next(handle);
+    match next {
+        Result::Ok(value) => run_after_next(handle, value);
+        Result::Err(error) => fail_parse(error);
+    };
+}
+
+fn run_after_next(handle: i64, value: Option<Arg>) {
+    match value {
+        Option::Some(arg) => emit_arg(handle, arg);
+        Option::None => ();
+    };
+}
+
+fn emit_arg(handle: i64, arg: Arg) {
+    match arg {
+        Arg::Short(name) => {
+            println!("short:{}", name);
+            run_loop(handle);
+        };
+        Arg::Long(name) => {
+            println!("long:{}", name);
+            emit_optional_long_value(handle);
+            run_loop(handle);
+        };
+        Arg::Value(value) => {
+            println!("value:{}", value);
+            run_loop(handle);
+        };
+    };
+}
+
+fn emit_optional_long_value(handle: i64) {
+    const value = Parser::optional_value(handle);
+    match value {
+        Option::Some(text) => println!("long-value:{}", text);
+        Option::None => ();
+    };
+}
+
+fn fail_parse(error: ParseError) {
+    println!("parse-error:{:?}", error);
+    std::process::exit(1);
+}

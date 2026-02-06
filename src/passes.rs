@@ -1536,7 +1536,11 @@ fn infer_expr(
                 typed_items.push(typed_item);
                 item_types.push(ty);
             }
-            let out_ty = SemType::Tuple(item_types);
+            let out_ty = if item_types.is_empty() {
+                SemType::Unit
+            } else {
+                SemType::Tuple(item_types)
+            };
             (
                 TypedExpr {
                     kind: TypedExprKind::Tuple(typed_items),
@@ -2876,6 +2880,9 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
     match (actual, expected) {
         (_, SemType::Unknown) | (SemType::Unknown, _) => true,
         (SemType::Unit, SemType::Unit) => true,
+        (SemType::Unit, SemType::Tuple(items)) | (SemType::Tuple(items), SemType::Unit) => {
+            items.is_empty()
+        }
         (SemType::Tuple(left), SemType::Tuple(right)) => {
             if left.len() != right.len() {
                 return false;
@@ -2986,7 +2993,9 @@ fn lower_pattern(
             TypedPattern::String(value.clone())
         }
         Pattern::Tuple(items) => {
-            if let SemType::Tuple(scrutinee_items) = scrutinee_ty {
+            if *scrutinee_ty == SemType::Unit && items.is_empty() {
+                TypedPattern::Tuple(Vec::new())
+            } else if let SemType::Tuple(scrutinee_items) = scrutinee_ty {
                 if items.len() != scrutinee_items.len() {
                     diagnostics.push(Diagnostic::new(
                         format!(
@@ -3141,19 +3150,34 @@ fn lower_pattern(
                     })
                 }
             } else {
-                diagnostics.push(Diagnostic::new(
-                    format!("Unknown enum `{enum_name}` in pattern"),
-                    Span::new(0, 0),
-                ));
-                payload.as_ref().map(|p| {
-                    Box::new(lower_pattern(
-                        p,
-                        &SemType::Unknown,
-                        context,
-                        locals,
-                        diagnostics,
-                    ))
-                })
+                if let SemType::Path { path: ty_path, .. } = scrutinee_ty
+                    && ty_path.last() == Some(&enum_name)
+                {
+                    // Allow matching on imported Rust enums without local variant metadata.
+                    payload.as_ref().map(|p| {
+                        Box::new(lower_pattern(
+                            p,
+                            &SemType::Unknown,
+                            context,
+                            locals,
+                            diagnostics,
+                        ))
+                    })
+                } else {
+                    diagnostics.push(Diagnostic::new(
+                        format!("Unknown enum `{enum_name}` in pattern"),
+                        Span::new(0, 0),
+                    ));
+                    payload.as_ref().map(|p| {
+                        Box::new(lower_pattern(
+                            p,
+                            &SemType::Unknown,
+                            context,
+                            locals,
+                            diagnostics,
+                        ))
+                    })
+                }
             };
 
             TypedPattern::Variant {

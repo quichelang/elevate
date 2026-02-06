@@ -457,7 +457,19 @@ impl Parser {
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let pattern = self.parse_pattern()?;
             self.expect(TokenKind::FatArrow, "Expected `=>` in match arm")?;
-            let value = self.parse_expr()?;
+            let value = if self.at(TokenKind::LBrace) {
+                let body = self.parse_block()?;
+                Expr::Call {
+                    callee: Box::new(Expr::Closure {
+                        params: Vec::new(),
+                        return_type: None,
+                        body,
+                    }),
+                    args: Vec::new(),
+                }
+            } else {
+                self.parse_expr()?
+            };
             self.expect(
                 TokenKind::Semicolon,
                 "Expected ';' after match arm expression",
@@ -1098,6 +1110,21 @@ mod tests {
                     (0, n) => n;
                     (x, 0) => x;
                     _ => a;
+                };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_match_block_arms() {
+        let source = r#"
+            fn f(v: i64) -> i64 {
+                return match v {
+                    0 => { 1 };
+                    _ => { 2 };
                 };
             }
         "#;

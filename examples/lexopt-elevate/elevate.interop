@@ -1,5 +1,9 @@
 # Allowed Rust imports for lexopt Elevate sources.
 allow crate::elevate_interop
 allow crate::model::*
+allow crate::parser::Parser
+allow lexopt_elevate::model::Arg
+allow lexopt_elevate::model::ParseError
+allow lexopt_elevate::parser::Parser
 
 runtime_preset parser_state
