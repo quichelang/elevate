@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{collections::BTreeSet, fmt::Write as _};
+use crate::ast::{Block, Expr, Item, Module, Stmt, StructLiteralField};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildSummary {
@@ -169,7 +171,7 @@ fn process_src_dir(
             let source = fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
             validate_interop_contract_for_source(&source, &path, interop_contract)?;
-            let output = crate::compile_source(&source).map_err(|error| {
+            let output = compile_source_with_interop_contract(&source, interop_contract).map_err(|error| {
                 format_compile_error_with_context(&path, &source, &error)
             })?;
             let mut out_path = target.clone();
@@ -207,6 +209,132 @@ fn process_src_dir(
     }
 
     Ok(())
+}
+
+fn compile_source_with_interop_contract(
+    source: &str,
+    contract: &InteropContract,
+) -> Result<crate::CompilerOutput, crate::CompileError> {
+    if contract.adapters.is_empty() {
+        return crate::compile_source(source);
+    }
+
+    let tokens = crate::lexer::lex(source).map_err(|diagnostics| crate::CompileError { diagnostics })?;
+    let mut module = crate::parser::parse_module(tokens)
+        .map_err(|diagnostics| crate::CompileError { diagnostics })?;
+    rewrite_module_adapter_calls(&mut module, contract);
+    crate::compile_ast(&module)
+}
+
+fn rewrite_module_adapter_calls(module: &mut Module, contract: &InteropContract) {
+    let adapter_map = contract
+        .adapters
+        .iter()
+        .map(|adapter| {
+            (
+                adapter.alias.clone(),
+                vec!["__elevate_interop".to_string(), adapter_fn_name(&adapter.alias)],
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for item in &mut module.items {
+        rewrite_item_adapter_calls(item, &adapter_map);
+    }
+}
+
+fn rewrite_item_adapter_calls(item: &mut Item, adapter_map: &HashMap<String, Vec<String>>) {
+    match item {
+        Item::Function(def) => rewrite_block_adapter_calls(&mut def.body, adapter_map),
+        Item::Impl(def) => {
+            for method in &mut def.methods {
+                rewrite_block_adapter_calls(&mut method.body, adapter_map);
+            }
+        }
+        Item::Const(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
+        Item::Static(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
+        Item::Struct(_) | Item::Enum(_) | Item::RustUse(_) => {}
+    }
+}
+
+fn rewrite_block_adapter_calls(block: &mut Block, adapter_map: &HashMap<String, Vec<String>>) {
+    for stmt in &mut block.statements {
+        rewrite_stmt_adapter_calls(stmt, adapter_map);
+    }
+}
+
+fn rewrite_stmt_adapter_calls(stmt: &mut Stmt, adapter_map: &HashMap<String, Vec<String>>) {
+    match stmt {
+        Stmt::Const(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
+        Stmt::DestructureConst { value, .. } => rewrite_expr_adapter_calls(value, adapter_map),
+        Stmt::Return(Some(expr)) => rewrite_expr_adapter_calls(expr, adapter_map),
+        Stmt::Return(None) => {}
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            rewrite_expr_adapter_calls(condition, adapter_map);
+            rewrite_block_adapter_calls(then_block, adapter_map);
+            if let Some(else_block) = else_block {
+                rewrite_block_adapter_calls(else_block, adapter_map);
+            }
+        }
+        Stmt::While { condition, body } => {
+            rewrite_expr_adapter_calls(condition, adapter_map);
+            rewrite_block_adapter_calls(body, adapter_map);
+        }
+        Stmt::Expr(expr) | Stmt::TailExpr(expr) => rewrite_expr_adapter_calls(expr, adapter_map),
+    }
+}
+
+fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec<String>>) {
+    match expr {
+        Expr::Call { callee, args } => {
+            rewrite_expr_adapter_calls(callee, adapter_map);
+            for arg in args {
+                rewrite_expr_adapter_calls(arg, adapter_map);
+            }
+            if let Expr::Path(path) = callee.as_mut() {
+                let alias = path.join("::");
+                if let Some(rewrite) = adapter_map.get(&alias) {
+                    *path = rewrite.clone();
+                }
+            }
+        }
+        Expr::Field { base, .. } => rewrite_expr_adapter_calls(base, adapter_map),
+        Expr::Match { scrutinee, arms } => {
+            rewrite_expr_adapter_calls(scrutinee, adapter_map);
+            for arm in arms {
+                rewrite_expr_adapter_calls(&mut arm.value, adapter_map);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) => rewrite_expr_adapter_calls(expr, adapter_map),
+        Expr::Binary { left, right, .. } => {
+            rewrite_expr_adapter_calls(left, adapter_map);
+            rewrite_expr_adapter_calls(right, adapter_map);
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                rewrite_expr_adapter_calls(item, adapter_map);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for StructLiteralField { value, .. } in fields {
+                rewrite_expr_adapter_calls(value, adapter_map);
+            }
+        }
+        Expr::Closure { body, .. } => rewrite_block_adapter_calls(body, adapter_map),
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                rewrite_expr_adapter_calls(start, adapter_map);
+            }
+            if let Some(end) = end {
+                rewrite_expr_adapter_calls(end, adapter_map);
+            }
+        }
+        Expr::Int(_) | Expr::Bool(_) | Expr::String(_) | Expr::Path(_) => {}
+    }
 }
 
 fn canonicalize(path: &Path) -> Result<PathBuf, String> {
@@ -750,6 +878,35 @@ mod tests {
         let generated_lib =
             fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");
         assert!(generated_lib.contains("mod __elevate_interop;"));
+    }
+
+    #[test]
+    fn transpile_routes_alias_calls_to_generated_interop_adapters() {
+        let root = create_temp_dir("elevate-interop-routing");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "pub fn pick(a: i64, b: i64) -> i64 {\n    const out: i64 = elevate::max_i64(a, b);\n    out\n}\n",
+        )
+        .expect("write lib.ers should succeed");
+        fs::write(
+            root.join("elevate.interop"),
+            "adapter elevate::max_i64 => std::cmp::max (i64, i64) -> i64\n",
+        )
+        .expect("write interop contract should succeed");
+
+        let summary = transpile_ers_crate(&root).expect("transpile should succeed");
+        let generated_src = summary.generated_root.join("src");
+        let generated_lib =
+            fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");
+        assert!(
+            generated_lib.contains("__elevate_interop::__elevate_adapter_elevate__max_i64(a, b)")
+        );
     }
 
     fn create_temp_dir(prefix: &str) -> PathBuf {

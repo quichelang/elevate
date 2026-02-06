@@ -179,6 +179,7 @@ Implemented:
 - allow-list validation for `rust use` imports.
 - deterministic generated adapter module (`__elevate_interop.rs`) from declared adapter entries.
 - adapter module auto-injection into generated crate root (`lib.rs`/`main.rs`) when present.
+- contract-declared adapter aliases are automatically rewritten at crate transpile time to generated adapter calls.
 - Host-handle abstraction preview for lexopt via `ParserHandle` wrapper API in Elevate source.
 
 Quality status:
@@ -217,6 +218,7 @@ Behavior:
 - Optional interop contract file: `<crate-root>/elevate.interop`.
 - `allow` directives gate which `rust use` imports are permitted.
 - `adapter` directives generate deterministic Rust adapter functions in `target/elevate-gen/src/__elevate_interop.rs`.
+- adapter alias path calls in Elevate source are rewritten to `__elevate_interop` generated functions during transpile.
 
 Safety:
 - Path collisions between generated `.rs` outputs and copied files are treated as errors.
@@ -267,6 +269,6 @@ Quality gates:
 - Match guards and full exhaustiveness diagnostics are not complete.
 - Inline `rust { ... }` escape blocks are not complete.
 - Interop contract signature verification currently validates declaration shape, but not full type-level callsite compatibility across all compiler phases.
-- Generated adapter functions are currently contract-driven and emitted at crate-build time; compiler-level automatic routing to those adapters is not complete.
+- Adapter routing currently targets direct path call expressions; broader rewrite coverage (for additional call shapes) is not complete.
 - Host-handle abstractions are in preview form (lexopt case study) and are not yet generalized as a standard library pattern.
 - Borrow/reference features remain intentionally unsupported.
