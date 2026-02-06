@@ -272,3 +272,27 @@ Quality gates:
 - Adapter routing currently targets direct path call expressions; broader rewrite coverage (for additional call shapes) is not complete.
 - Host-handle abstractions are in preview form (lexopt case study) and are not yet generalized as a standard library pattern.
 - Borrow/reference features remain intentionally unsupported.
+
+### Experimental Feature Flags (Opt-In)
+
+These are intentionally non-default and must be enabled explicitly.
+
+- `exp_move_mut_args`
+  - Ownership move-by-default experiment for mutation-capable call flows.
+  - Intended behavior: when a function needs to mutate an argument, the argument is passed by value and ownership is returned explicitly (state-threading style), avoiding source-level reference syntax.
+  - Goal: keep user syntax simple while preserving deterministic ownership behavior.
+
+- `exp_infer_local_bidi`
+  - Koko-inspired local bidirectional inference mode.
+  - Intended behavior: aggressive local inference inside function bodies, with annotations still preferred/required at public API boundaries.
+  - Goal: practical inference without unstable global solver complexity.
+
+- `exp_effect_rows_internal`
+  - Internal row-like effect/capability tracking metadata (not exposed as source syntax).
+  - Intended behavior: compiler tracks operation requirements/effects to improve diagnostics, interop lowering, and specialization planning.
+  - Goal: gain row-polymorphism-like utility without exposing a full research-style type/effect surface in MVP.
+
+- `exp_infer_principal_fallback`
+  - Principal-type fallback diagnostics mode.
+  - Intended behavior: when inference cannot find a stable principal type, emit deterministic guidance for one explicit annotation site rather than cascading errors.
+  - Goal: practical developer ergonomics for larger codebases.
