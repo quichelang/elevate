@@ -595,6 +595,9 @@ impl Parser {
             )?;
             return Some(first);
         }
+        if self.match_kind(TokenKind::LBracket) {
+            return self.parse_slice_pattern();
+        }
 
         let path = self.parse_path("Expected pattern path")?;
         let payload = if self.match_kind(TokenKind::LParen) {
@@ -654,6 +657,47 @@ impl Parser {
             return Some(Pattern::Binding(path[0].clone()));
         }
         Some(Pattern::Variant { path, payload })
+    }
+
+    fn parse_slice_pattern(&mut self) -> Option<Pattern> {
+        let mut prefix = Vec::new();
+        let mut suffix = Vec::new();
+        let mut rest: Option<String> = None;
+        let mut parsing_suffix = false;
+
+        while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+            if self.match_kind(TokenKind::DotDot) {
+                if rest.is_some() {
+                    self.error_current("Slice pattern can contain at most one `..` rest");
+                    return None;
+                }
+                rest = if let TokenKind::Identifier(name) = self.peek().kind.clone() {
+                    self.advance();
+                    Some(name)
+                } else {
+                    None
+                };
+                parsing_suffix = true;
+            } else {
+                let pattern = self.parse_pattern()?;
+                if parsing_suffix {
+                    suffix.push(pattern);
+                } else {
+                    prefix.push(pattern);
+                }
+            }
+
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+        }
+
+        self.expect(TokenKind::RBracket, "Expected ']' after slice pattern")?;
+        Some(Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        })
     }
 
     fn parse_postfix_expr(&mut self) -> Option<Expr> {
@@ -1037,6 +1081,8 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (RBrace, RBrace)
             | (LParen, LParen)
             | (RParen, RParen)
+            | (LBracket, LBracket)
+            | (RBracket, RBracket)
             | (Colon, Colon)
             | (ColonColon, ColonColon)
             | (Semicolon, Semicolon)
@@ -1358,6 +1404,23 @@ mod tests {
                     10..=20 => 2;
                     ..0 => 3;
                     _ => 4;
+                };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_match_slice_patterns() {
+        let source = r#"
+            fn f(v: Vec<i64>) -> i64 {
+                return match v {
+                    [head, ..tail] => head;
+                    [single] => single;
+                    [] => 0;
+                    _ => 1;
                 };
             }
         "#;

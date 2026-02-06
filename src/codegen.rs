@@ -399,6 +399,21 @@ fn emit_pattern(pattern: &RustPattern) -> String {
                 .join(", ");
             format!("({inner})")
         }
+        RustPattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        } => {
+            let mut items = Vec::new();
+            items.extend(prefix.iter().map(emit_pattern));
+            if let Some(name) = rest {
+                items.push(format!("..{name}"));
+            } else if !suffix.is_empty() {
+                items.push("..".to_string());
+            }
+            items.extend(suffix.iter().map(emit_pattern));
+            format!("[{}]", items.join(", "))
+        }
         RustPattern::Or(items) => items.iter().map(emit_pattern).collect::<Vec<_>>().join(" | "),
         RustPattern::BindingAt { name, pattern } => {
             format!("{name} @ {}", emit_pattern(pattern))

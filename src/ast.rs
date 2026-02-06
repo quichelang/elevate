@@ -246,6 +246,11 @@ pub enum Pattern {
     Bool(bool),
     String(String),
     Tuple(Vec<Pattern>),
+    Slice {
+        prefix: Vec<Pattern>,
+        rest: Option<String>,
+        suffix: Vec<Pattern>,
+    },
     Or(Vec<Pattern>),
     BindingAt {
         name: String,

@@ -40,6 +40,8 @@ pub enum TokenKind {
     RBrace,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Colon,
     ColonColon,
     Semicolon,
@@ -107,6 +109,8 @@ impl<'a> Lexer<'a> {
                 '}' => self.push_simple(TokenKind::RBrace, start),
                 '(' => self.push_simple(TokenKind::LParen, start),
                 ')' => self.push_simple(TokenKind::RParen, start),
+                '[' => self.push_simple(TokenKind::LBracket, start),
+                ']' => self.push_simple(TokenKind::RBracket, start),
                 ':' => {
                     if self.peek_char() == Some(':') {
                         self.advance();
@@ -576,6 +580,15 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDot)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDotEq)));
+    }
+
+    #[test]
+    fn lex_bracket_tokens() {
+        let source = "match xs { [head, ..tail] => head; _ => 0; }";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::LBracket)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::RBracket)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDot)));
     }
 
     #[test]

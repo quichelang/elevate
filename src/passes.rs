@@ -3238,6 +3238,17 @@ fn result_parts(ty: &SemType) -> Option<(&SemType, &SemType)> {
     None
 }
 
+fn slice_item_type(ty: &SemType) -> Option<SemType> {
+    if let SemType::Path { path, args } = ty
+        && path.len() == 1
+        && path[0] == "Vec"
+        && args.len() == 1
+    {
+        return Some(args[0].clone());
+    }
+    None
+}
+
 fn lower_pattern(
     pattern: &Pattern,
     scrutinee_ty: &SemType,
@@ -3319,6 +3330,42 @@ fn lower_pattern(
                         })
                         .collect(),
                 )
+            }
+        }
+        Pattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        } => {
+            let item_ty = if let Some(item) = slice_item_type(scrutinee_ty) {
+                item
+            } else {
+                if *scrutinee_ty != SemType::Unknown {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Slice pattern requires `Vec<T>` scrutinee, got `{}`",
+                            type_to_string(scrutinee_ty)
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+                SemType::Unknown
+            };
+
+            if let Some(name) = rest {
+                locals.insert(name.clone(), SemType::Unknown);
+            }
+
+            TypedPattern::Slice {
+                prefix: prefix
+                    .iter()
+                    .map(|item| lower_pattern(item, &item_ty, context, locals, diagnostics))
+                    .collect(),
+                rest: rest.clone(),
+                suffix: suffix
+                    .iter()
+                    .map(|item| lower_pattern(item, &item_ty, context, locals, diagnostics))
+                    .collect(),
             }
         }
         Pattern::Or(items) => {
@@ -3746,6 +3793,15 @@ fn lower_pattern_to_rust(pattern: &TypedPattern) -> RustPattern {
         TypedPattern::Tuple(items) => {
             RustPattern::Tuple(items.iter().map(lower_pattern_to_rust).collect())
         }
+        TypedPattern::Slice {
+            prefix,
+            rest,
+            suffix,
+        } => RustPattern::Slice {
+            prefix: prefix.iter().map(lower_pattern_to_rust).collect(),
+            rest: rest.clone(),
+            suffix: suffix.iter().map(lower_pattern_to_rust).collect(),
+        },
         TypedPattern::Or(items) => {
             RustPattern::Or(items.iter().map(lower_pattern_to_rust).collect())
         }

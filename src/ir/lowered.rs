@@ -223,6 +223,11 @@ pub enum RustPattern {
     Bool(bool),
     String(String),
     Tuple(Vec<RustPattern>),
+    Slice {
+        prefix: Vec<RustPattern>,
+        rest: Option<String>,
+        suffix: Vec<RustPattern>,
+    },
     Or(Vec<RustPattern>),
     BindingAt {
         name: String,

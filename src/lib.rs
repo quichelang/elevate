@@ -706,6 +706,25 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_match_slice_rest_patterns() {
+        let source = r#"
+            fn classify(v: Vec<i64>) -> i64 {
+                return match v {
+                    [head, ..tail] => head;
+                    [single] => single;
+                    [] => 0;
+                    _ => 1;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("[head, ..tail]"));
+        assert!(output.rust_code.contains("[single]"));
+        assert!(output.rust_code.contains("[]"));
+    }
+
+    #[test]
     fn compile_reports_non_exhaustive_bool_match() {
         let source = r#"
             fn classify(flag: bool) -> i64 {
