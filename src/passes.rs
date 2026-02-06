@@ -1703,8 +1703,24 @@ fn resolve_direct_borrow_arg_modes(
         | "std::vec::Vec::len"
         | "std::vec::Vec::is_empty"
         | "alloc::vec::Vec::len"
-        | "alloc::vec::Vec::is_empty" => {
+        | "alloc::vec::Vec::is_empty"
+        | "HashMap::len"
+        | "HashMap::is_empty"
+        | "std::collections::HashMap::len"
+        | "std::collections::HashMap::is_empty"
+        | "BTreeMap::len"
+        | "BTreeMap::is_empty"
+        | "std::collections::BTreeMap::len"
+        | "std::collections::BTreeMap::is_empty" => {
             set_borrowed(&mut modes, 0);
+            Some(modes)
+        }
+        "HashMap::contains_key"
+        | "std::collections::HashMap::contains_key"
+        | "BTreeMap::contains_key"
+        | "std::collections::BTreeMap::contains_key" => {
+            set_borrowed(&mut modes, 0);
+            set_borrowed(&mut modes, 1);
             Some(modes)
         }
         _ => None,

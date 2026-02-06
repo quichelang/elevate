@@ -335,6 +335,28 @@ mod tests {
     }
 
     #[test]
+    fn compile_auto_borrows_hashmap_btreemap_associated_calls() {
+        let source = r#"
+            rust use std::collections::HashMap;
+            rust use std::collections::BTreeMap;
+
+            fn demo(h: HashMap<String, i64>, b: BTreeMap<String, i64>, key: String) -> bool {
+                std::mem::drop(HashMap::len(h));
+                std::mem::drop(BTreeMap::is_empty(b));
+                return HashMap::contains_key(h, key) or BTreeMap::contains_key(b, key);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("HashMap::len(&h)"));
+        assert!(output.rust_code.contains("BTreeMap::is_empty(&b)"));
+        assert!(output.rust_code.contains("HashMap::contains_key(&h, &key)"));
+        assert!(output.rust_code.contains("BTreeMap::contains_key(&b, &key)"));
+        assert!(!output.rust_code.contains("key.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_rejects_unknown_inferred_return() {
         let source = r#"
             fn maybe_value() {
