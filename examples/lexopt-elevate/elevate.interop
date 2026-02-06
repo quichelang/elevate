@@ -1,0 +1,3 @@
+# Allowed Rust imports for lexopt Elevate sources.
+allow crate::runtime_core
+allow crate::model::*

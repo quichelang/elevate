@@ -23,13 +23,14 @@ Recreate lexopt semantics in Elevate, then compare generated Rust and behavior a
 ### Refactor Note (Current)
 
 - Parser control flow and decision logic now live in `examples/lexopt-elevate/src/parser.ers`.
-- `examples/lexopt-elevate/src/runtime.ers` now holds most string classification logic.
-- Rust compatibility core is reduced to `examples/lexopt-elevate/src/runtime_core.rs` for:
+- Thin `runtime.ers` wrappers have been removed; parser now calls `runtime_core` directly.
+- Rust compatibility core remains in `examples/lexopt-elevate/src/runtime_core.rs` for:
 - parser-state registry/storage
 - host argument ingestion (`from_env`, `from_raw`)
 - one low-level helper (`drop_first_char_known`)
 - constructor-style helpers previously in Rust have been migrated into native Elevate via struct literals.
 - Parser API now includes a preview host-handle wrapper (`ParserHandle`) while preserving existing `i64` entry points for compatibility.
+- Interop gating is now explicit via `examples/lexopt-elevate/elevate.interop`.
 
 ## Current Deviations From Upstream lexopt
 
