@@ -834,6 +834,18 @@ impl Parser {
                     Some(first)
                 }
             }
+            TokenKind::LBracket => {
+                self.advance();
+                let mut items = Vec::new();
+                while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+                    items.push(self.parse_expr()?);
+                    if !self.match_kind(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RBracket, "Expected ']' after array literal")?;
+                Some(Expr::Array(items))
+            }
             _ => {
                 self.error_current("Expected expression");
                 None
@@ -1362,6 +1374,18 @@ mod tests {
                 const first = values[0];
                 std::mem::drop(values[1..3]);
                 first
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_array_literal_expression() {
+        let source = r#"
+            fn values() -> Vec<i64> {
+                [1, 2, 3]
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

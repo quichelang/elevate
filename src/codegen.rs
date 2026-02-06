@@ -327,6 +327,10 @@ fn emit_expr(expr: &RustExpr) -> String {
             };
             format!("({} {} {})", emit_expr(left), symbol, emit_expr(right))
         }
+        RustExpr::Array(items) => {
+            let body = items.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
+            format!("vec![{body}]")
+        }
         RustExpr::Tuple(items) => {
             if items.is_empty() {
                 "()".to_string()

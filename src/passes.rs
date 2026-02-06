@@ -1662,6 +1662,48 @@ fn infer_expr(
                 out_ty,
             )
         }
+        Expr::Array(items) => {
+            let mut typed_items = Vec::new();
+            let mut item_types = Vec::new();
+            for item in items {
+                let (typed_item, ty) = infer_expr(item, context, locals, return_ty, diagnostics);
+                typed_items.push(typed_item);
+                item_types.push(ty);
+            }
+
+            let mut elem_ty = SemType::Unknown;
+            for ty in &item_types {
+                if *ty == SemType::Unknown {
+                    continue;
+                }
+                if elem_ty == SemType::Unknown {
+                    elem_ty = ty.clone();
+                    continue;
+                }
+                if !is_compatible(ty, &elem_ty) || !is_compatible(&elem_ty, ty) {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Array literal element type mismatch: expected `{}`, got `{}`",
+                            type_to_string(&elem_ty),
+                            type_to_string(ty)
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+            }
+
+            let out_ty = SemType::Path {
+                path: vec!["Vec".to_string()],
+                args: vec![elem_ty],
+            };
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Array(typed_items),
+                    ty: type_to_string(&out_ty),
+                },
+                out_ty,
+            )
+        }
         Expr::Tuple(items) => {
             let mut typed_items = Vec::new();
             let mut item_types = Vec::new();
@@ -3000,6 +3042,12 @@ fn lower_expr_with_context(
                 state,
             )),
         },
+        TypedExprKind::Array(items) => RustExpr::Array(
+            items
+                .iter()
+                .map(|item| lower_expr_with_context(item, context, ExprPosition::Value, state))
+                .collect(),
+        ),
         TypedExprKind::Tuple(items) => RustExpr::Tuple(
             items
                 .iter()
@@ -3576,7 +3624,7 @@ fn collect_path_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<String, usize>
             collect_path_uses_in_expr(left, uses);
             collect_path_uses_in_expr(right, uses);
         }
-        TypedExprKind::Tuple(items) => {
+        TypedExprKind::Array(items) | TypedExprKind::Tuple(items) => {
             for item in items {
                 collect_path_uses_in_expr(item, uses);
             }

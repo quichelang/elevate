@@ -1165,6 +1165,32 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_array_literals() {
+        let source = r#"
+            pub fn values() -> Vec<i64> {
+                [1, 2, 3]
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("vec![1, 2, 3]"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_heterogeneous_tuple_type_annotations() {
+        let source = r#"
+            pub fn pair(left: i64, right: String) -> (i64, String) {
+                (left, right)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("-> (i64, String)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_emits_vec_slice_range_expressions() {
         let source = r#"
             pub fn view(values: Vec<i64>) -> i64 {

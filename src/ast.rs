@@ -172,6 +172,7 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    Array(Vec<Expr>),
     Tuple(Vec<Expr>),
     StructLiteral {
         path: Vec<String>,

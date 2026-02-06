@@ -392,7 +392,7 @@ fn validate_expr_adapter_calls(
             validate_expr_adapter_calls(left, alias_arity, diagnostics);
             validate_expr_adapter_calls(right, alias_arity, diagnostics);
         }
-        Expr::Tuple(items) => {
+        Expr::Array(items) | Expr::Tuple(items) => {
             for item in items {
                 validate_expr_adapter_calls(item, alias_arity, diagnostics);
             }
@@ -542,7 +542,7 @@ fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec
             rewrite_expr_adapter_calls(left, adapter_map);
             rewrite_expr_adapter_calls(right, adapter_map);
         }
-        Expr::Tuple(items) => {
+        Expr::Array(items) | Expr::Tuple(items) => {
             for item in items {
                 rewrite_expr_adapter_calls(item, adapter_map);
             }

@@ -176,6 +176,7 @@ pub enum TypedExprKind {
         left: Box<TypedExpr>,
         right: Box<TypedExpr>,
     },
+    Array(Vec<TypedExpr>),
     Tuple(Vec<TypedExpr>),
     StructLiteral {
         path: Vec<String>,

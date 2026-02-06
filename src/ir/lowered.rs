@@ -172,6 +172,7 @@ pub enum RustExpr {
         left: Box<RustExpr>,
         right: Box<RustExpr>,
     },
+    Array(Vec<RustExpr>),
     Tuple(Vec<RustExpr>),
     StructLiteral {
         path: Vec<String>,
