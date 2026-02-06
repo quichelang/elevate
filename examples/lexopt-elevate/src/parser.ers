@@ -1,0 +1,32 @@
+rust use crate::runtime;
+rust use crate::model::Arg;
+rust use crate::model::ParseError;
+
+pub fn from_env() -> i64 {
+    return runtime::from_env();
+}
+
+pub fn from_raw(raw: String) -> i64 {
+    return runtime::from_raw(raw);
+}
+
+pub fn next(handle: i64) -> Result<Option<Arg>, ParseError> {
+    return runtime::next(handle);
+}
+
+pub fn value(handle: i64) -> Result<String, ParseError> {
+    return runtime::value(handle);
+}
+
+pub fn optional_value(handle: i64) -> Option<String> {
+    return runtime::optional_value(handle);
+}
+
+pub fn values(handle: i64) -> Result<Option<String>, ParseError> {
+    return runtime::values(handle);
+}
+
+pub fn reset(handle: i64) {
+    runtime::reset(handle);
+    return;
+}

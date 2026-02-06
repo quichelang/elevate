@@ -1,0 +1,12 @@
+pub enum Arg {
+    Short(String);
+    Long(String);
+    Value(String);
+}
+
+pub enum ParseError {
+    MissingValue(String);
+    UnexpectedOption(String);
+    UnexpectedArgument(String);
+    UnexpectedValue(String);
+}
