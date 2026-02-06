@@ -8,5 +8,5 @@ authors.workspace = true
 [dependencies]
 game-core = { path = "../../crates/game-core" }
 renderer-terminal = { path = "../../crates/renderer-terminal" }
-platform-macos = { path = "../../crates/platform-macos" }
+platform-host = { path = "../../crates/platform-host" }
 game-sudoku = { path = "../../crates/game-sudoku" }

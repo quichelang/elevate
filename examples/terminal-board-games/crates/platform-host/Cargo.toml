@@ -1,0 +1,12 @@
+[package]
+name = "platform-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+game-core = { path = "../game-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+platform-macos = { path = "../platform-macos" }

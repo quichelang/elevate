@@ -44,14 +44,18 @@ This file maps active compiler-level "Known Incomplete Areas" to what matters fo
 ## Sudoku-Specific Engine Scope (Already Implemented Here)
 
 - Terminal renderer abstraction.
-- macOS input abstraction and raw keyboard mode.
+- Host platform input abstraction (`platform-host`) with macOS raw-mode backend.
 - Reusable runtime loop.
+- Fixed-step planning helpers (`game-loop`).
+- Terminal widget layer (`game-ui-term`).
+- Snapshot/replay serialization support (`game-save`).
+- AI hint traits plus Sudoku backtracking hint solver (`game-ai`).
 - Sudoku board model (fixed cells, conflict checks, completion checks).
-- Keyboard-driven game controls and board rendering.
+- Keyboard-driven game controls, board rendering, save/load, and hints.
 
-## Next Engine Packages (Suggested)
+## Next Engine Packages (Remaining)
 
-- `crates/game-loop` (fixed timestep and deterministic simulation helpers).
-- `crates/game-ui-term` (widgets: panels, menus, focus, prompts).
-- `crates/game-save` (serialization/versioning, replay logs).
-- `crates/game-ai` (solver hooks and move hint APIs).
+- `crates/platform-linux` (raw mode + key decoding backend behind `platform-host`).
+- `crates/platform-windows` (console input backend behind `platform-host`).
+- `crates/game-scenes` (scene stack/router, transitions, modal layering).
+- `crates/game-board` (shared grid/board primitives for multiple board games).

@@ -5,6 +5,7 @@ members = [
   "crates/game-loop",
   "crates/game-save",
   "crates/game-ui-term",
+  "crates/platform-host",
   "crates/renderer-terminal",
   "crates/platform-macos",
   "crates/game-sudoku",
