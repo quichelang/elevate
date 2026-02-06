@@ -65,7 +65,12 @@ pub fn transpile_ers_crate(crate_root: &Path) -> Result<BuildSummary, String> {
         copied_files: 0,
     };
 
-    process_src_dir(&source_src, &source_src, &generated_root.join("src"), &mut summary)?;
+    process_src_dir(
+        &source_src,
+        &source_src,
+        &generated_root.join("src"),
+        &mut summary,
+    )?;
     Ok(summary)
 }
 
@@ -110,8 +115,12 @@ fn process_src_dir(
         .map_err(|error| format!("failed to read directory {}: {error}", current.display()))?;
 
     for entry in entries {
-        let entry = entry
-            .map_err(|error| format!("failed to read directory entry in {}: {error}", current.display()))?;
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read directory entry in {}: {error}",
+                current.display()
+            )
+        })?;
         let path = entry.path();
         let rel = path
             .strip_prefix(root_src)
@@ -120,7 +129,10 @@ fn process_src_dir(
 
         if path.is_dir() {
             fs::create_dir_all(&target).map_err(|error| {
-                format!("failed to create generated directory {}: {error}", target.display())
+                format!(
+                    "failed to create generated directory {}: {error}",
+                    target.display()
+                )
             })?;
             process_src_dir(root_src, &path, generated_src, summary)?;
             continue;
@@ -129,9 +141,8 @@ fn process_src_dir(
         if path.extension() == Some(OsStr::new("ers")) {
             let source = fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-            let output = crate::compile_source(&source).map_err(|error| {
-                format!("failed to compile {}: {error}", path.display())
-            })?;
+            let output = crate::compile_source(&source)
+                .map_err(|error| format!("failed to compile {}: {error}", path.display()))?;
             let mut out_path = target.clone();
             out_path.set_extension("rs");
             if out_path.exists() {
@@ -141,7 +152,10 @@ fn process_src_dir(
                 ));
             }
             fs::write(&out_path, output.rust_code.as_bytes()).map_err(|error| {
-                format!("failed to write generated file {}: {error}", out_path.display())
+                format!(
+                    "failed to write generated file {}: {error}",
+                    out_path.display()
+                )
             })?;
             summary.transpiled_files += 1;
             continue;
@@ -167,8 +181,7 @@ fn process_src_dir(
 }
 
 fn canonicalize(path: &Path) -> Result<PathBuf, String> {
-    fs::canonicalize(path)
-        .map_err(|error| format!("failed to access {}: {error}", path.display()))
+    fs::canonicalize(path).map_err(|error| format!("failed to access {}: {error}", path.display()))
 }
 
 #[cfg(test)]
@@ -189,21 +202,15 @@ mod tests {
             "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .expect("write manifest should succeed");
-        fs::write(
-            root.join("src/lib.ers"),
-            "const VALUE: i64 = 1;",
-        )
-        .expect("write lib.ers should succeed");
+        fs::write(root.join("src/lib.ers"), "const VALUE: i64 = 1;")
+            .expect("write lib.ers should succeed");
         fs::write(
             root.join("src/net/http.ers"),
             "fn status() -> i64 { return 200; }",
         )
         .expect("write nested ers should succeed");
-        fs::write(
-            root.join("src/notes.txt"),
-            "preserve me",
-        )
-        .expect("write non-ers file should succeed");
+        fs::write(root.join("src/notes.txt"), "preserve me")
+            .expect("write non-ers file should succeed");
 
         let summary = transpile_ers_crate(&root).expect("transpile should succeed");
         assert_eq!(summary.transpiled_files, 2);

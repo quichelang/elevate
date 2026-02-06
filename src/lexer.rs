@@ -448,7 +448,7 @@ fn is_identifier_continue(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{lex, TokenKind};
+    use super::{TokenKind, lex};
 
     #[test]
     fn lex_struct_tokens() {
@@ -467,7 +467,11 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Rust)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Use)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::ColonColon)));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::ColonColon))
+        );
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Question)));
     }
 
@@ -476,7 +480,11 @@ mod tests {
         let source = "match value { _ => 1; }";
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Match)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Underscore)));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::Underscore))
+        );
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::FatArrow)));
     }
 
@@ -506,8 +514,16 @@ mod tests {
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Bang)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::And)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Or)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::EqualEqual)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::BangEqual)));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::EqualEqual))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::BangEqual))
+        );
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::LtEqual)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::GtEqual)));
     }

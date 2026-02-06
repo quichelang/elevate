@@ -11,16 +11,22 @@ use crate::ir::lowered::{
     RustStruct, RustUnaryOp, RustUse, RustVariant,
 };
 use crate::ir::typed::{
-    TypedBinaryOp, TypedConst, TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction,
-    TypedDestructurePattern, TypedImpl, TypedItem, TypedMatchArm, TypedModule, TypedParam,
+    TypedBinaryOp, TypedConst, TypedDestructurePattern, TypedEnum, TypedExpr, TypedExprKind,
+    TypedField, TypedFunction, TypedImpl, TypedItem, TypedMatchArm, TypedModule, TypedParam,
     TypedPattern, TypedRustUse, TypedStatic, TypedStmt, TypedStruct, TypedUnaryOp, TypedVariant,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SemType {
-    Path { path: Vec<String>, args: Vec<SemType> },
+    Path {
+        path: Vec<String>,
+        args: Vec<SemType>,
+    },
     Tuple(Vec<SemType>),
-    Fn { params: Vec<SemType>, ret: Box<SemType> },
+    Fn {
+        params: Vec<SemType>,
+        ret: Box<SemType>,
+    },
     Unit,
     Unknown,
 }
@@ -131,18 +137,25 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
     for shim in state.used_shims.iter().copied() {
         items.push(RustItem::Function(lower_interop_shim(shim)));
     }
-    RustModule { items }
+    RustModule {
+        items,
+        ownership_notes: state.ownership_notes.clone(),
+    }
 }
 
 #[derive(Debug, Default)]
 struct LoweringContext {
     remaining_path_uses: HashMap<String, usize>,
+    scope_name: String,
 }
 
 #[derive(Debug, Default)]
 struct LoweringState {
     used_shims: BTreeSet<InteropShimKind>,
     imported_rust_paths: HashMap<String, Vec<Vec<String>>>,
+    ownership_notes: Vec<String>,
+    ownership_note_keys: BTreeSet<String>,
+    registry: InteropPolicyRegistry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,18 +179,39 @@ enum InteropShimKind {
     StrEndsWith,
 }
 
+#[derive(Debug, Default)]
+struct InteropPolicyRegistry {
+    shim_policies: HashMap<String, InteropShimKind>,
+    direct_borrow_policies: HashMap<String, Vec<usize>>,
+    cloneable_types: BTreeSet<String>,
+    observed_import_paths: BTreeSet<String>,
+}
+
 impl LoweringState {
     fn from_module(module: &TypedModule) -> Self {
-        let mut state = Self::default();
+        let mut state = Self {
+            registry: InteropPolicyRegistry::with_builtins(),
+            ..Self::default()
+        };
         for item in &module.items {
-            if let TypedItem::RustUse(def) = item
-                && let Some(name) = def.path.last()
-            {
-                state
-                    .imported_rust_paths
-                    .entry(name.clone())
-                    .or_default()
-                    .push(def.path.clone());
+            match item {
+                TypedItem::RustUse(def) => {
+                    if let Some(name) = def.path.last() {
+                        state
+                            .imported_rust_paths
+                            .entry(name.clone())
+                            .or_default()
+                            .push(def.path.clone());
+                    }
+                    state.registry.observe_import_path(&def.path);
+                }
+                TypedItem::Struct(def) => {
+                    state.registry.register_user_cloneable_type(&def.name);
+                }
+                TypedItem::Enum(def) => {
+                    state.registry.register_user_cloneable_type(&def.name);
+                }
+                _ => {}
             }
         }
         state
@@ -195,11 +229,167 @@ impl LoweringState {
         }
         callee_path.to_vec()
     }
+
+    fn push_ownership_note(&mut self, note: String) {
+        if self.ownership_note_keys.insert(note.clone()) {
+            self.ownership_notes.push(note);
+        }
+    }
+}
+
+impl InteropPolicyRegistry {
+    fn with_builtins() -> Self {
+        let mut registry = Self::default();
+        registry.register_builtin_shims();
+        registry.register_builtin_direct_borrows();
+        registry.register_builtin_cloneable_types();
+        registry
+    }
+
+    fn register_builtin_shims(&mut self) {
+        for path in ["str::len", "std::str::len"] {
+            self.register_shim_policy(path, InteropShimKind::StrLen);
+        }
+        for path in ["str::is_empty", "std::str::is_empty"] {
+            self.register_shim_policy(path, InteropShimKind::StrIsEmpty);
+        }
+        for path in ["str::contains", "std::str::contains"] {
+            self.register_shim_policy(path, InteropShimKind::StrContains);
+        }
+        for path in ["str::starts_with", "std::str::starts_with"] {
+            self.register_shim_policy(path, InteropShimKind::StrStartsWith);
+        }
+        for path in ["str::ends_with", "std::str::ends_with"] {
+            self.register_shim_policy(path, InteropShimKind::StrEndsWith);
+        }
+    }
+
+    fn register_builtin_direct_borrows(&mut self) {
+        for path in [
+            "String::len",
+            "String::is_empty",
+            "std::string::String::len",
+            "std::string::String::is_empty",
+            "alloc::string::String::len",
+            "alloc::string::String::is_empty",
+            "Option::is_some",
+            "Option::is_none",
+            "std::option::Option::is_some",
+            "std::option::Option::is_none",
+            "core::option::Option::is_some",
+            "core::option::Option::is_none",
+            "Result::is_ok",
+            "Result::is_err",
+            "std::result::Result::is_ok",
+            "std::result::Result::is_err",
+            "core::result::Result::is_ok",
+            "core::result::Result::is_err",
+            "Vec::len",
+            "Vec::is_empty",
+            "std::vec::Vec::len",
+            "std::vec::Vec::is_empty",
+            "alloc::vec::Vec::len",
+            "alloc::vec::Vec::is_empty",
+            "HashMap::len",
+            "HashMap::is_empty",
+            "std::collections::HashMap::len",
+            "std::collections::HashMap::is_empty",
+            "BTreeMap::len",
+            "BTreeMap::is_empty",
+            "std::collections::BTreeMap::len",
+            "std::collections::BTreeMap::is_empty",
+        ] {
+            self.register_direct_borrow_policy(path, &[0]);
+        }
+        for path in [
+            "HashMap::contains_key",
+            "std::collections::HashMap::contains_key",
+            "BTreeMap::contains_key",
+            "std::collections::BTreeMap::contains_key",
+        ] {
+            self.register_direct_borrow_policy(path, &[0, 1]);
+        }
+    }
+
+    fn register_builtin_cloneable_types(&mut self) {
+        self.cloneable_types.insert("String".to_string());
+    }
+
+    fn register_shim_policy(&mut self, path: &str, shim: InteropShimKind) {
+        self.shim_policies.insert(path.to_string(), shim);
+    }
+
+    fn register_direct_borrow_policy(&mut self, path: &str, borrowed_indexes: &[usize]) {
+        self.direct_borrow_policies
+            .insert(path.to_string(), borrowed_indexes.to_vec());
+    }
+
+    fn register_user_cloneable_type(&mut self, type_name: &str) {
+        self.cloneable_types.insert(type_name.to_string());
+    }
+
+    fn observe_import_path(&mut self, path: &[String]) {
+        self.observed_import_paths.insert(path.join("::"));
+    }
+
+    fn resolve_shim(&self, path: &[String]) -> Option<InteropShimKind> {
+        self.shim_policies.get(&path.join("::")).copied()
+    }
+
+    fn resolve_direct_borrow_modes(
+        &self,
+        path: &[String],
+        arg_count: usize,
+    ) -> Option<Vec<CallArgMode>> {
+        let borrowed_indexes = self.direct_borrow_policies.get(&path.join("::"))?;
+        let mut modes = vec![CallArgMode::Owned; arg_count];
+        for index in borrowed_indexes {
+            set_borrowed(&mut modes, *index);
+        }
+        Some(modes)
+    }
+
+    fn is_clone_candidate(&self, ty: &str) -> bool {
+        let ty = ty.trim();
+        if ty == "_" {
+            return false;
+        }
+        let (head, args) = split_type_head_and_args(ty);
+        if args.is_empty() && is_copy_primitive_type(head) {
+            return false;
+        }
+        if let Some(items) = parse_tuple_items(ty) {
+            return items
+                .iter()
+                .all(|item| self.is_clone_candidate_or_copy(item));
+        }
+
+        if self.cloneable_types.contains(head)
+            || self.cloneable_types.contains(last_path_segment(head))
+        {
+            return args.iter().all(|arg| self.is_clone_candidate_or_copy(arg));
+        }
+
+        if is_known_clone_container(head) {
+            return args.iter().all(|arg| self.is_clone_candidate_or_copy(arg));
+        }
+
+        false
+    }
+
+    fn is_clone_candidate_or_copy(&self, ty: &str) -> bool {
+        let (head, args) = split_type_head_and_args(ty.trim());
+        if args.is_empty() && is_copy_primitive_type(head) {
+            return true;
+        }
+        self.is_clone_candidate(ty)
+    }
 }
 
 fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunction {
     let mut context = LoweringContext {
         remaining_path_uses: collect_path_uses_in_stmts(&def.body),
+        scope_name: def.name.clone(),
     };
     RustFunction {
         is_public: def.is_public,
@@ -247,7 +437,11 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
             }
             Item::Function(def) => {
                 let sig = FunctionSig {
-                    params: def.params.iter().map(|param| type_from_ast(&param.ty)).collect(),
+                    params: def
+                        .params
+                        .iter()
+                        .map(|param| type_from_ast(&param.ty))
+                        .collect(),
                     return_type: def
                         .return_type
                         .as_ref()
@@ -276,19 +470,28 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                 }
             }
             Item::Const(def) => {
-                let ty = def.ty.as_ref().map(type_from_ast).unwrap_or(SemType::Unknown);
+                let ty = def
+                    .ty
+                    .as_ref()
+                    .map(type_from_ast)
+                    .unwrap_or(SemType::Unknown);
                 context.globals.insert(def.name.clone(), ty);
             }
             Item::Static(def) => {
-                context.globals.insert(def.name.clone(), type_from_ast(&def.ty));
+                context
+                    .globals
+                    .insert(def.name.clone(), type_from_ast(&def.ty));
             }
             Item::RustUse(_) => {}
         }
     }
-
 }
 
-fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnostic>) -> Option<TypedItem> {
+fn lower_item(
+    item: &Item,
+    context: &mut Context,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<TypedItem> {
     match item {
         Item::RustUse(def) => Some(TypedItem::RustUse(TypedRustUse {
             path: def.path.clone(),
@@ -334,9 +537,7 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                 let mut inferred_returns = Vec::new();
                 for (index, statement) in method.body.statements.iter().enumerate() {
                     let is_last = index + 1 == method.body.statements.len();
-                    if is_last
-                        && let Stmt::TailExpr(expr) = statement
-                    {
+                    if is_last && let Stmt::TailExpr(expr) = statement {
                         let (typed_expr, inferred) = infer_expr(
                             expr,
                             context,
@@ -415,8 +616,13 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
         }
         Item::Const(def) => {
             let mut locals = HashMap::new();
-            let (typed_value, inferred) =
-                infer_expr(&def.value, context, &mut locals, &SemType::Unit, diagnostics);
+            let (typed_value, inferred) = infer_expr(
+                &def.value,
+                context,
+                &mut locals,
+                &SemType::Unit,
+                diagnostics,
+            );
             let declared = def.ty.as_ref().map(type_from_ast);
             let final_ty = if let Some(declared_ty) = declared {
                 if !is_compatible(&inferred, &declared_ty) {
@@ -452,8 +658,13 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
         }
         Item::Static(def) => {
             let mut locals = HashMap::new();
-            let (typed_value, inferred) =
-                infer_expr(&def.value, context, &mut locals, &SemType::Unit, diagnostics);
+            let (typed_value, inferred) = infer_expr(
+                &def.value,
+                context,
+                &mut locals,
+                &SemType::Unit,
+                diagnostics,
+            );
             let declared = type_from_ast(&def.ty);
             if !is_compatible(&inferred, &declared) {
                 diagnostics.push(Diagnostic::new(
@@ -493,9 +704,7 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
             let mut inferred_returns = Vec::new();
             for (index, statement) in def.body.statements.iter().enumerate() {
                 let is_last = index + 1 == def.body.statements.len();
-                if is_last
-                    && let Stmt::TailExpr(expr) = statement
-                {
+                if is_last && let Stmt::TailExpr(expr) = statement {
                     let (typed_expr, inferred) = infer_expr(
                         expr,
                         context,
@@ -530,9 +739,8 @@ fn lower_item(item: &Item, context: &mut Context, diagnostics: &mut Vec<Diagnost
                     body.push(stmt);
                 }
             }
-            let final_return_ty = declared_return_ty.unwrap_or_else(|| {
-                infer_return_type(&inferred_returns, diagnostics, &def.name)
-            });
+            let final_return_ty = declared_return_ty
+                .unwrap_or_else(|| infer_return_type(&inferred_returns, diagnostics, &def.name));
             if contains_unknown(&final_return_ty) {
                 diagnostics.push(Diagnostic::new(
                     format!(
@@ -581,7 +789,8 @@ fn lower_stmt_with_types(
 ) -> Option<TypedStmt> {
     match stmt {
         Stmt::Const(def) => {
-            let (typed_value, inferred) = infer_expr(&def.value, context, locals, return_ty, diagnostics);
+            let (typed_value, inferred) =
+                infer_expr(&def.value, context, locals, return_ty, diagnostics);
             let declared = def.ty.as_ref().map(type_from_ast);
             let final_ty = if let Some(declared_ty) = declared {
                 if !is_compatible(&inferred, &declared_ty) {
@@ -608,7 +817,8 @@ fn lower_stmt_with_types(
             }))
         }
         Stmt::DestructureConst { pattern, value } => {
-            let (typed_value, value_ty) = infer_expr(value, context, locals, return_ty, diagnostics);
+            let (typed_value, value_ty) =
+                infer_expr(value, context, locals, return_ty, diagnostics);
             bind_destructure_pattern(pattern, &value_ty, locals, diagnostics);
             Some(TypedStmt::DestructureConst {
                 pattern: lower_destructure_pattern_typed(pattern),
@@ -617,7 +827,8 @@ fn lower_stmt_with_types(
         }
         Stmt::Return(value) => {
             if let Some(expr) = value {
-                let (typed_expr, inferred) = infer_expr(expr, context, locals, return_ty, diagnostics);
+                let (typed_expr, inferred) =
+                    infer_expr(expr, context, locals, return_ty, diagnostics);
                 inferred_returns.push(inferred.clone());
                 if *return_ty != SemType::Unknown && !is_compatible(&inferred, return_ty) {
                     diagnostics.push(Diagnostic::new(
@@ -669,10 +880,23 @@ fn lower_stmt_with_types(
                 ));
             }
 
-            let then_body =
-                lower_block_with_types(then_block, context, locals, return_ty, inferred_returns, diagnostics);
+            let then_body = lower_block_with_types(
+                then_block,
+                context,
+                locals,
+                return_ty,
+                inferred_returns,
+                diagnostics,
+            );
             let else_body = else_block.as_ref().map(|block| {
-                lower_block_with_types(block, context, locals, return_ty, inferred_returns, diagnostics)
+                lower_block_with_types(
+                    block,
+                    context,
+                    locals,
+                    return_ty,
+                    inferred_returns,
+                    diagnostics,
+                )
             });
 
             Some(TypedStmt::If {
@@ -693,8 +917,14 @@ fn lower_stmt_with_types(
                     Span::new(0, 0),
                 ));
             }
-            let typed_body =
-                lower_block_with_types(body, context, locals, return_ty, inferred_returns, diagnostics);
+            let typed_body = lower_block_with_types(
+                body,
+                context,
+                locals,
+                return_ty,
+                inferred_returns,
+                diagnostics,
+            );
             Some(TypedStmt::While {
                 condition: typed_condition,
                 body: typed_body,
@@ -766,7 +996,8 @@ fn infer_expr(
             )
         }
         Expr::Call { callee, args } => {
-            let (typed_callee, callee_ty) = infer_expr(callee, context, locals, return_ty, diagnostics);
+            let (typed_callee, callee_ty) =
+                infer_expr(callee, context, locals, return_ty, diagnostics);
             let mut typed_args = Vec::new();
             let mut arg_types = Vec::new();
             for arg in args {
@@ -774,7 +1005,8 @@ fn infer_expr(
                 typed_args.push(typed_arg);
                 arg_types.push(ty);
             }
-            let resolved = resolve_call_type(&typed_callee, &callee_ty, &arg_types, context, diagnostics);
+            let resolved =
+                resolve_call_type(&typed_callee, &callee_ty, &arg_types, context, diagnostics);
             (
                 TypedExpr {
                     kind: TypedExprKind::Call {
@@ -857,7 +1089,8 @@ fn infer_expr(
         }
         Expr::Binary { op, left, right } => {
             let (typed_left, left_ty) = infer_expr(left, context, locals, return_ty, diagnostics);
-            let (typed_right, right_ty) = infer_expr(right, context, locals, return_ty, diagnostics);
+            let (typed_right, right_ty) =
+                infer_expr(right, context, locals, return_ty, diagnostics);
             let (typed_op, out_ty) = match op {
                 BinaryOp::And | BinaryOp::Or => {
                     if !is_compatible(&left_ty, &named_type("bool"))
@@ -960,9 +1193,7 @@ fn infer_expr(
             let mut inferred_returns = Vec::new();
             for (index, statement) in body.statements.iter().enumerate() {
                 let is_last = index + 1 == body.statements.len();
-                if is_last
-                    && let Stmt::TailExpr(expr) = statement
-                {
+                if is_last && let Stmt::TailExpr(expr) = statement {
                     let (typed_expr, inferred) = infer_expr(
                         expr,
                         context,
@@ -997,8 +1228,8 @@ fn infer_expr(
                     typed_body.push(stmt);
                 }
             }
-            let final_return_ty =
-                declared_return_ty.unwrap_or_else(|| infer_return_type(&inferred_returns, diagnostics, "closure"));
+            let final_return_ty = declared_return_ty
+                .unwrap_or_else(|| infer_return_type(&inferred_returns, diagnostics, "closure"));
             if final_return_ty != SemType::Unit && inferred_returns.is_empty() {
                 diagnostics.push(Diagnostic::new(
                     format!(
@@ -1056,7 +1287,8 @@ fn infer_expr(
             )
         }
         Expr::Try(inner) => {
-            let (typed_inner, inner_ty) = infer_expr(inner, context, locals, return_ty, diagnostics);
+            let (typed_inner, inner_ty) =
+                infer_expr(inner, context, locals, return_ty, diagnostics);
             let resolved = resolve_try_type(&inner_ty, return_ty, diagnostics);
             (
                 TypedExpr {
@@ -1203,10 +1435,7 @@ fn resolve_call_type(
         return SemType::Unknown;
     }
 
-    diagnostics.push(Diagnostic::new(
-        "Unsupported call target",
-        Span::new(0, 0),
-    ));
+    diagnostics.push(Diagnostic::new("Unsupported call target", Span::new(0, 0)));
     SemType::Unknown
 }
 
@@ -1338,7 +1567,11 @@ fn resolve_constructor_call(
     None
 }
 
-fn resolve_try_type(inner: &SemType, return_ty: &SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
+fn resolve_try_type(
+    inner: &SemType,
+    return_ty: &SemType,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> SemType {
     if let Some(inner_value) = option_inner(inner) {
         if *return_ty == SemType::Unknown {
             diagnostics.push(Diagnostic::new(
@@ -1406,9 +1639,11 @@ fn lower_stmt_with_context(
             pattern: lower_destructure_pattern(pattern),
             value: lower_expr_with_context(value, context, ExprPosition::Value, state),
         },
-        TypedStmt::Return(value) => RustStmt::Return(value.as_ref().map(|expr| {
-            lower_expr_with_context(expr, context, ExprPosition::Value, state)
-        })),
+        TypedStmt::Return(value) => RustStmt::Return(
+            value
+                .as_ref()
+                .map(|expr| lower_expr_with_context(expr, context, ExprPosition::Value, state)),
+        ),
         TypedStmt::If {
             condition,
             then_body,
@@ -1433,9 +1668,12 @@ fn lower_stmt_with_context(
                 .map(|stmt| lower_stmt_with_context(stmt, context, state))
                 .collect(),
         },
-        TypedStmt::Expr(expr) => {
-            RustStmt::Expr(lower_expr_with_context(expr, context, ExprPosition::Value, state))
-        }
+        TypedStmt::Expr(expr) => RustStmt::Expr(lower_expr_with_context(
+            expr,
+            context,
+            ExprPosition::Value,
+            state,
+        )),
     }
 }
 
@@ -1449,10 +1687,9 @@ fn lower_expr_with_context(
         TypedExprKind::Int(value) => RustExpr::Int(*value),
         TypedExprKind::Bool(value) => RustExpr::Bool(*value),
         TypedExprKind::String(value) => RustExpr::String(value.clone()),
-        TypedExprKind::Path(path) => lower_path_expr(path, &expr.ty, position, context),
+        TypedExprKind::Path(path) => lower_path_expr(path, &expr.ty, position, context, state),
         TypedExprKind::Call { callee, args } => {
-            let (lowered_callee, arg_modes) =
-                lower_call_callee(callee, args.len(), context, state);
+            let (lowered_callee, arg_modes) = lower_call_callee(callee, args.len(), context, state);
             RustExpr::Call {
                 callee: Box::new(lowered_callee),
                 args: args
@@ -1464,19 +1701,19 @@ fn lower_expr_with_context(
                                 lower_expr_with_context(arg, context, ExprPosition::Value, state);
                             borrow_expr(lowered)
                         } else {
-                            lower_expr_with_context(
-                                arg,
-                                context,
-                                ExprPosition::CallArgOwned,
-                                state,
-                            )
+                            lower_expr_with_context(arg, context, ExprPosition::CallArgOwned, state)
                         }
                     })
                     .collect(),
             }
         }
         TypedExprKind::Field { base, field } => RustExpr::Field {
-            base: Box::new(lower_expr_with_context(base, context, ExprPosition::Value, state)),
+            base: Box::new(lower_expr_with_context(
+                base,
+                context,
+                ExprPosition::Value,
+                state,
+            )),
             field: field.clone(),
         },
         TypedExprKind::Match { scrutinee, arms } => RustExpr::Match {
@@ -1498,7 +1735,12 @@ fn lower_expr_with_context(
             op: match op {
                 TypedUnaryOp::Not => RustUnaryOp::Not,
             },
-            expr: Box::new(lower_expr_with_context(expr, context, ExprPosition::Value, state)),
+            expr: Box::new(lower_expr_with_context(
+                expr,
+                context,
+                ExprPosition::Value,
+                state,
+            )),
         },
         TypedExprKind::Binary { op, left, right } => RustExpr::Binary {
             op: match op {
@@ -1511,8 +1753,18 @@ fn lower_expr_with_context(
                 TypedBinaryOp::Gt => RustBinaryOp::Gt,
                 TypedBinaryOp::Ge => RustBinaryOp::Ge,
             },
-            left: Box::new(lower_expr_with_context(left, context, ExprPosition::Value, state)),
-            right: Box::new(lower_expr_with_context(right, context, ExprPosition::Value, state)),
+            left: Box::new(lower_expr_with_context(
+                left,
+                context,
+                ExprPosition::Value,
+                state,
+            )),
+            right: Box::new(lower_expr_with_context(
+                right,
+                context,
+                ExprPosition::Value,
+                state,
+            )),
         },
         TypedExprKind::Tuple(items) => RustExpr::Tuple(
             items
@@ -1527,6 +1779,7 @@ fn lower_expr_with_context(
         } => {
             let mut closure_context = LoweringContext {
                 remaining_path_uses: collect_path_uses_in_stmts(body),
+                scope_name: format!("{}::<closure>", context.scope_name),
             };
             RustExpr::Closure {
                 params: params
@@ -1548,16 +1801,22 @@ fn lower_expr_with_context(
             end,
             inclusive,
         } => RustExpr::Range {
-            start: start
-                .as_ref()
-                .map(|expr| {
-                    Box::new(lower_expr_with_context(expr, context, ExprPosition::Value, state))
-                }),
-            end: end
-                .as_ref()
-                .map(|expr| {
-                    Box::new(lower_expr_with_context(expr, context, ExprPosition::Value, state))
-                }),
+            start: start.as_ref().map(|expr| {
+                Box::new(lower_expr_with_context(
+                    expr,
+                    context,
+                    ExprPosition::Value,
+                    state,
+                ))
+            }),
+            end: end.as_ref().map(|expr| {
+                Box::new(lower_expr_with_context(
+                    expr,
+                    context,
+                    ExprPosition::Value,
+                    state,
+                ))
+            }),
             inclusive: *inclusive,
         },
         TypedExprKind::Try(inner) => RustExpr::Try(Box::new(lower_expr_with_context(
@@ -1574,6 +1833,7 @@ fn lower_path_expr(
     ty: &str,
     position: ExprPosition,
     context: &mut LoweringContext,
+    state: &mut LoweringState,
 ) -> RustExpr {
     if path.len() != 1 {
         return RustExpr::Path(path.to_vec());
@@ -1582,18 +1842,30 @@ fn lower_path_expr(
     let name = path[0].clone();
     let remaining = context.remaining_path_uses.get(&name).copied().unwrap_or(0);
     if remaining > 0 {
-        context.remaining_path_uses.insert(name.clone(), remaining - 1);
+        context
+            .remaining_path_uses
+            .insert(name.clone(), remaining - 1);
     }
 
     let path_expr = RustExpr::Path(path.to_vec());
-    if position == ExprPosition::CallArgOwned && remaining > 1 && should_clone_for_reuse(ty) {
+    if position == ExprPosition::CallArgOwned && remaining > 1 && should_clone_for_reuse(ty, state)
+    {
+        let scope = if context.scope_name.is_empty() {
+            "<module>"
+        } else {
+            context.scope_name.as_str()
+        };
+        state.push_ownership_note(format!(
+            "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
+            ty.trim()
+        ));
         return clone_expr(path_expr);
     }
     path_expr
 }
 
-fn should_clone_for_reuse(ty: &str) -> bool {
-    ty == "String"
+fn should_clone_for_reuse(ty: &str, state: &LoweringState) -> bool {
+    state.registry.is_clone_candidate(ty)
 }
 
 fn clone_expr(expr: RustExpr) -> RustExpr {
@@ -1640,15 +1912,7 @@ fn resolve_interop_shim(callee: &TypedExpr, state: &LoweringState) -> Option<Int
         return None;
     };
     let resolved = state.resolve_callee_path(path);
-    let joined = resolved.join("::");
-    match joined.as_str() {
-        "str::len" | "std::str::len" => Some(InteropShimKind::StrLen),
-        "str::is_empty" | "std::str::is_empty" => Some(InteropShimKind::StrIsEmpty),
-        "str::contains" | "std::str::contains" => Some(InteropShimKind::StrContains),
-        "str::starts_with" | "std::str::starts_with" => Some(InteropShimKind::StrStartsWith),
-        "str::ends_with" | "std::str::ends_with" => Some(InteropShimKind::StrEndsWith),
-        _ => None,
-    }
+    state.registry.resolve_shim(&resolved)
 }
 
 fn interop_arg_modes(shim: InteropShimKind, arg_count: usize) -> Vec<CallArgMode> {
@@ -1676,55 +1940,9 @@ fn resolve_direct_borrow_arg_modes(
         return None;
     };
     let resolved = state.resolve_callee_path(path);
-    let joined = resolved.join("::");
-
-    let mut modes = vec![CallArgMode::Owned; arg_count];
-    match joined.as_str() {
-        "String::len"
-        | "String::is_empty"
-        | "std::string::String::len"
-        | "std::string::String::is_empty"
-        | "alloc::string::String::len"
-        | "alloc::string::String::is_empty"
-        | "Option::is_some"
-        | "Option::is_none"
-        | "std::option::Option::is_some"
-        | "std::option::Option::is_none"
-        | "core::option::Option::is_some"
-        | "core::option::Option::is_none"
-        | "Result::is_ok"
-        | "Result::is_err"
-        | "std::result::Result::is_ok"
-        | "std::result::Result::is_err"
-        | "core::result::Result::is_ok"
-        | "core::result::Result::is_err"
-        | "Vec::len"
-        | "Vec::is_empty"
-        | "std::vec::Vec::len"
-        | "std::vec::Vec::is_empty"
-        | "alloc::vec::Vec::len"
-        | "alloc::vec::Vec::is_empty"
-        | "HashMap::len"
-        | "HashMap::is_empty"
-        | "std::collections::HashMap::len"
-        | "std::collections::HashMap::is_empty"
-        | "BTreeMap::len"
-        | "BTreeMap::is_empty"
-        | "std::collections::BTreeMap::len"
-        | "std::collections::BTreeMap::is_empty" => {
-            set_borrowed(&mut modes, 0);
-            Some(modes)
-        }
-        "HashMap::contains_key"
-        | "std::collections::HashMap::contains_key"
-        | "BTreeMap::contains_key"
-        | "std::collections::BTreeMap::contains_key" => {
-            set_borrowed(&mut modes, 0);
-            set_borrowed(&mut modes, 1);
-            Some(modes)
-        }
-        _ => None,
-    }
+    state
+        .registry
+        .resolve_direct_borrow_modes(&resolved, arg_count)
 }
 
 fn interop_shim_name(shim: InteropShimKind) -> &'static str {
@@ -1792,6 +2010,106 @@ fn set_borrowed(modes: &mut [CallArgMode], index: usize) {
     if let Some(slot) = modes.get_mut(index) {
         *slot = CallArgMode::Borrowed;
     }
+}
+
+fn last_path_segment(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
+}
+
+fn is_known_clone_container(head: &str) -> bool {
+    matches!(
+        head,
+        "Option"
+            | "Result"
+            | "Vec"
+            | "HashMap"
+            | "BTreeMap"
+            | "std::option::Option"
+            | "core::option::Option"
+            | "std::result::Result"
+            | "core::result::Result"
+            | "std::vec::Vec"
+            | "alloc::vec::Vec"
+            | "std::collections::HashMap"
+            | "std::collections::BTreeMap"
+    )
+}
+
+fn is_copy_primitive_type(head: &str) -> bool {
+    matches!(
+        head,
+        "bool"
+            | "char"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+    )
+}
+
+fn split_type_head_and_args(ty: &str) -> (&str, Vec<&str>) {
+    let ty = ty.trim();
+    let Some(start) = ty.find('<') else {
+        return (ty, Vec::new());
+    };
+    if !ty.ends_with('>') || start == 0 {
+        return (ty, Vec::new());
+    }
+    let head = ty[..start].trim();
+    let body = &ty[start + 1..ty.len() - 1];
+    (head, split_top_level_commas(body))
+}
+
+fn parse_tuple_items(ty: &str) -> Option<Vec<&str>> {
+    let ty = ty.trim();
+    if !ty.starts_with('(') || !ty.ends_with(')') {
+        return None;
+    }
+    let inner = &ty[1..ty.len() - 1];
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    Some(split_top_level_commas(inner))
+}
+
+fn split_top_level_commas(input: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let mut depth_angle = 0usize;
+    let mut depth_paren = 0usize;
+    let mut start = 0usize;
+
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => depth_angle = depth_angle.saturating_sub(1),
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            ',' if depth_angle == 0 && depth_paren == 0 => {
+                let segment = input[start..idx].trim();
+                if !segment.is_empty() {
+                    items.push(segment);
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        items.push(tail);
+    }
+    items
 }
 
 fn collect_path_uses_in_stmts(stmts: &[TypedStmt]) -> HashMap<String, usize> {
@@ -1890,7 +2208,11 @@ fn type_to_string(ty: &SemType) -> String {
         SemType::Unit => "()".to_string(),
         SemType::Unknown => "_".to_string(),
         SemType::Tuple(items) => {
-            let text = items.iter().map(type_to_string).collect::<Vec<_>>().join(", ");
+            let text = items
+                .iter()
+                .map(type_to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("({text})")
         }
         SemType::Fn { params, ret } => {
@@ -1906,7 +2228,11 @@ fn type_to_string(ty: &SemType) -> String {
             if args.is_empty() {
                 head
             } else {
-                let args_text = args.iter().map(type_to_string).collect::<Vec<_>>().join(", ");
+                let args_text = args
+                    .iter()
+                    .map(type_to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("{head}<{args_text}>")
             }
         }
@@ -2040,7 +2366,9 @@ fn lower_pattern(
                     return TypedPattern::Tuple(
                         items
                             .iter()
-                            .map(|item| lower_pattern(item, &SemType::Unknown, context, locals, diagnostics))
+                            .map(|item| {
+                                lower_pattern(item, &SemType::Unknown, context, locals, diagnostics)
+                            })
                             .collect(),
                     );
                 }
@@ -2048,7 +2376,9 @@ fn lower_pattern(
                     items
                         .iter()
                         .zip(scrutinee_items.iter())
-                        .map(|(item, item_ty)| lower_pattern(item, item_ty, context, locals, diagnostics))
+                        .map(|(item, item_ty)| {
+                            lower_pattern(item, item_ty, context, locals, diagnostics)
+                        })
                         .collect(),
                 )
             } else {
@@ -2062,7 +2392,9 @@ fn lower_pattern(
                 TypedPattern::Tuple(
                     items
                         .iter()
-                        .map(|item| lower_pattern(item, &SemType::Unknown, context, locals, diagnostics))
+                        .map(|item| {
+                            lower_pattern(item, &SemType::Unknown, context, locals, diagnostics)
+                        })
                         .collect(),
                 )
             }
@@ -2121,13 +2453,15 @@ fn lower_pattern(
             let lowered_payload = if let Some(variants) = context.enums.get(&enum_name) {
                 if let Some(expected_payload) = variants.get(&variant_name) {
                     match (expected_payload, payload) {
-                        (Some(expected_ty), Some(payload_pattern)) => Some(Box::new(lower_pattern(
-                            payload_pattern,
-                            expected_ty,
-                            context,
-                            locals,
-                            diagnostics,
-                        ))),
+                        (Some(expected_ty), Some(payload_pattern)) => {
+                            Some(Box::new(lower_pattern(
+                                payload_pattern,
+                                expected_ty,
+                                context,
+                                locals,
+                                diagnostics,
+                            )))
+                        }
                         (Some(_), None) => {
                             diagnostics.push(Diagnostic::new(
                                 format!(
@@ -2139,9 +2473,7 @@ fn lower_pattern(
                         }
                         (None, Some(_)) => {
                             diagnostics.push(Diagnostic::new(
-                                format!(
-                                    "Pattern `{enum_name}::{variant_name}` has no payload"
-                                ),
+                                format!("Pattern `{enum_name}::{variant_name}` has no payload"),
                                 Span::new(0, 0),
                             ));
                             None
@@ -2213,10 +2545,7 @@ fn lower_destructure_pattern_typed(pattern: &DestructurePattern) -> TypedDestruc
         DestructurePattern::Name(name) => TypedDestructurePattern::Name(name.clone()),
         DestructurePattern::Ignore => TypedDestructurePattern::Ignore,
         DestructurePattern::Tuple(items) => TypedDestructurePattern::Tuple(
-            items
-                .iter()
-                .map(lower_destructure_pattern_typed)
-                .collect(),
+            items.iter().map(lower_destructure_pattern_typed).collect(),
         ),
     }
 }
@@ -2225,9 +2554,9 @@ fn lower_destructure_pattern(pattern: &TypedDestructurePattern) -> RustDestructu
     match pattern {
         TypedDestructurePattern::Name(name) => RustDestructurePattern::Name(name.clone()),
         TypedDestructurePattern::Ignore => RustDestructurePattern::Ignore,
-        TypedDestructurePattern::Tuple(items) => RustDestructurePattern::Tuple(
-            items.iter().map(lower_destructure_pattern).collect(),
-        ),
+        TypedDestructurePattern::Tuple(items) => {
+            RustDestructurePattern::Tuple(items.iter().map(lower_destructure_pattern).collect())
+        }
     }
 }
 
@@ -2330,7 +2659,11 @@ fn resolve_path_value(path: &[String], context: &Context) -> Option<SemType> {
     None
 }
 
-fn infer_return_type(returns: &[SemType], diagnostics: &mut Vec<Diagnostic>, function_name: &str) -> SemType {
+fn infer_return_type(
+    returns: &[SemType],
+    diagnostics: &mut Vec<Diagnostic>,
+    function_name: &str,
+) -> SemType {
     if returns.is_empty() {
         return SemType::Unit;
     }
@@ -2389,9 +2722,7 @@ fn contains_unknown(ty: &SemType) -> bool {
         SemType::Unknown => true,
         SemType::Unit => false,
         SemType::Tuple(items) => items.iter().any(contains_unknown),
-        SemType::Fn { params, ret } => {
-            params.iter().any(contains_unknown) || contains_unknown(ret)
-        }
+        SemType::Fn { params, ret } => params.iter().any(contains_unknown) || contains_unknown(ret),
         SemType::Path { args, .. } => args.iter().any(contains_unknown),
     }
 }

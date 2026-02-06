@@ -20,6 +20,7 @@ pub struct CompilerOutput {
     pub typed: TypedModule,
     pub lowered: RustModule,
     pub rust_code: String,
+    pub ownership_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,19 +42,23 @@ impl fmt::Display for CompileError {
 
 pub fn compile_source(source: &str) -> Result<CompilerOutput, CompileError> {
     let tokens = lexer::lex(source).map_err(|diagnostics| CompileError { diagnostics })?;
-    let module = parser::parse_module(tokens).map_err(|diagnostics| CompileError { diagnostics })?;
+    let module =
+        parser::parse_module(tokens).map_err(|diagnostics| CompileError { diagnostics })?;
     compile_ast(&module)
 }
 
 pub fn compile_ast(module: &Module) -> Result<CompilerOutput, CompileError> {
-    let typed = passes::lower_to_typed(module).map_err(|diagnostics| CompileError { diagnostics })?;
+    let typed =
+        passes::lower_to_typed(module).map_err(|diagnostics| CompileError { diagnostics })?;
     let lowered = passes::lower_to_rust(&typed);
+    let ownership_notes = lowered.ownership_notes.clone();
     let rust_code = codegen::emit_rust_module(&lowered);
 
     Ok(CompilerOutput {
         typed,
         lowered,
         rust_code,
+        ownership_notes,
     })
 }
 
@@ -183,6 +188,46 @@ mod tests {
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("consume(text.clone());"));
         assert!(output.rust_code.contains("consume(text);"));
+        assert!(
+            output
+                .ownership_notes
+                .iter()
+                .any(|note| note.contains("auto-clone inserted"))
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_auto_clones_reused_user_defined_types() {
+        let source = r#"
+            pub struct Packet { id: i64; }
+
+            fn consume(packet: Packet) {
+                std::mem::drop(packet);
+                return;
+            }
+
+            fn demo(packet: Packet) {
+                consume(packet);
+                consume(packet);
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("consume(packet.clone());"));
+        assert!(output.rust_code.contains("consume(packet);"));
+        assert!(
+            output
+                .ownership_notes
+                .iter()
+                .any(|note| note.contains("`packet` of type `Packet`"))
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("// ownership-note: auto-clone inserted")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -218,9 +263,11 @@ mod tests {
 
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("__elevate_shim_str_len(&text)"));
-        assert!(output
-            .rust_code
-            .contains("fn __elevate_shim_str_len(__arg0: &str) -> usize"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn __elevate_shim_str_len(__arg0: &str) -> usize")
+        );
         assert!(!output.rust_code.contains("str::len(text)"));
         assert!(!output.rust_code.contains("text.clone()"));
         assert_rust_code_compiles(&output.rust_code);
@@ -259,10 +306,16 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("__elevate_shim_str_contains(&text, &needle)"));
-        assert!(output
-            .rust_code
-            .contains("fn __elevate_shim_str_contains(__arg0: &str, __arg1: &str) -> bool"));
+        assert!(
+            output
+                .rust_code
+                .contains("__elevate_shim_str_contains(&text, &needle)")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("fn __elevate_shim_str_contains(__arg0: &str, __arg1: &str) -> bool")
+        );
         assert!(!output.rust_code.contains("str::contains(text, needle)"));
         assert!(!output.rust_code.contains("text.clone()"));
         assert!(!output.rust_code.contains("needle.clone()"));
@@ -279,18 +332,26 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output
-            .rust_code
-            .contains("__elevate_shim_str_starts_with(&text, &prefix)"));
-        assert!(output
-            .rust_code
-            .contains("__elevate_shim_str_ends_with(&text, &suffix)"));
-        assert!(output.rust_code.contains(
-            "fn __elevate_shim_str_starts_with(__arg0: &str, __arg1: &str) -> bool"
-        ));
-        assert!(output
-            .rust_code
-            .contains("fn __elevate_shim_str_ends_with(__arg0: &str, __arg1: &str) -> bool"));
+        assert!(
+            output
+                .rust_code
+                .contains("__elevate_shim_str_starts_with(&text, &prefix)")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("__elevate_shim_str_ends_with(&text, &suffix)")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("fn __elevate_shim_str_starts_with(__arg0: &str, __arg1: &str) -> bool")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("fn __elevate_shim_str_ends_with(__arg0: &str, __arg1: &str) -> bool")
+        );
         assert!(!output.rust_code.contains("text.clone()"));
         assert!(!output.rust_code.contains("prefix.clone()"));
         assert!(!output.rust_code.contains("suffix.clone()"));
@@ -351,7 +412,11 @@ mod tests {
         assert!(output.rust_code.contains("HashMap::len(&h)"));
         assert!(output.rust_code.contains("BTreeMap::is_empty(&b)"));
         assert!(output.rust_code.contains("HashMap::contains_key(&h, &key)"));
-        assert!(output.rust_code.contains("BTreeMap::contains_key(&b, &key)"));
+        assert!(
+            output
+                .rust_code
+                .contains("BTreeMap::contains_key(&b, &key)")
+        );
         assert!(!output.rust_code.contains("key.clone()"));
         assert_rust_code_compiles(&output.rust_code);
     }

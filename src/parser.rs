@@ -241,9 +241,15 @@ impl Parser {
         if self.match_kind(TokenKind::Const) {
             if self.match_kind(TokenKind::LParen) {
                 let pattern = self.parse_destructure_pattern_tuple()?;
-                self.expect(TokenKind::Equal, "Expected '=' after destructuring const pattern")?;
+                self.expect(
+                    TokenKind::Equal,
+                    "Expected '=' after destructuring const pattern",
+                )?;
                 let value = self.parse_expr()?;
-                self.expect(TokenKind::Semicolon, "Expected ';' after destructuring const")?;
+                self.expect(
+                    TokenKind::Semicolon,
+                    "Expected ';' after destructuring const",
+                )?;
                 return Some(Stmt::DestructureConst { pattern, value });
             }
             let name = self.expect_ident("Expected const name")?;
@@ -417,7 +423,10 @@ impl Parser {
             let pattern = self.parse_pattern()?;
             self.expect(TokenKind::FatArrow, "Expected `=>` in match arm")?;
             let value = self.parse_expr()?;
-            self.expect(TokenKind::Semicolon, "Expected ';' after match arm expression")?;
+            self.expect(
+                TokenKind::Semicolon,
+                "Expected ';' after match arm expression",
+            )?;
             arms.push(MatchArm { pattern, value });
         }
         self.expect(TokenKind::RBrace, "Expected '}' after match arms")?;
@@ -461,14 +470,20 @@ impl Parser {
                 self.expect(TokenKind::RParen, "Expected ')' after tuple pattern")?;
                 return Some(Pattern::Tuple(items));
             }
-            self.expect(TokenKind::RParen, "Expected ')' after parenthesized pattern")?;
+            self.expect(
+                TokenKind::RParen,
+                "Expected ')' after parenthesized pattern",
+            )?;
             return Some(first);
         }
 
         let path = self.parse_path("Expected pattern path")?;
         let payload = if self.match_kind(TokenKind::LParen) {
             let inner = self.parse_pattern()?;
-            self.expect(TokenKind::RParen, "Expected ')' after variant payload pattern")?;
+            self.expect(
+                TokenKind::RParen,
+                "Expected ')' after variant payload pattern",
+            )?;
             Some(Box::new(inner))
         } else {
             None
@@ -557,7 +572,10 @@ impl Parser {
                     self.expect(TokenKind::RParen, "Expected ')' after tuple literal")?;
                     Some(Expr::Tuple(items))
                 } else {
-                    self.expect(TokenKind::RParen, "Expected ')' after parenthesized expression")?;
+                    self.expect(
+                        TokenKind::RParen,
+                        "Expected ')' after parenthesized expression",
+                    )?;
                     Some(first)
                 }
             }
@@ -587,7 +605,10 @@ impl Parser {
         let mut params = Vec::new();
         while !self.at(TokenKind::Pipe) && !self.at(TokenKind::Eof) {
             let name = self.expect_ident("Expected closure parameter name")?;
-            self.expect(TokenKind::Colon, "Expected ':' after closure parameter name")?;
+            self.expect(
+                TokenKind::Colon,
+                "Expected ':' after closure parameter name",
+            )?;
             let ty = self.parse_type()?;
             params.push(Param { name, ty });
             if !self.match_kind(TokenKind::Comma) {
@@ -625,7 +646,10 @@ impl Parser {
                 break;
             }
         }
-        self.expect(TokenKind::RParen, "Expected ')' after destructuring pattern")?;
+        self.expect(
+            TokenKind::RParen,
+            "Expected ')' after destructuring pattern",
+        )?;
         Some(DestructurePattern::Tuple(items))
     }
 

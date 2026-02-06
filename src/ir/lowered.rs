@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustModule {
     pub items: Vec<RustItem>,
+    pub ownership_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
