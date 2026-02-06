@@ -104,7 +104,7 @@ fn emit_function(def: &RustFunction, out: &mut String) {
     out.push_str(&format!(" -> {}", def.return_type));
     out.push_str(" {\n");
     for stmt in &def.body {
-        emit_stmt(stmt, out);
+        emit_stmt_with_indent(stmt, out, 1, &mutated);
     }
     out.push_str("}\n");
 }
@@ -145,125 +145,11 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
             method.return_type
         ));
         for stmt in &method.body {
-            emit_stmt_with_indent(stmt, out, 2);
+            emit_stmt_with_indent(stmt, out, 2, &mutated);
         }
         out.push_str("    }\n");
     }
     out.push_str("}\n");
-}
-
-fn emit_stmt(stmt: &RustStmt, out: &mut String) {
-    match stmt {
-        RustStmt::Const(def) => {
-            let value = emit_expr(&def.value);
-            if should_annotate_local_binding(&def.ty, &def.value) {
-                out.push_str(&format!("    let {}: {} = {};\n", def.name, def.ty, value));
-            } else {
-                out.push_str(&format!("    let {} = {};\n", def.name, value));
-            }
-        }
-        RustStmt::Return(Some(expr)) => {
-            out.push_str(&format!("    return {};\n", emit_expr(expr)));
-        }
-        RustStmt::Return(None) => {
-            out.push_str("    return;\n");
-        }
-        RustStmt::DestructureConst { pattern, value } => {
-            let binding = emit_destructure_pattern(pattern);
-            let value = emit_expr(value);
-            if matches!(pattern, RustDestructurePattern::Slice { .. }) {
-                out.push_str(&format!(
-                    "    let {binding} = {value}.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n"
-                ));
-                emit_slice_element_rebinds(pattern, out, 1);
-            } else {
-                out.push_str(&format!("    let {binding} = {value};\n"));
-            }
-        }
-        RustStmt::Assign { target, op, value } => {
-            let op = match op {
-                RustAssignOp::Assign => "=",
-                RustAssignOp::AddAssign => "+=",
-            };
-            out.push_str(&format!(
-                "    {} {} {};\n",
-                emit_assign_target(target),
-                op,
-                emit_expr(value)
-            ));
-        }
-        RustStmt::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            out.push_str(&format!("    if {} {{\n", emit_condition_expr(condition)));
-            for stmt in then_body {
-                emit_stmt_with_indent(stmt, out, 2);
-            }
-            out.push_str("    }");
-            if let Some(else_body) = else_body {
-                out.push_str(" else {\n");
-                for stmt in else_body {
-                    emit_stmt_with_indent(stmt, out, 2);
-                }
-                out.push_str("    }");
-            }
-            out.push('\n');
-        }
-        RustStmt::While { condition, body } => {
-            out.push_str(&format!("    while {} {{\n", emit_condition_expr(condition)));
-            for stmt in body {
-                emit_stmt_with_indent(stmt, out, 2);
-            }
-            out.push_str("    }\n");
-        }
-        RustStmt::For {
-            binding,
-            iter,
-            body,
-        } => {
-            if matches!(binding, RustDestructurePattern::Slice { .. }) {
-                out.push_str(&format!("    for __item in {} {{\n", emit_expr(iter)));
-                out.push_str(&format!(
-                    "        let {} = __item.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n",
-                    emit_destructure_pattern(binding)
-                ));
-                emit_slice_element_rebinds(binding, out, 2);
-                for stmt in body {
-                    emit_stmt_with_indent(stmt, out, 2);
-                }
-                out.push_str("    }\n");
-            } else {
-                out.push_str(&format!(
-                    "    for {} in {} {{\n",
-                    emit_destructure_pattern(binding),
-                    emit_expr(iter)
-                ));
-                for stmt in body {
-                    emit_stmt_with_indent(stmt, out, 2);
-                }
-                out.push_str("    }\n");
-            }
-        }
-        RustStmt::Loop { body } => {
-            out.push_str("    loop {\n");
-            for stmt in body {
-                emit_stmt_with_indent(stmt, out, 2);
-            }
-            out.push_str("    }\n");
-        }
-        RustStmt::Break => out.push_str("    break;\n"),
-        RustStmt::Continue => out.push_str("    continue;\n"),
-        RustStmt::Raw(code) => {
-            out.push_str("    ");
-            out.push_str(code.trim());
-            out.push('\n');
-        }
-        RustStmt::Expr(expr) => {
-            out.push_str(&format!("    {};\n", emit_expr(expr)));
-        }
-    }
 }
 
 fn emit_const(def: &RustConst, out: &mut String) {
@@ -419,8 +305,9 @@ fn emit_expr(expr: &RustExpr) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             let mut text = format!("|{params}| -> {return_type} {{\n");
+            let mutated_body = collect_mutated_paths_in_stmts(body);
             for stmt in body {
-                emit_stmt_with_indent(stmt, &mut text, 1);
+                emit_stmt_with_indent(stmt, &mut text, 1, &mutated_body);
             }
             text.push('}');
             text
@@ -594,15 +481,24 @@ fn emit_destructure_pattern(pattern: &RustDestructurePattern) -> String {
     }
 }
 
-fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
+fn emit_stmt_with_indent(
+    stmt: &RustStmt,
+    out: &mut String,
+    indent: usize,
+    mutated: &std::collections::HashSet<String>,
+) {
     let pad = "    ".repeat(indent);
     match stmt {
         RustStmt::Const(def) => {
             let value = emit_expr(&def.value);
+            let mut_kw = if mutated.contains(&def.name) { "mut " } else { "" };
             if should_annotate_local_binding(&def.ty, &def.value) {
-                out.push_str(&format!("{pad}let {}: {} = {};\n", def.name, def.ty, value));
+                out.push_str(&format!(
+                    "{pad}let {mut_kw}{}: {} = {};\n",
+                    def.name, def.ty, value
+                ));
             } else {
-                out.push_str(&format!("{pad}let {} = {};\n", def.name, value));
+                out.push_str(&format!("{pad}let {mut_kw}{} = {};\n", def.name, value));
             }
         }
         RustStmt::Return(Some(expr)) => {
@@ -640,13 +536,13 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
         } => {
             out.push_str(&format!("{pad}if {} {{\n", emit_condition_expr(condition)));
             for nested in then_body {
-                emit_stmt_with_indent(nested, out, indent + 1);
+                emit_stmt_with_indent(nested, out, indent + 1, mutated);
             }
             out.push_str(&format!("{pad}}}"));
             if let Some(else_body) = else_body {
                 out.push_str(" else {\n");
                 for nested in else_body {
-                    emit_stmt_with_indent(nested, out, indent + 1);
+                    emit_stmt_with_indent(nested, out, indent + 1, mutated);
                 }
                 out.push_str(&format!("{pad}}}"));
             }
@@ -655,7 +551,7 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
         RustStmt::While { condition, body } => {
             out.push_str(&format!("{pad}while {} {{\n", emit_condition_expr(condition)));
             for nested in body {
-                emit_stmt_with_indent(nested, out, indent + 1);
+                emit_stmt_with_indent(nested, out, indent + 1, mutated);
             }
             out.push_str(&format!("{pad}}}\n"));
         }
@@ -672,7 +568,7 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
                 ));
                 emit_slice_element_rebinds(binding, out, indent + 1);
                 for nested in body {
-                    emit_stmt_with_indent(nested, out, indent + 1);
+                    emit_stmt_with_indent(nested, out, indent + 1, mutated);
                 }
                 out.push_str(&format!("{pad}}}\n"));
             } else {
@@ -682,7 +578,7 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
                     emit_expr(iter)
                 ));
                 for nested in body {
-                    emit_stmt_with_indent(nested, out, indent + 1);
+                    emit_stmt_with_indent(nested, out, indent + 1, mutated);
                 }
                 out.push_str(&format!("{pad}}}\n"));
             }
@@ -690,7 +586,7 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
         RustStmt::Loop { body } => {
             out.push_str(&format!("{pad}loop {{\n"));
             for nested in body {
-                emit_stmt_with_indent(nested, out, indent + 1);
+                emit_stmt_with_indent(nested, out, indent + 1, mutated);
             }
             out.push_str(&format!("{pad}}}\n"));
         }

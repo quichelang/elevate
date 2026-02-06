@@ -108,10 +108,7 @@ fn normalize_puzzle_index(index: i64) -> i64 {
 }
 
 fn parse_cells(text: String) -> Vec<i64> {
-    parse_cells_into(text, [])
-}
-
-fn parse_cells_into(text: String, cells: Vec<i64>) -> Vec<i64> {
+    const cells: Vec<i64> = [];
     for ch in text.chars() {
         cells.push(char_to_digit(ch));
     }
@@ -119,10 +116,7 @@ fn parse_cells_into(text: String, cells: Vec<i64>) -> Vec<i64> {
 }
 
 fn build_fixed(cells: Vec<i64>) -> Vec<bool> {
-    build_fixed_into(cells, [])
-}
-
-fn build_fixed_into(cells: Vec<i64>, fixed: Vec<bool>) -> Vec<bool> {
+    const fixed: Vec<bool> = [];
     for value in cells {
         fixed.push(value != 0);
     }
