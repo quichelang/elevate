@@ -1,4 +1,8 @@
+use std::env;
+use std::path::PathBuf;
+
 use game_core::{App, AppCommand, Frame, Key, Style};
+use game_save::{Snapshot, read_snapshot, write_snapshot};
 use game_ui_term::{Rect, draw_panel, draw_text};
 
 const PUZZLES: [&str; 3] = [
@@ -91,6 +95,36 @@ impl SudokuBoard {
         }
         true
     }
+
+    pub fn to_compact_string(&self) -> String {
+        let mut out = String::with_capacity(81);
+        for value in self.cells {
+            out.push(char::from_digit(u32::from(value), 10).unwrap_or('0'));
+        }
+        out
+    }
+
+    pub fn apply_compact_string(&mut self, compact: &str) -> Result<(), String> {
+        let mut chars = compact.chars();
+        for idx in 0..81 {
+            let ch = chars
+                .next()
+                .ok_or_else(|| "compact board state is too short".to_string())?;
+            let value = ch
+                .to_digit(10)
+                .ok_or_else(|| format!("invalid compact board digit '{ch}'"))?
+                as u8;
+
+            if !self.fixed[idx] {
+                self.cells[idx] = value;
+            }
+        }
+
+        if chars.next().is_some() {
+            return Err("compact board state is too long".to_string());
+        }
+        Ok(())
+    }
 }
 
 pub struct SudokuGame {
@@ -115,9 +149,13 @@ impl SudokuGame {
             board,
             cursor_row: 0,
             cursor_col: 0,
-            message: "Arrows/WASD/HJKL move, 1-9 set, 0 clear, c check, n next, r reset, q quit"
+            message: "Arrows/WASD/HJKL move, 1-9 set, 0 clear, c check, n next, r reset, p save, o load, q quit"
                 .to_string(),
         }
+    }
+
+    fn save_path() -> PathBuf {
+        env::temp_dir().join("elevate-sudoku.save")
     }
 
     fn load_current_puzzle(&mut self) {
@@ -157,6 +195,47 @@ impl SudokuGame {
             return;
         }
         self.message = "No conflict in current cell. Keep going.".to_string();
+    }
+
+    fn make_snapshot(&self) -> Snapshot {
+        let mut snapshot = Snapshot::new("sudoku-game", 1);
+        snapshot.insert("puzzle_index", self.puzzle_index.to_string());
+        snapshot.insert("cursor_row", self.cursor_row.to_string());
+        snapshot.insert("cursor_col", self.cursor_col.to_string());
+        snapshot.insert("cells", self.board.to_compact_string());
+        snapshot
+    }
+
+    fn restore_snapshot(&mut self, snapshot: Snapshot) -> Result<(), String> {
+        if snapshot.kind != "sudoku-game" {
+            return Err(format!("unsupported snapshot kind '{}'", snapshot.kind));
+        }
+        if snapshot.version != 1 {
+            return Err(format!(
+                "unsupported snapshot version '{}'",
+                snapshot.version
+            ));
+        }
+
+        let puzzle_index = parse_usize_field(&snapshot, "puzzle_index")?;
+        if puzzle_index >= PUZZLES.len() {
+            return Err(format!(
+                "snapshot puzzle_index {} out of range",
+                puzzle_index
+            ));
+        }
+        let cursor_row = parse_usize_field(&snapshot, "cursor_row")?.min(8);
+        let cursor_col = parse_usize_field(&snapshot, "cursor_col")?.min(8);
+        let cells = snapshot
+            .get("cells")
+            .ok_or_else(|| "snapshot missing 'cells'".to_string())?;
+
+        self.puzzle_index = puzzle_index;
+        self.load_current_puzzle();
+        self.board.apply_compact_string(cells)?;
+        self.cursor_row = cursor_row;
+        self.cursor_col = cursor_col;
+        Ok(())
     }
 
     fn draw_board(&self, frame: &mut Frame, start_x: usize, start_y: usize) {
@@ -237,6 +316,24 @@ impl App for SudokuGame {
                 self.message = "Puzzle reset".to_string();
             }
             Key::Char('c') => self.check_status(),
+            Key::Char('p') => {
+                let path = Self::save_path();
+                let snapshot = self.make_snapshot();
+                match write_snapshot(&path, &snapshot) {
+                    Ok(()) => self.message = format!("Saved game to {}", path.display()),
+                    Err(err) => self.message = format!("Save failed: {err}"),
+                }
+            }
+            Key::Char('o') => {
+                let path = Self::save_path();
+                match read_snapshot(&path) {
+                    Ok(snapshot) => match self.restore_snapshot(snapshot) {
+                        Ok(()) => self.message = format!("Loaded game from {}", path.display()),
+                        Err(err) => self.message = format!("Load failed: {err}"),
+                    },
+                    Err(err) => self.message = format!("Load failed: {err}"),
+                }
+            }
             Key::Char('0') | Key::Char(' ') | Key::Backspace => self.clear_cell(),
             Key::Char(ch) if ('1'..='9').contains(&ch) => {
                 self.apply_digit(ch.to_digit(10).unwrap_or(0) as u8)
@@ -298,7 +395,8 @@ impl App for SudokuGame {
             draw_text(frame, 32, 7, "Check: c", Style::default());
             draw_text(frame, 32, 8, "Next puzzle: n", Style::default());
             draw_text(frame, 32, 9, "Reset puzzle: r", Style::default());
-            draw_text(frame, 32, 10, "Quit: q / Esc / Ctrl+C", Style::default());
+            draw_text(frame, 32, 10, "Save: p   Load: o", Style::default());
+            draw_text(frame, 32, 11, "Quit: q / Esc / Ctrl+C", Style::default());
         }
 
         draw_panel(
@@ -314,6 +412,14 @@ impl App for SudokuGame {
         );
         draw_text(frame, 3, 24, &self.message, Style::default());
     }
+}
+
+fn parse_usize_field(snapshot: &Snapshot, key: &str) -> Result<usize, String> {
+    let raw = snapshot
+        .get(key)
+        .ok_or_else(|| format!("snapshot missing '{key}'"))?;
+    raw.parse::<usize>()
+        .map_err(|_| format!("snapshot field '{key}' has invalid integer '{raw}'"))
 }
 
 #[cfg(test)]
@@ -347,5 +453,40 @@ mod tests {
             "534678912672195348198342567859761423426853791713924856961537284287419635345286179";
         let board = SudokuBoard::from_puzzle(solved);
         assert!(board.is_complete());
+    }
+
+    #[test]
+    fn compact_board_roundtrip_preserves_values() {
+        let mut board = SudokuBoard::from_puzzle(PUZZLES[1]);
+        assert!(board.set(0, 0, 3));
+        assert!(board.set(0, 1, 4));
+
+        let compact = board.to_compact_string();
+        let mut restored = SudokuBoard::from_puzzle(PUZZLES[1]);
+        restored
+            .apply_compact_string(&compact)
+            .expect("apply compact state");
+
+        assert_eq!(restored.to_compact_string(), compact);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_restores_game_state() {
+        let mut original = SudokuGame::new();
+        original.cursor_row = 0;
+        original.cursor_col = 2;
+        original.apply_digit(7);
+
+        let snapshot = original.make_snapshot();
+        let mut restored = SudokuGame::new();
+        restored.restore_snapshot(snapshot).expect("restore");
+
+        assert_eq!(restored.puzzle_index, original.puzzle_index);
+        assert_eq!(restored.cursor_row, original.cursor_row);
+        assert_eq!(restored.cursor_col, original.cursor_col);
+        assert_eq!(
+            restored.board.to_compact_string(),
+            original.board.to_compact_string()
+        );
     }
 }

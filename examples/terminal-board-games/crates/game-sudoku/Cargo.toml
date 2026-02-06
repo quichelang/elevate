@@ -7,4 +7,5 @@ authors.workspace = true
 
 [dependencies]
 game-core = { path = "../game-core" }
+game-save = { path = "../game-save" }
 game-ui-term = { path = "../game-ui-term" }

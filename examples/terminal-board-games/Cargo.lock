@@ -11,10 +11,15 @@ name = "game-loop"
 version = "0.1.0"
 
 [[package]]
+name = "game-save"
+version = "0.1.0"
+
+[[package]]
 name = "game-sudoku"
 version = "0.1.0"
 dependencies = [
  "game-core",
+ "game-save",
  "game-ui-term",
 ]
 
