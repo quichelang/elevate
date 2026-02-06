@@ -189,7 +189,11 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
             iter,
             body,
         } => {
-            out.push_str(&format!("    for {binding} in {} {{\n", emit_expr(iter)));
+            out.push_str(&format!(
+                "    for {} in {} {{\n",
+                emit_destructure_pattern(binding),
+                emit_expr(iter)
+            ));
             for stmt in body {
                 emit_stmt_with_indent(stmt, out, 2);
             }
@@ -549,7 +553,11 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
             iter,
             body,
         } => {
-            out.push_str(&format!("{pad}for {binding} in {} {{\n", emit_expr(iter)));
+            out.push_str(&format!(
+                "{pad}for {} in {} {{\n",
+                emit_destructure_pattern(binding),
+                emit_expr(iter)
+            ));
             for nested in body {
                 emit_stmt_with_indent(nested, out, indent + 1);
             }

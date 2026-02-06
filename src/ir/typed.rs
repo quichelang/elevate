@@ -90,7 +90,7 @@ pub enum TypedStmt {
         body: Vec<TypedStmt>,
     },
     For {
-        binding: String,
+        binding: TypedDestructurePattern,
         iter: TypedExpr,
         body: Vec<TypedStmt>,
     },

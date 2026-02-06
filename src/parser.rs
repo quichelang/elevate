@@ -316,7 +316,7 @@ impl Parser {
             return Some(Stmt::While { condition, body });
         }
         if self.match_kind(TokenKind::For) {
-            let binding = self.expect_ident("Expected loop binding after `for`")?;
+            let binding = self.parse_destructure_pattern_atom()?;
             self.expect(TokenKind::In, "Expected `in` after `for` loop binding")?;
             let iter = self.parse_expr()?;
             let body = self.parse_block()?;
@@ -1222,6 +1222,23 @@ mod tests {
                     total += i;
                 }
                 return total;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_for_loop_with_tuple_destructure() {
+        let source = r#"
+            fn sum_pairs(pairs: PairIter) -> i64 {
+                const total = 0;
+                for (left, right) in pairs {
+                    total += left;
+                    total += right;
+                }
+                total
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

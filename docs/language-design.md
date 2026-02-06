@@ -166,7 +166,7 @@ Implemented:
 - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
 - Tail-expression returns for final function/method expressions.
 - Range expressions: `..` and `..=`.
-- Tuple literals and local tuple destructuring bindings.
+- Tuple literals and tuple destructuring bindings (const bindings, assignment targets, and `for` loop bindings).
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
 - Match arm block expressions (`pattern => { ... };`).
 - Match guards (`pattern if condition => ...`).

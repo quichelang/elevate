@@ -101,7 +101,7 @@ pub enum Stmt {
         body: Block,
     },
     For {
-        binding: String,
+        binding: DestructurePattern,
         iter: Expr,
         body: Block,
     },

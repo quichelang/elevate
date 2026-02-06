@@ -91,7 +91,7 @@ pub enum RustStmt {
         body: Vec<RustStmt>,
     },
     For {
-        binding: String,
+        binding: RustDestructurePattern,
         iter: RustExpr,
         body: Vec<RustStmt>,
     },

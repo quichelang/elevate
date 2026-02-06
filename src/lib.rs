@@ -840,6 +840,24 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_for_tuple_destructure_bindings() {
+        let source = r#"
+            rust use crate::PairIter;
+
+            fn sum_pairs(pairs: PairIter) -> i64 {
+                for (left, right) in pairs {
+                    std::mem::drop(left);
+                    std::mem::drop(right);
+                }
+                0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for (left, right) in pairs"));
+    }
+
+    #[test]
     fn compile_supports_impl_methods() {
         let source = r#"
             pub struct Point { x: i64; }

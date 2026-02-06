@@ -1147,8 +1147,8 @@ fn lower_stmt_with_types(
             let item_ty = infer_for_item_type(&typed_iter, &iter_ty);
             let mut loop_locals = locals.clone();
             let mut loop_immutable_locals = immutable_locals.clone();
-            loop_locals.insert(binding.clone(), item_ty);
-            loop_immutable_locals.insert(binding.clone());
+            bind_destructure_pattern(binding, &item_ty, &mut loop_locals, diagnostics);
+            collect_destructure_pattern_names(binding, &mut loop_immutable_locals);
             let typed_body = lower_block_with_types(
                 body,
                 context,
@@ -1159,7 +1159,7 @@ fn lower_stmt_with_types(
                 diagnostics,
             );
             Some(TypedStmt::For {
-                binding: binding.clone(),
+                binding: lower_destructure_pattern_typed(binding),
                 iter: typed_iter,
                 body: typed_body,
             })
@@ -2414,7 +2414,7 @@ fn lower_stmt_with_context(
             iter,
             body,
         } => RustStmt::For {
-            binding: binding.clone(),
+            binding: lower_destructure_pattern(binding),
             iter: lower_expr_with_context(iter, context, ExprPosition::Value, state),
             body: body
                 .iter()
