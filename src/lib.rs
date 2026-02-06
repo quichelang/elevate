@@ -1656,6 +1656,37 @@ mod tests {
     }
 
     #[test]
+    fn compile_counts_true_guards_for_exhaustiveness() {
+        let source = r#"
+            fn classify(flag: bool) -> i64 {
+                return match flag {
+                    true if true => 1;
+                    false => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("true => 1"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_ignores_false_guards_for_exhaustiveness() {
+        let source = r#"
+            fn classify(flag: bool) -> i64 {
+                return match flag {
+                    true if false => 1;
+                    false => 0;
+                };
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected non-exhaustive error");
+        assert!(error.to_string().contains("Non-exhaustive match on `bool`"));
+    }
+
+    #[test]
     fn compile_supports_matching_imported_rust_enums() {
         let source = r#"
             rust use std::cmp::Ordering;

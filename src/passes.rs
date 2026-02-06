@@ -1936,7 +1936,7 @@ fn check_match_exhaustiveness(
         let mut has_true = false;
         let mut has_false = false;
         for arm in arms {
-            if arm.guard.is_some() {
+            if !guard_counts_for_exhaustiveness(arm.guard.as_ref()) {
                 continue;
             }
             collect_bool_coverage(&arm.pattern, &mut has_true, &mut has_false);
@@ -1953,7 +1953,7 @@ fn check_match_exhaustiveness(
     if let Some(arity) = bool_tuple_arity(scrutinee_ty) {
         let mut covered = HashSet::new();
         for arm in arms {
-            if arm.guard.is_some() {
+            if !guard_counts_for_exhaustiveness(arm.guard.as_ref()) {
                 continue;
             }
             collect_bool_tuple_coverage(&arm.pattern, arity, &mut covered);
@@ -1989,7 +1989,7 @@ fn check_match_exhaustiveness(
 
         let mut covered = HashSet::new();
         for arm in arms {
-            if arm.guard.is_some() {
+            if !guard_counts_for_exhaustiveness(arm.guard.as_ref()) {
                 continue;
             }
             collect_finite_tuple_coverage(&arm.pattern, &domains, &mut covered);
@@ -2024,7 +2024,7 @@ fn check_match_exhaustiveness(
 
     let mut covered = HashSet::new();
     for arm in arms {
-        if arm.guard.is_some() {
+        if !guard_counts_for_exhaustiveness(arm.guard.as_ref()) {
             continue;
         }
         collect_enum_coverage(&arm.pattern, &enum_name, &mut covered);
@@ -2295,7 +2295,15 @@ fn finite_tuple_combo_key(combo: &[String]) -> String {
 
 fn match_has_total_pattern(arms: &[TypedMatchArm]) -> bool {
     arms.iter()
-        .any(|arm| arm.guard.is_none() && pattern_is_total(&arm.pattern))
+        .any(|arm| guard_counts_for_exhaustiveness(arm.guard.as_ref()) && pattern_is_total(&arm.pattern))
+}
+
+fn guard_counts_for_exhaustiveness(guard: Option<&TypedExpr>) -> bool {
+    match guard.map(|expr| &expr.kind) {
+        None => true,
+        Some(TypedExprKind::Bool(true)) => true,
+        _ => false,
+    }
 }
 
 fn pattern_is_total(pattern: &TypedPattern) -> bool {
@@ -3221,12 +3229,18 @@ fn lower_expr_with_context(
                 .iter()
                 .map(|arm| RustMatchArm {
                     pattern: lower_pattern_to_rust(&arm.pattern),
-                    guard: arm
-                        .guard
-                        .as_ref()
-                        .map(|guard| {
-                            lower_expr_with_context(guard, context, ExprPosition::Value, state)
-                        }),
+                    guard: arm.guard.as_ref().and_then(|guard| {
+                        if matches!(guard.kind, TypedExprKind::Bool(true)) {
+                            None
+                        } else {
+                            Some(lower_expr_with_context(
+                                guard,
+                                context,
+                                ExprPosition::Value,
+                                state,
+                            ))
+                        }
+                    }),
                     value: lower_expr_with_context(&arm.value, context, ExprPosition::Value, state),
                 })
                 .collect(),
