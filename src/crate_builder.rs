@@ -323,16 +323,16 @@ fn rewrite_stmt_adapter_calls(stmt: &mut Stmt, adapter_map: &HashMap<String, Vec
 
 fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec<String>>) {
     match expr {
+        Expr::Path(path) => {
+            let alias = path.join("::");
+            if let Some(rewrite) = adapter_map.get(&alias) {
+                *path = rewrite.clone();
+            }
+        }
         Expr::Call { callee, args } => {
             rewrite_expr_adapter_calls(callee, adapter_map);
             for arg in args {
                 rewrite_expr_adapter_calls(arg, adapter_map);
-            }
-            if let Expr::Path(path) = callee.as_mut() {
-                let alias = path.join("::");
-                if let Some(rewrite) = adapter_map.get(&alias) {
-                    *path = rewrite.clone();
-                }
             }
         }
         Expr::MacroCall { args, .. } => {
@@ -371,7 +371,7 @@ fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec
                 rewrite_expr_adapter_calls(end, adapter_map);
             }
         }
-        Expr::Int(_) | Expr::Bool(_) | Expr::String(_) | Expr::Path(_) => {}
+        Expr::Int(_) | Expr::Bool(_) | Expr::String(_) => {}
     }
 }
 
@@ -1126,6 +1126,36 @@ mod tests {
         assert!(
             generated_lib.contains("elevate_interop::__elevate_adapter_elevate__max_i64(a, b)")
         );
+    }
+
+    #[test]
+    fn transpile_routes_alias_paths_used_as_values() {
+        let root = create_temp_dir("elevate-interop-routing-path-value");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "pub fn pick(a: i64, b: i64) -> i64 {\n    const pick_fn = elevate::max_i64;\n    const out: i64 = pick_fn(a, b);\n    out\n}\n",
+        )
+        .expect("write lib.ers should succeed");
+        fs::write(
+            root.join("elevate.interop"),
+            "adapter elevate::max_i64 => std::cmp::max (i64, i64) -> i64\n",
+        )
+        .expect("write interop contract should succeed");
+
+        let summary = transpile_ers_crate(&root).expect("transpile should succeed");
+        let generated_src = summary.generated_root.join("src");
+        let generated_lib =
+            fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");
+        assert!(generated_lib.contains(
+            "let pick_fn = elevate_interop::__elevate_adapter_elevate__max_i64;"
+        ));
+        assert!(generated_lib.contains("let out: i64 = pick_fn(a, b);"));
     }
 
     #[test]

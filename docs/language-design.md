@@ -285,7 +285,6 @@ Quality gates:
 - Full Rust-pattern parity for match is not complete (remaining work includes slice/rest patterns).
 - Inline `rust { ... }` escape blocks are not complete.
 - Interop contract signature verification currently validates declaration shape, but not full type-level callsite compatibility across all compiler phases.
-- Adapter routing currently targets direct path call expressions; broader rewrite coverage (for additional call shapes) is not complete.
 - Object-native parser APIs are in preview form (lexopt example) and are not yet generalized as a standard library pattern.
 - Borrow/reference features remain intentionally unsupported.
 
