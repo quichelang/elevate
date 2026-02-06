@@ -1868,6 +1868,43 @@ fn check_match_exhaustiveness(
         return;
     }
 
+    if let Some(domains) = finite_tuple_domains(scrutinee_ty, context) {
+        let total = domains
+            .iter()
+            .map(|domain| domain.len())
+            .try_fold(1usize, |acc, len| acc.checked_mul(len))
+            .unwrap_or(usize::MAX);
+        if total == 0 || total > 256 {
+            return;
+        }
+
+        let mut covered = HashSet::new();
+        for arm in arms {
+            if arm.guard.is_some() {
+                continue;
+            }
+            collect_finite_tuple_coverage(&arm.pattern, &domains, &mut covered);
+        }
+
+        if covered.len() != total {
+            let mut missing = Vec::new();
+            for combo in enumerate_finite_tuple_combos(&domains) {
+                let key = finite_tuple_combo_key(&combo);
+                if !covered.contains(&key) {
+                    missing.push(format!("({})", combo.join(", ")));
+                }
+            }
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Non-exhaustive match on finite tuple domain; missing: {}",
+                    missing.join(", ")
+                ),
+                Span::new(0, 0),
+            ));
+        }
+        return;
+    }
+
     let Some(enum_name) = enum_name_from_type(scrutinee_ty) else {
         return;
     };
@@ -1986,6 +2023,147 @@ fn format_bool_tuple_mask(mask: usize, arity: usize) -> String {
         items.push(if value { "true" } else { "false" });
     }
     format!("({})", items.join(", "))
+}
+
+fn finite_tuple_domains(scrutinee_ty: &SemType, context: &Context) -> Option<Vec<Vec<String>>> {
+    let SemType::Tuple(items) = scrutinee_ty else {
+        return None;
+    };
+    if items.is_empty() {
+        return None;
+    }
+    let mut domains = Vec::new();
+    for item in items {
+        if is_concrete_named_type(item, "bool") {
+            domains.push(vec!["false".to_string(), "true".to_string()]);
+            continue;
+        }
+        let enum_name = enum_name_from_type(item)?;
+        let variants = expected_enum_variants(&enum_name, context);
+        if variants.is_empty() {
+            return None;
+        }
+        domains.push(
+            variants
+                .into_iter()
+                .map(|variant| format!("{enum_name}::{variant}"))
+                .collect(),
+        );
+    }
+    Some(domains)
+}
+
+fn collect_finite_tuple_coverage(
+    pattern: &TypedPattern,
+    domains: &[Vec<String>],
+    covered: &mut HashSet<String>,
+) {
+    match pattern {
+        TypedPattern::Wildcard | TypedPattern::Binding(_) => {
+            for combo in enumerate_finite_tuple_combos(domains) {
+                covered.insert(finite_tuple_combo_key(&combo));
+            }
+        }
+        TypedPattern::BindingAt { pattern, .. } => {
+            collect_finite_tuple_coverage(pattern, domains, covered);
+        }
+        TypedPattern::Or(items) => {
+            for item in items {
+                collect_finite_tuple_coverage(item, domains, covered);
+            }
+        }
+        TypedPattern::Tuple(items) if items.len() == domains.len() => {
+            let mut choices = Vec::new();
+            for (item, domain) in items.iter().zip(domains.iter()) {
+                let Some(values) = finite_tuple_pattern_values(item, domain) else {
+                    return;
+                };
+                choices.push(values);
+            }
+            for combo in enumerate_finite_tuple_combos(&choices) {
+                covered.insert(finite_tuple_combo_key(&combo));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn finite_tuple_pattern_values(pattern: &TypedPattern, domain: &[String]) -> Option<Vec<String>> {
+    match pattern {
+        TypedPattern::Wildcard | TypedPattern::Binding(_) => Some(domain.to_vec()),
+        TypedPattern::BindingAt { pattern, .. } => finite_tuple_pattern_values(pattern, domain),
+        TypedPattern::Or(items) => {
+            let mut out = Vec::new();
+            for item in items {
+                for value in finite_tuple_pattern_values(item, domain)? {
+                    if !out.contains(&value) {
+                        out.push(value);
+                    }
+                }
+            }
+            Some(out)
+        }
+        TypedPattern::Bool(value) => {
+            let label = if *value { "true" } else { "false" };
+            if domain.iter().any(|item| item == label) {
+                Some(vec![label.to_string()])
+            } else {
+                None
+            }
+        }
+        TypedPattern::Variant { path, .. } => {
+            let selected = match path.as_slice() {
+                [enum_name, variant, ..] => Some(format!("{enum_name}::{variant}")),
+                [variant] => {
+                    let suffix = format!("::{variant}");
+                    let matches = domain
+                        .iter()
+                        .filter(|item| item.ends_with(&suffix))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if matches.len() == 1 {
+                        matches.first().cloned()
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }?;
+            if domain.iter().any(|item| item == &selected) {
+                Some(vec![selected])
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn enumerate_finite_tuple_combos(domains: &[Vec<String>]) -> Vec<Vec<String>> {
+    fn walk(
+        domains: &[Vec<String>],
+        index: usize,
+        current: &mut Vec<String>,
+        out: &mut Vec<Vec<String>>,
+    ) {
+        if index == domains.len() {
+            out.push(current.clone());
+            return;
+        }
+        for value in &domains[index] {
+            current.push(value.clone());
+            walk(domains, index + 1, current, out);
+            current.pop();
+        }
+    }
+
+    let mut out = Vec::new();
+    walk(domains, 0, &mut Vec::new(), &mut out);
+    out
+}
+
+fn finite_tuple_combo_key(combo: &[String]) -> String {
+    combo.join("\u{1f}")
 }
 
 fn match_has_total_pattern(arms: &[TypedMatchArm]) -> bool {
@@ -3426,6 +3604,9 @@ fn collect_path_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<String, usize>
 }
 
 fn type_from_ast(ty: &Type) -> SemType {
+    if ty.path.len() == 1 && ty.path[0] == "Tuple" {
+        return SemType::Tuple(ty.args.iter().map(type_from_ast).collect());
+    }
     SemType::Path {
         path: ty.path.clone(),
         args: ty.args.iter().map(type_from_ast).collect(),
@@ -3433,6 +3614,14 @@ fn type_from_ast(ty: &Type) -> SemType {
 }
 
 fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str) -> SemType {
+    if ty.path.len() == 1 && ty.path[0] == "Tuple" {
+        return SemType::Tuple(
+            ty.args
+                .iter()
+                .map(|arg| type_from_ast_with_impl_self(arg, impl_target))
+                .collect(),
+        );
+    }
     let head = ty.path.first().map(|part| part.as_str());
     if ty.path.len() == 1 && head == Some("Self") {
         return SemType::Path {

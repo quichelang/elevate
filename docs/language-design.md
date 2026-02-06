@@ -174,7 +174,7 @@ Implemented:
 - Or-patterns (`p1 | p2`).
 - Slice/rest `match` patterns (`[a, ..tail]`, `[.., last]`, `[]`).
 - Imported Rust enum variant pattern matching when scrutinee type is known (for example `Ordering::Less`).
-- Baseline match exhaustiveness diagnostics for `bool`, tuple-`bool` patterns, `Option`, `Result`, and known local enums.
+- Baseline match exhaustiveness diagnostics for `bool`, finite tuple domains (bool/enum components), `Option`, `Result`, and known local enums.
 - Closure expressions and closure calls with typed parameters.
 - Comment support (`//` and `/* ... */`) and raw multiline string literals.
 - `rust use` imports and external Rust path calls.
@@ -288,7 +288,7 @@ Quality gates:
 - Full iterator-model ergonomics for `for` loops are not complete beyond current lowering support.
 - Slices are not complete (current support focuses on `Vec` index/range expressions and slice-style match patterns).
 - Deep destructuring coverage (all contexts) is not complete.
-- Full exhaustiveness diagnostics are not complete (current checks focus on bool/tuple-bool and enum variants).
+- Full exhaustiveness diagnostics are not complete (current checks focus on bool/finite-tuple finite domains and enum variants).
 - Full Rust-pattern parity for match is not complete (remaining work includes ref/binding-mode patterns and richer guard/exhaustiveness combinations).
 - Interop contract signature verification validates declaration shape and callsite arity, but not full type-level compatibility across all compiler phases.
 - Object-native parser APIs are in preview form (lexopt example) and are not yet generalized as a standard library pattern.

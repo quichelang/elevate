@@ -847,6 +847,53 @@ mod tests {
     }
 
     #[test]
+    fn compile_reports_non_exhaustive_finite_tuple_match() {
+        let source = r#"
+            enum Maybe {
+                Some(i64);
+                None;
+            }
+
+            fn classify() -> i64 {
+                const input = (false, Maybe::None);
+                return match input {
+                    (true, Maybe::Some(_)) => 1;
+                    (true, Maybe::None) => 2;
+                    (false, Maybe::Some(_)) => 3;
+                };
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(error.to_string().contains("Non-exhaustive match on finite tuple domain"));
+        assert!(error.to_string().contains("(false, Maybe::None)"));
+    }
+
+    #[test]
+    fn compile_accepts_exhaustive_finite_tuple_match() {
+        let source = r#"
+            enum Maybe {
+                Some(i64);
+                None;
+            }
+
+            fn classify() -> i64 {
+                const input = (false, Maybe::None);
+                return match input {
+                    (true, Maybe::Some(_)) => 1;
+                    (true, Maybe::None) => 2;
+                    (false, Maybe::Some(_)) => 3;
+                    (false, Maybe::None) => 4;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("match input"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_emits_multi_value_variant_payload_patterns() {
         let source = r#"
             rust use crate::Pair;

@@ -842,6 +842,32 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Option<Type> {
+        if self.match_kind(TokenKind::LParen) {
+            if self.match_kind(TokenKind::RParen) {
+                return Some(Type {
+                    path: vec!["Tuple".to_string()],
+                    args: Vec::new(),
+                });
+            }
+            let first = self.parse_type()?;
+            if self.match_kind(TokenKind::Comma) {
+                let mut items = vec![first];
+                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                    items.push(self.parse_type()?);
+                    if !self.match_kind(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen, "Expected ')' after tuple type")?;
+                return Some(Type {
+                    path: vec!["Tuple".to_string()],
+                    args: items,
+                });
+            }
+            self.expect(TokenKind::RParen, "Expected ')' after parenthesized type")?;
+            return Some(first);
+        }
+
         let path = self.parse_path("Expected type name")?;
         let mut args = Vec::new();
         if self.match_kind(TokenKind::Lt) {
@@ -1310,6 +1336,18 @@ mod tests {
                 const r1 = a..b;
                 const r2 = a..=b;
                 return a;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_tuple_types_in_signatures() {
+        let source = r#"
+            fn pair(left: i64, right: String) -> (i64, String) {
+                (left, right)
             }
         "#;
         let tokens = lex(source).expect("expected lex success");
