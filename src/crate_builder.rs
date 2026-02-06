@@ -141,8 +141,9 @@ fn process_src_dir(
         if path.extension() == Some(OsStr::new("ers")) {
             let source = fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-            let output = crate::compile_source(&source)
-                .map_err(|error| format!("failed to compile {}: {error}", path.display()))?;
+            let output = crate::compile_source(&source).map_err(|error| {
+                format_compile_error_with_context(&path, &source, &error)
+            })?;
             let mut out_path = target.clone();
             out_path.set_extension("rs");
             if out_path.exists() {
@@ -182,6 +183,64 @@ fn process_src_dir(
 
 fn canonicalize(path: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|error| format!("failed to access {}: {error}", path.display()))
+}
+
+fn format_compile_error_with_context(path: &Path, source: &str, error: &crate::CompileError) -> String {
+    let mut out = format!("failed to compile {}:", path.display());
+    for diagnostic in &error.diagnostics {
+        let (line, col) = byte_to_line_col(source, diagnostic.span.start);
+        out.push_str(&format!(
+            "\n  - {} (line {}, col {}, bytes {}..{})",
+            diagnostic.message, line, col, diagnostic.span.start, diagnostic.span.end
+        ));
+        if let Some(name) = extract_function_name(&diagnostic.message)
+            && let Some((decl_line, decl_col)) = find_function_decl(source, &name)
+        {
+            out.push_str(&format!(
+                "\n    hint: `{}` is declared at line {}, col {}",
+                name, decl_line, decl_col
+            ));
+        }
+    }
+    out
+}
+
+fn byte_to_line_col(source: &str, byte_offset: usize) -> (usize, usize) {
+    let clamped = byte_offset.min(source.len());
+    let mut line = 1usize;
+    let mut line_start = 0usize;
+    for (idx, ch) in source.char_indices() {
+        if idx >= clamped {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            line_start = idx + 1;
+        }
+    }
+    let col = source[line_start..clamped].chars().count() + 1;
+    (line, col)
+}
+
+fn extract_function_name(message: &str) -> Option<String> {
+    extract_quoted_symbol(message, "Function").or_else(|| extract_quoted_symbol(message, "Method"))
+}
+
+fn extract_quoted_symbol(message: &str, label: &str) -> Option<String> {
+    let marker = format!("{label} `");
+    let rest = message.strip_prefix(&marker)?;
+    let end = rest.find('`')?;
+    Some(rest[..end].to_string())
+}
+
+fn find_function_decl(source: &str, name: &str) -> Option<(usize, usize)> {
+    let needle = format!("fn {name}(");
+    for (idx, line) in source.lines().enumerate() {
+        if let Some(col) = line.find(&needle) {
+            return Some((idx + 1, col + 1));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
