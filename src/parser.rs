@@ -515,6 +515,9 @@ impl Parser {
     }
 
     fn parse_primary_expr(&mut self) -> Option<Expr> {
+        if self.match_kind(TokenKind::Pipe) {
+            return self.parse_closure_expr();
+        }
         let token = self.peek().clone();
         match token.kind {
             TokenKind::IntLiteral(value) => {
@@ -578,6 +581,31 @@ impl Parser {
             self.expect(TokenKind::Gt, "Expected '>' to close generic arguments")?;
         }
         Some(Type { path, args })
+    }
+
+    fn parse_closure_expr(&mut self) -> Option<Expr> {
+        let mut params = Vec::new();
+        while !self.at(TokenKind::Pipe) && !self.at(TokenKind::Eof) {
+            let name = self.expect_ident("Expected closure parameter name")?;
+            self.expect(TokenKind::Colon, "Expected ':' after closure parameter name")?;
+            let ty = self.parse_type()?;
+            params.push(Param { name, ty });
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::Pipe, "Expected '|' after closure parameters")?;
+        let return_type = if self.match_kind(TokenKind::Arrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let body = self.parse_block()?;
+        Some(Expr::Closure {
+            params,
+            return_type,
+            body,
+        })
     }
 
     fn parse_path(&mut self, message: &str) -> Option<Vec<String>> {
@@ -731,6 +759,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Dot, Dot)
             | (DotDot, DotDot)
             | (DotDotEq, DotDotEq)
+            | (Pipe, Pipe)
             | (Bang, Bang)
             | (Equal, Equal)
             | (EqualEqual, EqualEqual)
@@ -872,6 +901,19 @@ mod tests {
                     (x, 0) => x;
                     _ => a;
                 };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_closure_expression() {
+        let source = r#"
+            fn f(x: i64) -> i64 {
+                const inc = |y: i64| -> i64 { y };
+                return inc(x);
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

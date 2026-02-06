@@ -1,6 +1,6 @@
 # Language Design (Single Source of Truth)
 
-Status: Draft v0.4  
+Status: Draft v0.5  
 Owner: Language team  
 Last updated: 2026-02-06
 
@@ -67,7 +67,7 @@ Guiding principles:
 6. Static typing with local type inference.
 7. Compiler makes automatic ownership/memory decisions in lowered Rust.
 8. Generics compile by monomorphization with explicit safety limits.
-9. Closures are deferred to MVP+1.
+9. Closures are MVP+1 scope and currently available in compiler preview form.
 10. To support substantial real-world verification and validation, MVP must include:
 - Conditional blocks (`if` / `else`).
 - Loop constructs.
@@ -90,11 +90,10 @@ Declarations:
 
 Expressions/statements:
 - Literals, path refs/calls, field access, `match`, postfix `?`, local `const`, `return`.
-- Conditionals and loops are required MVP features (implementation pending).
+- Conditionals and loops are required MVP features.
 - Required operator/features for substantial programs:
 - Ranges (`..`).
 - Slices.
-- Spread-like expansion (`...`) where applicable by design.
 - Logical boolean ops: `and`, `or`, and negation via both `!` and `not`.
 - Comparison operators: `==`, `!=`, `<`, `<=`, `>`, `>=`.
 - Automatic return of the last value in a block/function when trailing semicolon is omitted (Rust-like tail expression behavior).
@@ -165,6 +164,7 @@ Implemented:
 - Range expressions: `..` and `..=`.
 - Tuple literals and local tuple destructuring bindings.
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
+- Closure expressions and closure calls with typed parameters.
 - `rust use` imports and external Rust path calls.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 
@@ -244,10 +244,8 @@ Quality gates:
 - Ownership lowering policy implementation is not complete.
 - Generic function definitions and constrained bounds are not complete.
 - Additional loop forms beyond `while` are not complete.
-- Ranges, slices, and spread-like expansion are not complete.
 - Slices are not complete.
 - Deep destructuring coverage (all contexts) is not complete.
 - Match guards and full exhaustiveness diagnostics are not complete.
 - Full tail-expression return behavior across all nested block forms is not complete.
 - Borrow/reference features remain intentionally unsupported.
-- Closure support is deferred to MVP+1.

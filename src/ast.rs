@@ -148,6 +148,11 @@ pub enum Expr {
         right: Box<Expr>,
     },
     Tuple(Vec<Expr>),
+    Closure {
+        params: Vec<Param>,
+        return_type: Option<Type>,
+        body: Block,
+    },
     Range {
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,

@@ -136,6 +136,11 @@ pub enum TypedExprKind {
         right: Box<TypedExpr>,
     },
     Tuple(Vec<TypedExpr>),
+    Closure {
+        params: Vec<TypedParam>,
+        return_type: String,
+        body: Vec<TypedStmt>,
+    },
     Range {
         start: Option<Box<TypedExpr>>,
         end: Option<Box<TypedExpr>>,

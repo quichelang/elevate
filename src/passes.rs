@@ -20,6 +20,7 @@ use crate::ir::typed::{
 enum SemType {
     Path { path: Vec<String>, args: Vec<SemType> },
     Tuple(Vec<SemType>),
+    Fn { params: Vec<SemType>, ret: Box<SemType> },
     Unit,
     Unknown,
 }
@@ -864,6 +865,98 @@ fn infer_expr(
                 out_ty,
             )
         }
+        Expr::Closure {
+            params,
+            return_type,
+            body,
+        } => {
+            let mut closure_locals = locals.clone();
+            let param_types = params
+                .iter()
+                .map(|p| type_from_ast(&p.ty))
+                .collect::<Vec<_>>();
+            for (param, ty) in params.iter().zip(param_types.iter()) {
+                closure_locals.insert(param.name.clone(), ty.clone());
+            }
+
+            let declared_return_ty = return_type.as_ref().map(type_from_ast);
+            let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
+            let mut typed_body = Vec::new();
+            let mut inferred_returns = Vec::new();
+            for (index, statement) in body.statements.iter().enumerate() {
+                let is_last = index + 1 == body.statements.len();
+                if is_last
+                    && let Stmt::TailExpr(expr) = statement
+                {
+                    let (typed_expr, inferred) = infer_expr(
+                        expr,
+                        context,
+                        &mut closure_locals,
+                        &provisional_return_ty,
+                        diagnostics,
+                    );
+                    inferred_returns.push(inferred.clone());
+                    if provisional_return_ty != SemType::Unknown
+                        && !is_compatible(&inferred, &provisional_return_ty)
+                    {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Closure return type mismatch: expected `{}`, got `{}`",
+                                type_to_string(&provisional_return_ty),
+                                type_to_string(&inferred)
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                    typed_body.push(TypedStmt::Return(Some(typed_expr)));
+                    continue;
+                }
+                if let Some(stmt) = lower_stmt_with_types(
+                    statement,
+                    context,
+                    &mut closure_locals,
+                    &provisional_return_ty,
+                    &mut inferred_returns,
+                    diagnostics,
+                ) {
+                    typed_body.push(stmt);
+                }
+            }
+            let final_return_ty =
+                declared_return_ty.unwrap_or_else(|| infer_return_type(&inferred_returns, diagnostics, "closure"));
+            if final_return_ty != SemType::Unit && inferred_returns.is_empty() {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Closure must explicitly return `{}`",
+                        type_to_string(&final_return_ty)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+
+            let fn_ty = SemType::Fn {
+                params: param_types.clone(),
+                ret: Box::new(final_return_ty.clone()),
+            };
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Closure {
+                        params: params
+                            .iter()
+                            .zip(param_types.iter())
+                            .map(|(param, ty)| TypedParam {
+                                name: param.name.clone(),
+                                ty: type_to_string(ty),
+                            })
+                            .collect(),
+                        return_type: type_to_string(&final_return_ty),
+                        body: typed_body,
+                    },
+                    ty: type_to_string(&fn_ty),
+                },
+                fn_ty,
+            )
+        }
         Expr::Range {
             start,
             end,
@@ -931,11 +1024,39 @@ fn resolve_field_type(
 
 fn resolve_call_type(
     callee: &TypedExpr,
-    _callee_ty: &SemType,
+    callee_ty: &SemType,
     args: &[SemType],
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SemType {
+    if let SemType::Fn { params, ret } = callee_ty {
+        if params.len() != args.len() {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Closure/function value expects {} args, got {}",
+                    params.len(),
+                    args.len()
+                ),
+                Span::new(0, 0),
+            ));
+            return *ret.clone();
+        }
+        for (index, (actual, expected)) in args.iter().zip(params.iter()).enumerate() {
+            if !is_compatible(actual, expected) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Arg {} mismatch: expected `{}`, got `{}`",
+                        index + 1,
+                        type_to_string(expected),
+                        type_to_string(actual)
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+        }
+        return *ret.clone();
+    }
+
     if let TypedExprKind::Path(path) = &callee.kind {
         let lookup_name = path.join("::");
         if let Some(sig) = context.functions.get(&lookup_name) {
@@ -1271,6 +1392,21 @@ fn lower_expr(expr: &TypedExpr) -> RustExpr {
             right: Box::new(lower_expr(right)),
         },
         TypedExprKind::Tuple(items) => RustExpr::Tuple(items.iter().map(lower_expr).collect()),
+        TypedExprKind::Closure {
+            params,
+            return_type,
+            body,
+        } => RustExpr::Closure {
+            params: params
+                .iter()
+                .map(|p| RustParam {
+                    name: p.name.clone(),
+                    ty: p.ty.clone(),
+                })
+                .collect(),
+            return_type: return_type.clone(),
+            body: body.iter().map(lower_stmt).collect(),
+        },
         TypedExprKind::Range {
             start,
             end,
@@ -1299,6 +1435,14 @@ fn type_to_string(ty: &SemType) -> String {
             let text = items.iter().map(type_to_string).collect::<Vec<_>>().join(", ");
             format!("({text})")
         }
+        SemType::Fn { params, ret } => {
+            let params = params
+                .iter()
+                .map(type_to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("fn({params}) -> {}", type_to_string(ret))
+        }
         SemType::Path { path, args } => {
             let head = path.join("::");
             if args.is_empty() {
@@ -1322,6 +1466,21 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
             left.iter()
                 .zip(right.iter())
                 .all(|(a, b)| is_compatible(a, b))
+        }
+        (
+            SemType::Fn {
+                params: lp,
+                ret: lr,
+            },
+            SemType::Fn {
+                params: rp,
+                ret: rr,
+            },
+        ) => {
+            if lp.len() != rp.len() {
+                return false;
+            }
+            lp.iter().zip(rp.iter()).all(|(a, b)| is_compatible(a, b)) && is_compatible(lr, rr)
         }
         (
             SemType::Path {
@@ -1772,6 +1931,9 @@ fn contains_unknown(ty: &SemType) -> bool {
         SemType::Unknown => true,
         SemType::Unit => false,
         SemType::Tuple(items) => items.iter().any(contains_unknown),
+        SemType::Fn { params, ret } => {
+            params.iter().any(contains_unknown) || contains_unknown(ret)
+        }
         SemType::Path { args, .. } => args.iter().any(contains_unknown),
     }
 }

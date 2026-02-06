@@ -130,6 +130,11 @@ pub enum RustExpr {
         right: Box<RustExpr>,
     },
     Tuple(Vec<RustExpr>),
+    Closure {
+        params: Vec<RustParam>,
+        return_type: String,
+        body: Vec<RustStmt>,
+    },
     Range {
         start: Option<Box<RustExpr>>,
         end: Option<Box<RustExpr>>,

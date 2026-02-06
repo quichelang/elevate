@@ -42,6 +42,7 @@ pub enum TokenKind {
     Dot,
     DotDot,
     DotDotEq,
+    Pipe,
     Bang,
     Equal,
     EqualEqual,
@@ -111,6 +112,7 @@ impl<'a> Lexer<'a> {
                 }
                 ';' => self.push_simple(TokenKind::Semicolon, start),
                 ',' => self.push_simple(TokenKind::Comma, start),
+                '|' => self.push_simple(TokenKind::Pipe, start),
                 '.' => {
                     if self.peek_char() == Some('.') {
                         self.advance();
@@ -424,5 +426,13 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDot)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDotEq)));
+    }
+
+    #[test]
+    fn lex_closure_tokens() {
+        let source = "const f = |x: i64| -> i64 { x };";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Pipe)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Arrow)));
     }
 }

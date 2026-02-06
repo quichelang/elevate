@@ -92,12 +92,12 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
 fn emit_stmt(stmt: &RustStmt, out: &mut String) {
     match stmt {
         RustStmt::Const(def) => {
-            out.push_str(&format!(
-                "    let {}: {} = {};\n",
-                def.name,
-                def.ty,
-                emit_expr(&def.value)
-            ));
+            let value = emit_expr(&def.value);
+            if should_annotate_local_binding(&def.ty, &def.value) {
+                out.push_str(&format!("    let {}: {} = {};\n", def.name, def.ty, value));
+            } else {
+                out.push_str(&format!("    let {} = {};\n", def.name, value));
+            }
         }
         RustStmt::Return(Some(expr)) => {
             out.push_str(&format!("    return {};\n", emit_expr(expr)));
@@ -172,7 +172,13 @@ fn emit_expr(expr: &RustExpr) -> String {
         RustExpr::Path(path) => path.join("::"),
         RustExpr::Call { callee, args } => {
             let args = args.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
-            format!("{}({args})", emit_expr(callee))
+            let callee_text = emit_expr(callee);
+            let callee_text = if needs_parens_for_call(callee.as_ref()) {
+                format!("({callee_text})")
+            } else {
+                callee_text
+            };
+            format!("{callee_text}({args})")
         }
         RustExpr::Field { base, field } => format!("{}.{}", emit_expr(base), field),
         RustExpr::Match { scrutinee, arms } => {
@@ -212,6 +218,23 @@ fn emit_expr(expr: &RustExpr) -> String {
                 let body = items.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
                 format!("({body})")
             }
+        }
+        RustExpr::Closure {
+            params,
+            return_type,
+            body,
+        } => {
+            let params = params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.ty))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut text = format!("|{params}| -> {return_type} {{\n");
+            for stmt in body {
+                emit_stmt_with_indent(stmt, &mut text, 1);
+            }
+            text.push('}');
+            text
         }
         RustExpr::Range {
             start,
@@ -267,12 +290,12 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
     let pad = "    ".repeat(indent);
     match stmt {
         RustStmt::Const(def) => {
-            out.push_str(&format!(
-                "{pad}let {}: {} = {};\n",
-                def.name,
-                def.ty,
-                emit_expr(&def.value)
-            ));
+            let value = emit_expr(&def.value);
+            if should_annotate_local_binding(&def.ty, &def.value) {
+                out.push_str(&format!("{pad}let {}: {} = {};\n", def.name, def.ty, value));
+            } else {
+                out.push_str(&format!("{pad}let {} = {};\n", def.name, value));
+            }
         }
         RustStmt::Return(Some(expr)) => out.push_str(&format!("{pad}return {};\n", emit_expr(expr))),
         RustStmt::Return(None) => out.push_str(&format!("{pad}return;\n")),
@@ -319,4 +342,22 @@ fn vis(is_public: bool) -> &'static str {
     } else {
         ""
     }
+}
+
+fn should_annotate_local_binding(ty: &str, value: &RustExpr) -> bool {
+    if ty == "_" {
+        return false;
+    }
+    !matches!(value, RustExpr::Closure { .. })
+}
+
+fn needs_parens_for_call(expr: &RustExpr) -> bool {
+    matches!(
+        expr,
+        RustExpr::Closure { .. }
+            | RustExpr::Match { .. }
+            | RustExpr::Unary { .. }
+            | RustExpr::Binary { .. }
+            | RustExpr::Range { .. }
+    )
 }

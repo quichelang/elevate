@@ -345,6 +345,24 @@ mod tests {
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_closures_and_closure_calls() {
+        let source = r#"
+            pub fn use_closure(x: i64) -> i64 {
+                const pick = |y: i64| -> i64 { x };
+                const id = |z: i64| -> i64 { z };
+                const from_literal = (|k: i64| -> i64 { k })(x);
+                return id(pick(from_literal));
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("let pick = |y: i64| -> i64"));
+        assert!(output.rust_code.contains("let id = |z: i64| -> i64"));
+        assert!(output.rust_code.contains("(|k: i64| -> i64"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {
