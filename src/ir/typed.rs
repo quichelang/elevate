@@ -43,7 +43,7 @@ pub struct TypedEnum {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedVariant {
     pub name: String,
-    pub payload: Option<String>,
+    pub payload: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

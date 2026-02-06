@@ -132,13 +132,19 @@ impl Parser {
         let mut variants = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let variant_name = self.expect_ident("Expected enum variant name")?;
-            let payload = if self.match_kind(TokenKind::LParen) {
-                let ty = self.parse_type()?;
-                self.expect(TokenKind::RParen, "Expected ')' after variant payload type")?;
-                Some(ty)
-            } else {
-                None
-            };
+            let mut payload = Vec::new();
+            if self.match_kind(TokenKind::LParen) {
+                if !self.at(TokenKind::RParen) {
+                    payload.push(self.parse_type()?);
+                    while self.match_kind(TokenKind::Comma) {
+                        if self.at(TokenKind::RParen) {
+                            break;
+                        }
+                        payload.push(self.parse_type()?);
+                    }
+                }
+                self.expect(TokenKind::RParen, "Expected ')' after variant payload type list")?;
+            }
             self.expect(TokenKind::Semicolon, "Expected ';' after enum variant")?;
             variants.push(EnumVariant {
                 name: variant_name,

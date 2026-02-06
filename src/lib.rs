@@ -704,6 +704,52 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_multi_payload_enum_variants() {
+        let source = r#"
+            enum PairOrNone {
+                Pair(i64, i64);
+                None;
+            }
+
+            fn make_pair(a: i64, b: i64) -> PairOrNone {
+                PairOrNone::Pair(a, b)
+            }
+
+            fn sum_or_zero(value: PairOrNone) -> i64 {
+                return match value {
+                    PairOrNone::Pair(left, right) => left + right;
+                    PairOrNone::None => 0;
+                };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("Pair(i64, i64)"));
+        assert!(output.rust_code.contains("PairOrNone::Pair(left, right)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_reports_multi_payload_enum_arity_mismatch() {
+        let source = r#"
+            enum Pair {
+                Two(i64, i64);
+            }
+
+            fn bad() -> Pair {
+                Pair::Two(1)
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected arity error");
+        assert!(
+            error
+                .to_string()
+                .contains("Enum variant `Pair::Two` expects 2 argument(s), got 1")
+        );
+    }
+
+    #[test]
     fn compile_supports_match_range_patterns() {
         let source = r#"
             fn classify(v: i64) -> i64 {

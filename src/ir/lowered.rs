@@ -44,7 +44,7 @@ pub struct RustEnum {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustVariant {
     pub name: String,
-    pub payload: Option<String>,
+    pub payload: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

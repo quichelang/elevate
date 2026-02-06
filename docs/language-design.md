@@ -171,6 +171,7 @@ Implemented:
 - Slice destructuring bindings for `Vec` values in `const`/`for` patterns (`[head, ..tail]`, `[left, right]`).
 - Array/vector literals (`[a, b, c]`) with inferred element type and `Vec` lowering.
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
+- Local enum tuple payload variants with multiple fields (for example `Pair(i64, i64)`) across definitions, constructors, and match patterns.
 - Match arm block expressions (`pattern => { ... };`).
 - Match guards (`pattern if condition => ...`).
 - Or-patterns (`p1 | p2`).

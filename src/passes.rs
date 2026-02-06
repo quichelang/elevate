@@ -44,7 +44,7 @@ struct FunctionSig {
 struct Context {
     functions: HashMap<String, FunctionSig>,
     structs: HashMap<String, HashMap<String, SemType>>,
-    enums: HashMap<String, HashMap<String, Option<SemType>>>,
+    enums: HashMap<String, HashMap<String, Vec<SemType>>>,
     globals: HashMap<String, SemType>,
 }
 
@@ -573,7 +573,7 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     .map(|variant| {
                         (
                             variant.name.clone(),
-                            variant.payload.as_ref().map(type_from_ast),
+                            variant.payload.iter().map(type_from_ast).collect::<Vec<_>>(),
                         )
                     })
                     .collect::<HashMap<_, _>>();
@@ -664,9 +664,10 @@ fn lower_item(
                     name: variant.name.clone(),
                     payload: variant
                         .payload
-                        .as_ref()
+                        .iter()
                         .map(type_from_ast)
-                        .map(|ty| type_to_string(&ty)),
+                        .map(|ty| type_to_string(&ty))
+                        .collect(),
                 })
                 .collect(),
         })),
@@ -2702,32 +2703,26 @@ fn resolve_constructor_call(
         }
 
         if let Some(variants) = context.enums.get(enum_name) {
-            if let Some(payload) = variants.get(variant_name) {
-                match payload {
-                    Some(expected) => {
-                        if args.len() != 1 {
+            if let Some(expected_payload) = variants.get(variant_name) {
+                if args.len() != expected_payload.len() {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Enum variant `{enum_name}::{variant_name}` expects {} argument(s), got {}",
+                            expected_payload.len(),
+                            args.len()
+                        ),
+                        Span::new(0, 0),
+                    ));
+                } else {
+                    for (index, (actual, expected)) in args.iter().zip(expected_payload).enumerate()
+                    {
+                        if !is_compatible(actual, expected) {
                             diagnostics.push(Diagnostic::new(
                                 format!(
-                                    "Enum variant `{enum_name}::{variant_name}` expects one argument"
-                                ),
-                                Span::new(0, 0),
-                            ));
-                        } else if !is_compatible(&args[0], expected) {
-                            diagnostics.push(Diagnostic::new(
-                                format!(
-                                    "Enum variant `{enum_name}::{variant_name}` expected `{}`, got `{}`",
+                                    "Enum variant `{enum_name}::{variant_name}` arg {} expected `{}`, got `{}`",
+                                    index + 1,
                                     type_to_string(expected),
-                                    type_to_string(&args[0])
-                                ),
-                                Span::new(0, 0),
-                            ));
-                        }
-                    }
-                    None => {
-                        if !args.is_empty() {
-                            diagnostics.push(Diagnostic::new(
-                                format!(
-                                    "Enum variant `{enum_name}::{variant_name}` expects no arguments"
+                                    type_to_string(actual)
                                 ),
                                 Span::new(0, 0),
                             ));
@@ -4128,33 +4123,75 @@ fn lower_pattern(
 
             let lowered_payload = if let Some(variants) = context.enums.get(&enum_name) {
                 if let Some(expected_payload) = variants.get(&variant_name) {
-                    match (expected_payload, payload) {
-                        (Some(expected_ty), Some(payload_pattern)) => {
-                            Some(Box::new(lower_pattern(
-                                payload_pattern,
-                                expected_ty,
-                                context,
-                                locals,
-                                diagnostics,
-                            )))
-                        }
-                        (Some(_), None) => {
-                            diagnostics.push(Diagnostic::new(
-                                format!(
-                                    "Pattern `{enum_name}::{variant_name}` requires payload pattern"
-                                ),
-                                Span::new(0, 0),
-                            ));
-                            None
-                        }
-                        (None, Some(_)) => {
+                    if expected_payload.is_empty() {
+                        if payload.is_some() {
                             diagnostics.push(Diagnostic::new(
                                 format!("Pattern `{enum_name}::{variant_name}` has no payload"),
                                 Span::new(0, 0),
                             ));
-                            None
                         }
-                        (None, None) => None,
+                        None
+                    } else if expected_payload.len() == 1 {
+                        match payload {
+                            Some(payload_pattern) => Some(Box::new(lower_pattern(
+                                payload_pattern,
+                                &expected_payload[0],
+                                context,
+                                locals,
+                                diagnostics,
+                            ))),
+                            None => {
+                                diagnostics.push(Diagnostic::new(
+                                    format!(
+                                        "Pattern `{enum_name}::{variant_name}` requires payload pattern"
+                                    ),
+                                    Span::new(0, 0),
+                                ));
+                                None
+                            }
+                        }
+                    } else {
+                        match payload {
+                            Some(payload_pattern) => {
+                                if let Pattern::Tuple(items) = payload_pattern.as_ref() {
+                                    if items.len() != expected_payload.len() {
+                                        diagnostics.push(Diagnostic::new(
+                                            format!(
+                                                "Pattern `{enum_name}::{variant_name}` expects {} payload fields, got {}",
+                                                expected_payload.len(),
+                                                items.len()
+                                            ),
+                                            Span::new(0, 0),
+                                        ));
+                                    }
+                                    let lowered = items
+                                        .iter()
+                                        .zip(expected_payload.iter())
+                                        .map(|(item, expected_ty)| {
+                                            lower_pattern(item, expected_ty, context, locals, diagnostics)
+                                        })
+                                        .collect::<Vec<_>>();
+                                    Some(Box::new(TypedPattern::Tuple(lowered)))
+                                } else {
+                                    diagnostics.push(Diagnostic::new(
+                                        format!(
+                                            "Pattern `{enum_name}::{variant_name}` with multiple payload fields requires tuple syntax"
+                                        ),
+                                        Span::new(0, 0),
+                                    ));
+                                    None
+                                }
+                            }
+                            None => {
+                                diagnostics.push(Diagnostic::new(
+                                    format!(
+                                        "Pattern `{enum_name}::{variant_name}` requires payload pattern"
+                                    ),
+                                    Span::new(0, 0),
+                                ));
+                                None
+                            }
+                        }
                     }
                 } else {
                     diagnostics.push(Diagnostic::new(
@@ -4627,7 +4664,7 @@ fn resolve_path_value(path: &[String], context: &Context) -> Option<SemType> {
         let variant_name = &path[1];
         if let Some(variants) = context.enums.get(enum_name)
             && let Some(payload) = variants.get(variant_name)
-            && payload.is_none()
+            && payload.is_empty()
         {
             return Some(named_type(enum_name));
         }

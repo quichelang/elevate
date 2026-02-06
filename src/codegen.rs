@@ -56,9 +56,14 @@ fn emit_enum(def: &RustEnum, out: &mut String) {
     out.push_str("#[derive(Debug, Clone)]\n");
     out.push_str(&format!("{}enum {} {{\n", vis(def.is_public), def.name));
     for variant in &def.variants {
-        match &variant.payload {
-            Some(payload) => out.push_str(&format!("    {}({}),\n", variant.name, payload)),
-            None => out.push_str(&format!("    {},\n", variant.name)),
+        if variant.payload.is_empty() {
+            out.push_str(&format!("    {},\n", variant.name));
+        } else {
+            out.push_str(&format!(
+                "    {}({}),\n",
+                variant.name,
+                variant.payload.join(", ")
+            ));
         }
     }
     out.push_str("}\n");

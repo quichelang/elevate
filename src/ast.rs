@@ -43,7 +43,7 @@ pub struct EnumDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumVariant {
     pub name: String,
-    pub payload: Option<Type>,
+    pub payload: Vec<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
