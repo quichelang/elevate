@@ -274,7 +274,7 @@ fn rewrite_item_adapter_calls(item: &mut Item, adapter_map: &HashMap<String, Vec
         }
         Item::Const(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
         Item::Static(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
-        Item::Struct(_) | Item::Enum(_) | Item::RustUse(_) => {}
+        Item::Struct(_) | Item::Enum(_) | Item::RustUse(_) | Item::RustBlock(_) => {}
     }
 }
 
@@ -316,7 +316,7 @@ fn rewrite_stmt_adapter_calls(stmt: &mut Stmt, adapter_map: &HashMap<String, Vec
         Stmt::Loop { body } => {
             rewrite_block_adapter_calls(body, adapter_map);
         }
-        Stmt::Break | Stmt::Continue => {}
+        Stmt::Break | Stmt::Continue | Stmt::RustBlock(_) => {}
         Stmt::Expr(expr) | Stmt::TailExpr(expr) => rewrite_expr_adapter_calls(expr, adapter_map),
     }
 }

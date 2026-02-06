@@ -19,6 +19,7 @@ pub fn emit_rust_module(module: &RustModule) -> String {
     for item in &module.items {
         match item {
             RustItem::Use(def) => emit_use(def, &mut out),
+            RustItem::Raw(code) => emit_raw_item(code, &mut out),
             RustItem::Struct(def) => emit_struct(def, &mut out),
             RustItem::Enum(def) => emit_enum(def, &mut out),
             RustItem::Impl(def) => emit_impl(def, &mut out),
@@ -35,6 +36,11 @@ fn emit_use(def: &RustUse, out: &mut String) {
     out.push_str("use ");
     out.push_str(&def.path.join("::"));
     out.push_str(";\n");
+}
+
+fn emit_raw_item(code: &str, out: &mut String) {
+    out.push_str(code.trim());
+    out.push('\n');
 }
 
 fn emit_struct(def: &RustStruct, out: &mut String) {
@@ -198,6 +204,11 @@ fn emit_stmt(stmt: &RustStmt, out: &mut String) {
         }
         RustStmt::Break => out.push_str("    break;\n"),
         RustStmt::Continue => out.push_str("    continue;\n"),
+        RustStmt::Raw(code) => {
+            out.push_str("    ");
+            out.push_str(code.trim());
+            out.push('\n');
+        }
         RustStmt::Expr(expr) => {
             out.push_str(&format!("    {};\n", emit_expr(expr)));
         }
@@ -553,6 +564,11 @@ fn emit_stmt_with_indent(stmt: &RustStmt, out: &mut String, indent: usize) {
         }
         RustStmt::Break => out.push_str(&format!("{pad}break;\n")),
         RustStmt::Continue => out.push_str(&format!("{pad}continue;\n")),
+        RustStmt::Raw(code) => {
+            out.push_str(&pad);
+            out.push_str(code.trim());
+            out.push('\n');
+        }
         RustStmt::Expr(expr) => out.push_str(&format!("{pad}{};\n", emit_expr(expr))),
     }
 }
@@ -683,6 +699,7 @@ fn collect_mutated_paths_in_stmt(
         | RustStmt::DestructureConst { .. }
         | RustStmt::Break
         | RustStmt::Continue
+        | RustStmt::Raw(_)
         | RustStmt::Return(_)
         | RustStmt::Expr(_) => {}
     }

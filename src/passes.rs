@@ -79,6 +79,7 @@ pub fn lower_to_rust(module: &TypedModule) -> RustModule {
             TypedItem::RustUse(def) => RustItem::Use(RustUse {
                 path: def.path.clone(),
             }),
+            TypedItem::RustBlock(code) => RustItem::Raw(code.clone()),
             TypedItem::Struct(def) => RustItem::Struct(RustStruct {
                 is_public: def.is_public,
                 name: def.name.clone(),
@@ -225,6 +226,7 @@ impl LoweringState {
                 TypedItem::Enum(def) => {
                     state.registry.register_user_cloneable_type(&def.name);
                 }
+                TypedItem::RustBlock(_) => {}
                 _ => {}
             }
         }
@@ -619,6 +621,7 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     .insert(def.name.clone(), type_from_ast(&def.ty));
             }
             Item::RustUse(_) => {}
+            Item::RustBlock(_) => {}
         }
     }
 }
@@ -632,6 +635,7 @@ fn lower_item(
         Item::RustUse(def) => Some(TypedItem::RustUse(TypedRustUse {
             path: def.path.clone(),
         })),
+        Item::RustBlock(code) => Some(TypedItem::RustBlock(code.clone())),
         Item::Struct(def) => Some(TypedItem::Struct(TypedStruct {
             is_public: def.visibility == Visibility::Public,
             name: def.name.clone(),
@@ -1174,6 +1178,7 @@ fn lower_stmt_with_types(
         }
         Stmt::Break => Some(TypedStmt::Break),
         Stmt::Continue => Some(TypedStmt::Continue),
+        Stmt::RustBlock(code) => Some(TypedStmt::RustBlock(code.clone())),
     }
 }
 
@@ -2424,6 +2429,7 @@ fn lower_stmt_with_context(
         },
         TypedStmt::Break => RustStmt::Break,
         TypedStmt::Continue => RustStmt::Continue,
+        TypedStmt::RustBlock(code) => RustStmt::Raw(code.clone()),
         TypedStmt::Expr(expr) => RustStmt::Expr(lower_expr_with_context(
             expr,
             context,
@@ -3015,6 +3021,7 @@ fn collect_path_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<String, usize>
             }
         }
         TypedStmt::Break | TypedStmt::Continue => {}
+        TypedStmt::RustBlock(_) => {}
         TypedStmt::Expr(expr) => collect_path_uses_in_expr(expr, uses),
     }
 }

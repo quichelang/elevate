@@ -177,6 +177,7 @@ Implemented:
 - Closure expressions and closure calls with typed parameters.
 - Comment support (`//` and `/* ... */`) and raw multiline string literals.
 - `rust use` imports and external Rust path calls.
+- Inline `rust { ... }` escape blocks (top-level and statement position) that pass raw Rust through without Elevate parsing.
 - Centralized interop policy registry for clone/borrow/shim behavior.
 - Auto-borrow coverage for selected associated Rust calls (String/Option/Result/Vec/HashMap/BTreeMap/HashSet/BTreeSet cases).
 - String interop shims for owned-return helpers (`str::strip_prefix_known`, `str::split_once_known`) with borrow-safe lowering.
@@ -284,7 +285,6 @@ Quality gates:
 - Deep destructuring coverage (all contexts) is not complete.
 - Full exhaustiveness diagnostics are not complete (current checks focus on `bool` and enum variants).
 - Full Rust-pattern parity for match is not complete (remaining work includes ref/binding-mode patterns and richer guard/exhaustiveness combinations).
-- Inline `rust { ... }` escape blocks are not complete.
 - Interop contract signature verification currently validates declaration shape, but not full type-level callsite compatibility across all compiler phases.
 - Object-native parser APIs are in preview form (lexopt example) and are not yet generalized as a standard library pattern.
 - Borrow/reference features remain intentionally unsupported.

@@ -12,6 +12,7 @@ pub enum Visibility {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     RustUse(RustUse),
+    RustBlock(String),
     Struct(StructDef),
     Enum(EnumDef),
     Impl(ImplBlock),
@@ -109,6 +110,7 @@ pub enum Stmt {
     },
     Break,
     Continue,
+    RustBlock(String),
     Expr(Expr),
     TailExpr(Expr),
 }

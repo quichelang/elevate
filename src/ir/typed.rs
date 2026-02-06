@@ -6,6 +6,7 @@ pub struct TypedModule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedItem {
     RustUse(TypedRustUse),
+    RustBlock(String),
     Struct(TypedStruct),
     Enum(TypedEnum),
     Impl(TypedImpl),
@@ -98,6 +99,7 @@ pub enum TypedStmt {
     },
     Break,
     Continue,
+    RustBlock(String),
     Expr(TypedExpr),
 }
 

@@ -7,6 +7,7 @@ pub struct RustModule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustItem {
     Use(RustUse),
+    Raw(String),
     Struct(RustStruct),
     Enum(RustEnum),
     Impl(RustImpl),
@@ -99,6 +100,7 @@ pub enum RustStmt {
     },
     Break,
     Continue,
+    Raw(String),
     Expr(RustExpr),
 }
 

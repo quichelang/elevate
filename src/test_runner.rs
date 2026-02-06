@@ -143,7 +143,12 @@ fn discover_tests(module: &Module, path: &Path) -> Result<Vec<String>, String> {
                     }
                 }
             }
-            Item::RustUse(_) | Item::Struct(_) | Item::Enum(_) | Item::Const(_) | Item::Static(_) => {}
+            Item::RustUse(_)
+            | Item::RustBlock(_)
+            | Item::Struct(_)
+            | Item::Enum(_)
+            | Item::Const(_)
+            | Item::Static(_) => {}
         }
     }
     Ok(out)

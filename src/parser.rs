@@ -44,6 +44,11 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Option<Item> {
+        if let TokenKind::RustBlock(code) = self.peek().kind.clone() {
+            self.advance();
+            return Some(Item::RustBlock(code));
+        }
+
         let visibility = if self.match_kind(TokenKind::Pub) {
             Visibility::Public
         } else {
@@ -52,9 +57,13 @@ impl Parser {
 
         if self.match_kind(TokenKind::Rust) {
             if visibility == Visibility::Public {
-                self.error_current("`pub rust use` is not supported; use `rust use`");
+                self.error_current("`pub rust ...` is not supported; use `rust ...`");
             }
-            return self.parse_rust_use().map(Item::RustUse);
+            if self.at(TokenKind::Use) {
+                return self.parse_rust_use().map(Item::RustUse);
+            }
+            self.error_current("Expected `use` after `rust`");
+            return None;
         }
         if self.match_kind(TokenKind::Struct) {
             return self.parse_struct(visibility).map(Item::Struct);
@@ -83,7 +92,7 @@ impl Parser {
         }
 
         self.error_current(
-            "Expected top-level item (`rust use`, `struct`, `enum`, `impl`, `fn`, `const`, `static`)",
+            "Expected top-level item (`rust use`, `rust { ... }`, `struct`, `enum`, `impl`, `fn`, `const`, `static`)",
         );
         None
     }
@@ -328,6 +337,10 @@ impl Parser {
         if self.match_kind(TokenKind::Continue) {
             self.expect(TokenKind::Semicolon, "Expected ';' after `continue`")?;
             return Some(Stmt::Continue);
+        }
+        if let TokenKind::RustBlock(code) = self.peek().kind.clone() {
+            self.advance();
+            return Some(Stmt::RustBlock(code));
         }
 
         let expr = self.parse_expr()?;
@@ -1024,6 +1037,7 @@ impl Parser {
                 return;
             }
             if self.at(TokenKind::Rust)
+                || matches!(self.peek().kind, TokenKind::RustBlock(_))
                 || self.at(TokenKind::Pub)
                 || self.at(TokenKind::Struct)
                 || self.at(TokenKind::Enum)
@@ -1050,6 +1064,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
     matches!(
         (left, right),
         (Rust, Rust)
+            | (RustBlock(_), RustBlock(_))
             | (Use, Use)
             | (Struct, Struct)
             | (Enum, Enum)
@@ -1457,6 +1472,23 @@ world"#;
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_inline_rust_blocks() {
+        let source = r#"
+            rust {
+                pub fn bridge(v: i64) -> i64 { v + 1 }
+            }
+
+            fn f(v: i64) -> i64 {
+                rust { std::mem::drop(v); }
+                v
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
     }
 
     #[test]

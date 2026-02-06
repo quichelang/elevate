@@ -9,6 +9,7 @@ pub struct Token {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Rust,
+    RustBlock(String),
     Use,
     Struct,
     Enum,
@@ -350,6 +351,11 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
+        if ident == "rust" && self.peek_non_whitespace_char() == Some('{') {
+            self.consume_whitespace();
+            self.lex_rust_block(start);
+            return;
+        }
         let kind = match ident.as_str() {
             "rust" => TokenKind::Rust,
             "use" => TokenKind::Use,
@@ -381,6 +387,44 @@ impl<'a> Lexer<'a> {
             kind,
             span: Span::new(start, self.cursor),
         });
+    }
+
+    fn lex_rust_block(&mut self, start: usize) {
+        if self.peek_char() != Some('{') {
+            self.tokens.push(Token {
+                kind: TokenKind::Rust,
+                span: Span::new(start, self.cursor),
+            });
+            return;
+        }
+        self.advance();
+        let mut depth = 1usize;
+        let mut body = String::new();
+        while let Some(c) = self.peek_char() {
+            self.advance();
+            match c {
+                '{' => {
+                    depth += 1;
+                    body.push(c);
+                }
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        self.tokens.push(Token {
+                            kind: TokenKind::RustBlock(body),
+                            span: Span::new(start, self.cursor),
+                        });
+                        return;
+                    }
+                    body.push(c);
+                }
+                _ => body.push(c),
+            }
+        }
+        self.diagnostics.push(Diagnostic::new(
+            "Unterminated `rust { ... }` block",
+            Span::new(start, self.cursor),
+        ));
     }
 
     fn skip_whitespace_and_comments(&mut self) {
@@ -462,6 +506,28 @@ impl<'a> Lexer<'a> {
         self.chars.get(self.cursor + 1).copied()
     }
 
+    fn peek_non_whitespace_char(&self) -> Option<char> {
+        let mut index = self.cursor;
+        while let Some(ch) = self.chars.get(index).copied() {
+            if ch.is_whitespace() {
+                index += 1;
+                continue;
+            }
+            return Some(ch);
+        }
+        None
+    }
+
+    fn consume_whitespace(&mut self) {
+        while let Some(c) = self.peek_char() {
+            if c.is_whitespace() {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+    }
+
     fn peek_n_char(&self, offset: usize) -> Option<char> {
         self.chars.get(self.cursor + offset).copied()
     }
@@ -524,6 +590,17 @@ mod tests {
                 .any(|t| matches!(t.kind, TokenKind::Underscore))
         );
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::FatArrow)));
+    }
+
+    #[test]
+    fn lex_rust_block_token() {
+        let source = "rust { fn bridge(v: &str) -> usize { v.len() } }";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::RustBlock(ref body) if body.contains("v.len()")))
+        );
     }
 
     #[test]
