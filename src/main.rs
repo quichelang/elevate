@@ -1,5 +1,8 @@
 use std::env;
+use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::process;
 
 use elevate::{CompileOptions, ExperimentFlags};
@@ -14,6 +17,7 @@ fn main() {
     match args[0].as_str() {
         "build" => run_build(&args[1..]),
         "test" => run_test(&args[1..]),
+        "init" => run_init(&args[1..]),
         _ => run_compile(&args),
     }
 }
@@ -83,6 +87,36 @@ fn run_test(args: &[String]) {
     }
 }
 
+fn run_init(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("usage: elevate init <crate-root> [cargo init flags]");
+        process::exit(2);
+    }
+    let crate_root = parse_init_root(args).unwrap_or_else(|| {
+        eprintln!("usage: elevate init <crate-root> [cargo init flags]");
+        process::exit(2);
+    });
+    let mut init = Command::new("cargo");
+    init.arg("init");
+    init.args(args);
+    let status = init.status().unwrap_or_else(|error| {
+        eprintln!("failed to run cargo init: {error}");
+        process::exit(1);
+    });
+    if !status.success() {
+        process::exit(status.code().unwrap_or(1));
+    }
+
+    apply_elevate_templates(&crate_root).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        process::exit(1);
+    });
+    println!(
+        "initialized elevate crate at {} with transparent bootstrap runner",
+        crate_root.display()
+    );
+}
+
 fn run_compile(args: &[String]) {
     let input_path = PathBuf::from(&args[0]);
     let mut emit_target = EmitTarget::Stdout;
@@ -138,11 +172,98 @@ fn usage() {
     eprintln!("  elevate <input-file.ers> [--emit-rust [output-file]] [experiment flags]");
     eprintln!("  elevate build <crate-root> [--release] [experiment flags]");
     eprintln!("  elevate test <crate-root> [experiment flags]");
+    eprintln!("  elevate init <crate-root> [cargo init flags]");
     eprintln!("experiment flags:");
     eprintln!("  --exp-move-mut-args");
     eprintln!("  --exp-infer-local-bidi");
     eprintln!("  --exp-effect-rows-internal");
     eprintln!("  --exp-infer-principal-fallback");
+}
+
+fn parse_init_root(args: &[String]) -> Option<PathBuf> {
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg.starts_with('-') {
+            if matches!(arg.as_str(), "--name" | "--vcs") {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        return Some(PathBuf::from(arg));
+    }
+    None
+}
+
+fn apply_elevate_templates(crate_root: &Path) -> Result<(), String> {
+    let manifest_path = crate_root.join("Cargo.toml");
+    let src_dir = crate_root.join("src");
+    if !manifest_path.is_file() {
+        return Err(format!(
+            "failed to initialize templates: missing {}",
+            manifest_path.display()
+        ));
+    }
+    fs::create_dir_all(&src_dir).map_err(|error| {
+        format!(
+            "failed to create source directory {}: {error}",
+            src_dir.display()
+        )
+    })?;
+
+    let mut manifest = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("failed to read {}: {error}", manifest_path.display()))?;
+    ensure_bootstrap_bin_target(&mut manifest);
+    fs::write(&manifest_path, manifest.as_bytes())
+        .map_err(|error| format!("failed to write {}: {error}", manifest_path.display()))?;
+
+    fs::write(
+        src_dir.join("main.rs"),
+        include_str!("templates/init_bootstrap_main.rs").as_bytes(),
+    )
+    .map_err(|error| format!("failed to write {}: {error}", src_dir.join("main.rs").display()))?;
+    let main_ers = src_dir.join("main.ers");
+    if !main_ers.exists() {
+        fs::write(&main_ers, include_str!("templates/init_main.ers").as_bytes())
+            .map_err(|error| format!("failed to write {}: {error}", main_ers.display()))?;
+    }
+    Ok(())
+}
+
+fn ensure_bootstrap_bin_target(manifest: &mut String) {
+    if manifest.contains("[[bin]]") && manifest.contains("path = \"src/main.rs\"") {
+        return;
+    }
+    let name = parse_manifest_package_name(manifest).unwrap_or_else(|| "app".to_string());
+    if !manifest.ends_with('\n') {
+        manifest.push('\n');
+    }
+    manifest.push('\n');
+    manifest.push_str("[[bin]]\n");
+    manifest.push_str(&format!("name = \"{name}\"\n"));
+    manifest.push_str("path = \"src/main.rs\"\n");
+}
+
+fn parse_manifest_package_name(manifest: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_package = trimmed == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        if let Some(raw) = trimmed.strip_prefix("name =") {
+            let quoted = raw.trim().trim_matches('"');
+            if !quoted.is_empty() {
+                return Some(quoted.to_string());
+            }
+        }
+    }
+    None
 }
 
 enum EmitTarget {

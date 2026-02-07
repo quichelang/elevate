@@ -653,6 +653,10 @@ fn process_src_dir(
             continue;
         }
 
+        if should_skip_source_copy_because_ers_twin(&path) {
+            continue;
+        }
+
         if target.exists() {
             return Err(format!(
                 "output path collision while copying file: {}",
@@ -670,6 +674,15 @@ fn process_src_dir(
     }
 
     Ok(())
+}
+
+fn should_skip_source_copy_because_ers_twin(path: &Path) -> bool {
+    if path.extension() != Some(OsStr::new("rs")) {
+        return false;
+    }
+    let mut twin = path.to_path_buf();
+    twin.set_extension("ers");
+    twin.is_file()
 }
 
 fn compile_source_with_interop_contract(
@@ -1726,6 +1739,34 @@ mod tests {
         assert!(generated.join("lib.rs").exists());
         assert!(generated.join("net/http.rs").exists());
         assert!(generated.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn transpile_prefers_ers_source_over_rs_twin() {
+        let root = create_temp_dir("elevate-crate-ers-precedence");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "pub fn source() -> i64 { 7 }\n",
+        )
+        .expect("write lib.ers should succeed");
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub fn source() -> i64 { 999 }\n",
+        )
+        .expect("write lib.rs twin should succeed");
+
+        let summary = transpile_ers_crate(&root).expect("transpile should succeed");
+        let generated = fs::read_to_string(summary.generated_root.join("src/lib.rs"))
+            .expect("generated lib should exist");
+        assert!(generated.contains("pub fn source() -> i64"));
+        assert!(generated.contains("7"));
+        assert!(!generated.contains("999"));
     }
 
     #[test]

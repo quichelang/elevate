@@ -6,3 +6,7 @@ edition = "2024"
 [lib]
 name = "neon_boardwalk"
 path = "src/lib.rs"
+
+[[bin]]
+name = "neon-boardwalk"
+path = "src/main.rs"

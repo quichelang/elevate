@@ -81,6 +81,39 @@ fn cli_accepts_experiment_flags_for_compile() {
     assert!(stdout.contains("experimental flag enabled: exp_infer_local_bidi"));
 }
 
+#[test]
+fn cli_init_scaffolds_transparent_bootstrap_runner() {
+    let workspace = temp_dir("elevate-cli-init");
+    let root = workspace.join("starter");
+
+    let output = Command::new(bin())
+        .arg("init")
+        .arg(&root)
+        .arg("--name")
+        .arg("starter")
+        .arg("--vcs")
+        .arg("none")
+        .arg("--bin")
+        .output()
+        .expect("run cli init should succeed");
+    assert!(output.status.success());
+
+    let manifest =
+        fs::read_to_string(root.join("Cargo.toml")).expect("manifest should exist after init");
+    assert!(manifest.contains("[[bin]]"));
+    assert!(manifest.contains("path = \"src/main.rs\""));
+
+    let bootstrap =
+        fs::read_to_string(root.join("src/main.rs")).expect("bootstrap runner should exist");
+    assert!(bootstrap.contains("elevate build"));
+    assert!(bootstrap.contains("elevate-gen"));
+    assert!(bootstrap.contains("--manifest-path"));
+
+    let main_ers =
+        fs::read_to_string(root.join("src/main.ers")).expect("main.ers should exist after init");
+    assert!(main_ers.contains("fn main()"));
+}
+
 fn temp_dir(prefix: &str) -> std::path::PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
