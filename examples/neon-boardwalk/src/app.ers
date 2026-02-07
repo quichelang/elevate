@@ -1,5 +1,6 @@
 rust use crate::runtime;
 rust use crate::runtime::Board;
+rust use crate::runtime::RenderMode;
 rust use crate::host::KeyEvent;
 
 pub struct Game {
@@ -8,6 +9,7 @@ pub struct Game {
     puzzle_index: i64;
     cursor_row: i64;
     cursor_col: i64;
+    render_mode: RenderMode;
     message: String;
     running: bool;
 }
@@ -22,7 +24,8 @@ impl Game {
             puzzle_index: 0;
             cursor_row: 0;
             cursor_col: 0;
-            message: String::from("Use arrows/WASD, 1-9, 0 clear, c check, n next, r reset, q quit");
+            render_mode: runtime::default_render_mode();
+            message: String::from("Use arrows/WASD, 1-9, 0 clear, c check, n next, r reset, v renderer, q quit");
             running: true;
         }
     }
@@ -34,6 +37,7 @@ impl Game {
                 self.cursor_row,
                 self.cursor_col,
                 format!("{}", self.message),
+                self.render_mode,
             );
 
             const key = runtime::runtime_poll_key(self.runtime);
@@ -58,6 +62,7 @@ impl Game {
             KeyEvent::Check => Game::check_status(self);
             KeyEvent::Next => Game::load_next_puzzle(self);
             KeyEvent::Reset => Game::reset_puzzle(self);
+            KeyEvent::ToggleRenderer => Game::toggle_renderer(self);
             KeyEvent::Hint => Game::set_message(self, String::from("Hint engine pending in Neon Boardwalk"));
             KeyEvent::Save => Game::set_message(self, String::from("Save pending in Neon Boardwalk"));
             KeyEvent::Load => Game::set_message(self, String::from("Load pending in Neon Boardwalk"));
@@ -137,6 +142,15 @@ impl Game {
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.message = String::from("Puzzle reset");
+        self
+    }
+
+    fn toggle_renderer(self) -> Self {
+        self.render_mode = runtime::toggle_render_mode(self.render_mode);
+        self.message = format!(
+            "Renderer switched to {} mode",
+            runtime::render_mode_name(self.render_mode)
+        );
         self
     }
 }

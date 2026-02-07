@@ -1,5 +1,29 @@
 rust use crate::host;
 rust use crate::host::KeyEvent;
+rust use crate::gfx::Canvas;
+
+pub enum RenderMode {
+    Neon;
+    Vga;
+}
+
+pub fn default_render_mode() -> RenderMode {
+    RenderMode::Neon
+}
+
+pub fn toggle_render_mode(mode: RenderMode) -> RenderMode {
+    match mode {
+        RenderMode::Neon => RenderMode::Vga;
+        RenderMode::Vga => RenderMode::Neon;
+    }
+}
+
+pub fn render_mode_name(mode: RenderMode) -> String {
+    match mode {
+        RenderMode::Neon => "Neon";
+        RenderMode::Vga => "VGA";
+    }
+}
 
 pub struct Board {
     cells: Vec<i64>;
@@ -178,8 +202,8 @@ pub fn runtime_shutdown(handle: i64) {
     host::runtime_shutdown(handle);
 }
 
-pub fn runtime_render(board: Board, cursor_row: i64, cursor_col: i64, message: String) -> Board {
-    const (next_board, frame) = render_frame(board, cursor_row, cursor_col, message);
+pub fn runtime_render(board: Board, cursor_row: i64, cursor_col: i64, message: String, mode: RenderMode) -> Board {
+    const (next_board, frame) = render_frame(board, cursor_row, cursor_col, message, mode);
     host::runtime_draw(frame);
     next_board
 }
@@ -251,77 +275,6 @@ fn char_to_digit(ch: char) -> i64 {
     }
 }
 
-fn render_frame(board: Board, cursor_row: i64, cursor_col: i64, message: String) -> (Board, String) {
-    const frame: String = String::from("\x1b[H");
-    frame.push_str(render_background_strip(0));
-    frame.push_str(render_background_strip(1));
-    frame.push_str(render_background_strip(2));
-    frame.push_str(render_background_strip(3));
-    frame.push_str(render_background_strip(4));
-    frame.push_str("\n");
-    frame.push_str("\x1b[1;38;5;123m  NEON BOARDWALK :: SUDOKU GRID\x1b[0m\n");
-    frame.push_str("\x1b[38;5;81m  ##=================##=================##=================##\x1b[0m\n");
-
-    for row in 0..9 {
-        if row > 0 {
-            if row % 3 == 0 {
-                frame.push_str("\x1b[38;5;81m  ##=================##=================##=================##\x1b[0m");
-            } else {
-                frame.push_str("\x1b[38;5;33m  ||-----------------||-----------------||-----------------||\x1b[0m");
-            }
-            frame.push_str("\x1b[48;5;236m  \x1b[0m\n");
-        }
-
-        frame.push_str("\x1b[38;5;81m  ||\x1b[0m");
-        const (next_board, row_values) = Board::row_values(board, row);
-        board = next_board;
-
-        for col in 0..9 {
-            const value = row_values[col];
-            const is_cursor = row == cursor_row and col == cursor_col;
-            const is_fixed = board.fixed[row * 9 + col];
-            const (conflict_board, has_conflict) = Board::has_conflict(board, row, col);
-            board = conflict_board;
-            const cell = render_cell(value, is_cursor, is_fixed, has_conflict);
-            frame.push_str(cell);
-
-            if col % 3 == 2 {
-                frame.push_str("\x1b[38;5;81m||\x1b[0m");
-            } else {
-                frame.push_str("\x1b[38;5;33m|\x1b[0m");
-            }
-        }
-        frame.push_str("\x1b[48;5;236m  \x1b[0m\n");
-    }
-
-    frame.push_str("\x1b[38;5;81m  ##=================##=================##=================##\x1b[0m\x1b[48;5;236m  \x1b[0m\n");
-    frame.push_str("\x1b[48;5;236m   \x1b[48;5;235m                                                       \x1b[0m\n");
-    frame.push_str("\x1b[48;5;236m    \x1b[48;5;234m                                                      \x1b[0m\n\n");
-    frame.push_str("\x1b[38;5;153m  Controls:\x1b[0m arrows/WASD move | 1-9 set | 0/space/backspace clear\n");
-    frame.push_str("\x1b[38;5;153m            \x1b[0m c check | n next | r reset | q quit\n");
-    frame.push_str("\x1b[1;38;5;220m  Status:\x1b[0m ");
-    frame.push_str(message);
-    frame.push_str("\n\n");
-    (board, frame)
-}
-
-fn render_cell(value: i64, is_cursor: bool, is_fixed: bool, has_conflict: bool) -> String {
-    const ch = digit_to_char(value);
-    if is_cursor {
-        return format!("\x1b[48;5;226m\x1b[1;38;5;16m {} \x1b[0m", ch);
-    }
-    if has_conflict {
-        return format!("\x1b[48;5;52m\x1b[1;38;5;210m {} \x1b[0m", ch);
-    }
-    if value == 0 {
-        return String::from("\x1b[48;5;236m\x1b[38;5;244m . \x1b[0m");
-    }
-    if is_fixed {
-        return format!("\x1b[48;5;24m\x1b[1;38;5;231m {} \x1b[0m", ch);
-    }
-    format!("\x1b[48;5;238m\x1b[38;5;195m {} \x1b[0m", ch)
-}
-
 fn digit_to_char(value: i64) -> char {
     match value {
         0 => '.';
@@ -338,12 +291,379 @@ fn digit_to_char(value: i64) -> char {
     }
 }
 
-fn render_background_strip(index: i64) -> String {
-    match index {
-        0 => "\x1b[48;5;17m                                                                                \x1b[0m\n";
-        1 => "\x1b[48;5;18m    .---.      .---.      .---.      .---.      .---.      .---.             \x1b[0m\n";
-        2 => "\x1b[48;5;19m   /_#_#_\\    /_#_#_\\    /_#_#_\\    /_#_#_\\    /_#_#_\\    /_#_#_\\            \x1b[0m\n";
-        3 => "\x1b[48;5;20m   |#|#|#|    |#|#|#|    |#|#|#|    |#|#|#|    |#|#|#|    |#|#|#|            \x1b[0m\n";
-        _ => "\x1b[48;5;21m================================================================================\x1b[0m\n";
+fn render_frame(board: Board, cursor_row: i64, cursor_col: i64, message: String, mode: RenderMode) -> (Board, String) {
+    const width = 96;
+    const height = 40;
+    const panel_bg = theme_panel_bg(mode);
+    const canvas0 = Canvas::new(width, height, theme_fg(mode), theme_bg(mode));
+    const canvas1 = draw_backdrop(canvas0, mode);
+    const canvas2 = Canvas::fill_rect(canvas1, 0, 6, width, 34, ' ', theme_fg(mode), theme_bg(mode), false);
+    const title = format!("NEON BOARDWALK :: SUDOKU GRID [{}]", render_mode_name(mode));
+    const canvas3 = Canvas::text(canvas2, 2, 5, title, theme_title_fg(mode), theme_bg(mode), true);
+    const board_left = 2;
+    const board_top = 7;
+    const board_width = 37;
+    const board_height = 19;
+    const canvas4 = Canvas::fill_rect(canvas3, board_left, board_top, board_width + 2, board_height + 2, ' ', theme_fg(mode), panel_bg, false);
+    const (canvas5, next_board) = draw_board_rows(canvas4, board, cursor_row, cursor_col, board_left, board_top, mode, 0);
+    const canvas6 = Canvas::fill_rect(canvas5, 1, 30, 88, 7, ' ', theme_fg(mode), theme_bg(mode), false);
+    const canvas7 = Canvas::text(canvas6, 2, 32, "Controls: arrows/WASD move | 1-9 set | 0/space/backspace clear", theme_hud_fg(mode), theme_bg(mode), false);
+    const canvas8 = Canvas::text(canvas7, 2, 33, "          c check | n next | r reset | v renderer | q quit", theme_hud_fg(mode), theme_bg(mode), false);
+    const canvas9 = Canvas::text(canvas8, 2, 35, "Status:", theme_status_fg(mode), theme_bg(mode), true);
+    const canvas10 = Canvas::text(canvas9, 10, 35, message, theme_hud_fg(mode), theme_bg(mode), false);
+    const frame = Canvas::to_ansi(canvas10);
+    (next_board, frame)
+}
+
+fn draw_board_rows(
+    canvas: Canvas,
+    board: Board,
+    cursor_row: i64,
+    cursor_col: i64,
+    left: i64,
+    top: i64,
+    mode: RenderMode,
+    row: i64,
+) -> (Canvas, Board) {
+    if row >= 10 {
+        return (canvas, board);
+    }
+
+    const sep_y = top + row * 2;
+    const canvas_with_sep = draw_separator_line_offset(canvas, left, sep_y, row % 3 == 0, mode, 0);
+
+    if row >= 9 {
+        return (canvas_with_sep, board);
+    }
+
+    const value_y = sep_y + 1;
+    const (row_board, row_values) = Board::row_values(board, row);
+    const (canvas_after_values, board_after_values) = draw_value_line_cols(
+        canvas_with_sep,
+        row_board,
+        row_values,
+        row,
+        value_y,
+        left,
+        cursor_row,
+        cursor_col,
+        mode,
+        0,
+    );
+
+    draw_board_rows(
+        canvas_after_values,
+        board_after_values,
+        cursor_row,
+        cursor_col,
+        left,
+        top,
+        mode,
+        row + 1,
+    )
+}
+
+fn draw_separator_line_offset(
+    canvas: Canvas,
+    left: i64,
+    y: i64,
+    major_row: bool,
+    mode: RenderMode,
+    offset: i64,
+) -> Canvas {
+    if offset >= 37 {
+        return canvas;
+    }
+
+    const x = left + offset;
+    const next_canvas = match offset % 4 == 0 {
+        true => put_separator_vertical(canvas, x, y, mode, offset / 4);
+        false => put_separator_horizontal(canvas, x, y, mode, major_row);
+    };
+
+    draw_separator_line_offset(next_canvas, left, y, major_row, mode, offset + 1)
+}
+
+fn put_separator_vertical(canvas: Canvas, x: i64, y: i64, mode: RenderMode, boundary_index: i64) -> Canvas {
+    const major_col = is_major_boundary(boundary_index);
+    const ch = separator_char(major_col);
+    const fg = separator_fg(mode, major_col);
+    Canvas::put(canvas, x, y, ch, fg, theme_panel_bg(mode), major_col)
+}
+
+fn put_separator_horizontal(canvas: Canvas, x: i64, y: i64, mode: RenderMode, major_row: bool) -> Canvas {
+    const ch = match major_row {
+        true => '=';
+        false => '-';
+    };
+    const fg = match major_row {
+        true => theme_grid_major_fg(mode);
+        false => theme_grid_minor_fg(mode);
+    };
+    Canvas::put(canvas, x, y, ch, fg, theme_panel_bg(mode), major_row)
+}
+
+fn draw_value_line_cols(
+    canvas: Canvas,
+    board: Board,
+    row_values: Vec<i64>,
+    row: i64,
+    y: i64,
+    left: i64,
+    cursor_row: i64,
+    cursor_col: i64,
+    mode: RenderMode,
+    col: i64,
+) -> (Canvas, Board) {
+    if col >= 9 {
+        const tail_major = is_major_boundary(9);
+        const tail_ch = separator_char(tail_major);
+        const tail_fg = separator_fg(mode, tail_major);
+        const tail_x = left + 36;
+        const tail_canvas = Canvas::put(canvas, tail_x, y, tail_ch, tail_fg, theme_panel_bg(mode), tail_major);
+        return (tail_canvas, board);
+    }
+
+    const x = left + col * 4;
+    const major_col = is_major_boundary(col);
+    const sep_ch = separator_char(major_col);
+    const sep_fg = separator_fg(mode, major_col);
+    const canvas_with_sep = Canvas::put(canvas, x, y, sep_ch, sep_fg, theme_panel_bg(mode), major_col);
+    const value = row_values[col];
+    const is_cursor = row == cursor_row and col == cursor_col;
+    const is_fixed = board.fixed[row * 9 + col];
+    const (conflict_board, has_conflict) = Board::has_conflict(board, row, col);
+    const canvas_with_cell = draw_cell_triplet(canvas_with_sep, x + 1, y, value, is_cursor, is_fixed, has_conflict, mode);
+
+    draw_value_line_cols(
+        canvas_with_cell,
+        conflict_board,
+        row_values,
+        row,
+        y,
+        left,
+        cursor_row,
+        cursor_col,
+        mode,
+        col + 1,
+    )
+}
+
+fn draw_cell_triplet(canvas: Canvas, x: i64, y: i64, value: i64, is_cursor: bool, is_fixed: bool, has_conflict: bool, mode: RenderMode) -> Canvas {
+    const ch = digit_to_char(value);
+    const cell_ch = match value == 0 {
+        true => empty_cell_char(mode);
+        false => ch;
+    };
+    const fg = cell_fg(mode, value, is_cursor, is_fixed, has_conflict);
+    const bg = cell_bg(mode, value, is_cursor, is_fixed, has_conflict);
+    const bold = is_cursor or is_fixed;
+    const canvas0 = Canvas::put(canvas, x, y, ' ', fg, bg, bold);
+    const canvas1 = Canvas::put(canvas0, x + 1, y, cell_ch, fg, bg, bold);
+    Canvas::put(canvas1, x + 2, y, ' ', fg, bg, bold)
+}
+
+fn draw_backdrop(canvas: Canvas, mode: RenderMode) -> Canvas {
+    match mode {
+        RenderMode::Neon => draw_neon_backdrop(canvas);
+        RenderMode::Vga => draw_vga_backdrop(canvas);
+    }
+}
+
+fn draw_neon_backdrop(canvas: Canvas) -> Canvas {
+    const c0 = Canvas::fill_rect(canvas, 0, 0, 96, 1, ' ', 15, 17, false);
+    const c1 = Canvas::fill_rect(c0, 0, 1, 96, 1, ' ', 15, 18, false);
+    const c2 = Canvas::fill_rect(c1, 0, 2, 96, 1, ' ', 15, 19, false);
+    const c3 = Canvas::fill_rect(c2, 0, 3, 96, 1, ' ', 15, 20, false);
+    const c4 = Canvas::fill_rect(c3, 0, 4, 96, 1, ' ', 15, 21, false);
+    const c5 = Canvas::text(c4, 3, 1, ".---.      .---.      .---.      .---.      .---.      .---.", 87, 18, true);
+    const c6 = Canvas::text(c5, 3, 2, "/_#_#_\\    /_#_#_\\    /_#_#_\\    /_#_#_\\    /_#_#_\\    /_#_#_\\", 117, 19, true);
+    Canvas::text(c6, 3, 3, "|#|#|#|    |#|#|#|    |#|#|#|    |#|#|#|    |#|#|#|    |#|#|#|", 153, 20, true)
+}
+
+fn draw_vga_backdrop(canvas: Canvas) -> Canvas {
+    const c0 = Canvas::fill_rect(canvas, 0, 0, 96, 1, ' ', 15, 17, false);
+    const c1 = Canvas::fill_rect(c0, 0, 1, 96, 1, ' ', 15, 18, false);
+    const c2 = Canvas::fill_rect(c1, 0, 2, 96, 1, ' ', 15, 19, false);
+    const c3 = Canvas::fill_rect(c2, 0, 3, 96, 1, ' ', 15, 20, false);
+    const c4 = Canvas::fill_rect(c3, 0, 4, 96, 1, ' ', 15, 21, false);
+    const c5 = Canvas::text(c4, 2, 1, "############################################################", 226, 18, true);
+    const c6 = Canvas::text(c5, 2, 2, "##  VGA RASTER MODE :: DOS-STYLE COLOR PLANES          ##", 226, 19, true);
+    Canvas::text(c6, 2, 3, "############################################################", 226, 20, true)
+}
+
+fn is_major_boundary(boundary_index: i64) -> bool {
+    boundary_index == 0 or boundary_index == 3 or boundary_index == 6 or boundary_index == 9
+}
+
+fn separator_char(major: bool) -> char {
+    if major {
+        return '#';
+    }
+    '|'
+}
+
+fn separator_fg(mode: RenderMode, major: bool) -> i64 {
+    if major {
+        return theme_grid_major_fg(mode);
+    }
+    theme_grid_minor_fg(mode)
+}
+
+fn empty_cell_char(mode: RenderMode) -> char {
+    match mode {
+        RenderMode::Neon => '.';
+        RenderMode::Vga => ':';
+    }
+}
+
+fn cell_fg(mode: RenderMode, value: i64, is_cursor: bool, is_fixed: bool, has_conflict: bool) -> i64 {
+    if is_cursor {
+        return theme_cursor_fg(mode);
+    }
+    if has_conflict {
+        return theme_conflict_fg(mode);
+    }
+    if value == 0 {
+        return theme_dim_fg(mode);
+    }
+    if is_fixed {
+        return theme_fixed_fg(mode);
+    }
+    theme_editable_fg(mode)
+}
+
+fn cell_bg(mode: RenderMode, value: i64, is_cursor: bool, is_fixed: bool, has_conflict: bool) -> i64 {
+    if is_cursor {
+        return theme_cursor_bg(mode);
+    }
+    if has_conflict {
+        return theme_conflict_bg(mode);
+    }
+    if value == 0 {
+        return theme_panel_bg(mode);
+    }
+    if is_fixed {
+        return theme_fixed_bg(mode);
+    }
+    theme_editable_bg(mode)
+}
+
+fn theme_bg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 16;
+        RenderMode::Vga => 16;
+    }
+}
+
+fn theme_panel_bg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 235;
+        RenderMode::Vga => 17;
+    }
+}
+
+fn theme_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 153;
+        RenderMode::Vga => 252;
+    }
+}
+
+fn theme_title_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 123;
+        RenderMode::Vga => 226;
+    }
+}
+
+fn theme_grid_major_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 51;
+        RenderMode::Vga => 229;
+    }
+}
+
+fn theme_grid_minor_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 39;
+        RenderMode::Vga => 81;
+    }
+}
+
+fn theme_dim_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 244;
+        RenderMode::Vga => 250;
+    }
+}
+
+fn theme_fixed_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 231;
+        RenderMode::Vga => 231;
+    }
+}
+
+fn theme_fixed_bg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 24;
+        RenderMode::Vga => 19;
+    }
+}
+
+fn theme_editable_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 195;
+        RenderMode::Vga => 117;
+    }
+}
+
+fn theme_editable_bg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 238;
+        RenderMode::Vga => 18;
+    }
+}
+
+fn theme_cursor_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 16;
+        RenderMode::Vga => 16;
+    }
+}
+
+fn theme_cursor_bg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 226;
+        RenderMode::Vga => 220;
+    }
+}
+
+fn theme_conflict_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 210;
+        RenderMode::Vga => 231;
+    }
+}
+
+fn theme_conflict_bg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 52;
+        RenderMode::Vga => 124;
+    }
+}
+
+fn theme_hud_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 153;
+        RenderMode::Vga => 252;
+    }
+}
+
+fn theme_status_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 220;
+        RenderMode::Vga => 226;
     }
 }
