@@ -48,6 +48,8 @@ pub struct CompileOptions {
     pub experiments: ExperimentFlags,
     pub direct_borrow_hints: Vec<DirectBorrowHint>,
     pub forced_clone_places: Vec<String>,
+    pub fail_on_hot_clone: bool,
+    pub allow_hot_clone_places: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -115,6 +117,8 @@ pub fn compile_ast_with_options(
             .ownership_notes
             .push(format!("experimental flag enabled: {name}"));
     }
+    enforce_hot_clone_policy(&lowered.ownership_notes, options)
+        .map_err(|diagnostics| CompileError { diagnostics })?;
     let ownership_notes = lowered.ownership_notes.clone();
     let rust_code = codegen::emit_rust_module(&lowered);
 
@@ -124,6 +128,47 @@ pub fn compile_ast_with_options(
         rust_code,
         ownership_notes,
     })
+}
+
+fn enforce_hot_clone_policy(
+    notes: &[String],
+    options: &CompileOptions,
+) -> Result<(), Vec<Diagnostic>> {
+    if !options.fail_on_hot_clone {
+        return Ok(());
+    }
+    let mut diagnostics = Vec::new();
+    for note in notes {
+        if !note.starts_with("hot-clone:auto ") {
+            continue;
+        }
+        let place = extract_hot_clone_place(note).unwrap_or_else(|| "<unknown>".to_string());
+        let is_allowed = options.allow_hot_clone_places.iter().any(|allowed| {
+            note.contains(&format!("place=`{}`", allowed))
+        });
+        if is_allowed {
+            continue;
+        }
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "Hot-path auto-clone rejected by policy at `{place}`. Add an explicit override with `--allow-hot-clone-place {place}` if this clone is intentional."
+            ),
+            diag::Span::new(0, 0),
+        ));
+    }
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(diagnostics)
+    }
+}
+
+fn extract_hot_clone_place(note: &str) -> Option<String> {
+    let marker = "place=`";
+    let start = note.find(marker)? + marker.len();
+    let rest = &note[start..];
+    let end = rest.find('`')?;
+    Some(rest[..end].to_string())
 }
 
 #[cfg(test)]
@@ -541,6 +586,93 @@ mod tests {
         assert!(output.rust_code.contains("for i in 0..3"));
         assert!(output.rust_code.contains("consume(text.clone());"));
         assert!(!output.rust_code.contains("consume(text);"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_preserves_move_chain_rebinding_without_clone_in_loops() {
+        let source = r#"
+            pub struct Canvas { id: i64; }
+
+            impl Canvas {
+                fn put(self: Self, x: i64) -> Self {
+                    std::mem::drop(x);
+                    self
+                }
+            }
+
+            fn render(canvas: Canvas) -> Canvas {
+                for i in 0..10 {
+                    canvas = Canvas::put(canvas, i);
+                }
+                canvas
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("canvas = Canvas::put(canvas, i);"));
+        assert!(!output.rust_code.contains("Canvas::put(canvas.clone(), i)"));
+        assert!(
+            output
+                .ownership_notes
+                .iter()
+                .all(|note| !note.contains("`canvas`"))
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_fail_on_hot_clone_policy_rejects_expensive_loop_clones() {
+        let source = r#"
+            fn consume(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn demo(text: String) {
+                for i in 0..3 {
+                    std::mem::drop(i);
+                    consume(text);
+                }
+                return;
+            }
+        "#;
+        let mut options = CompileOptions::default();
+        options.fail_on_hot_clone = true;
+
+        let error = compile_source_with_options(source, &options).expect_err("expected policy failure");
+        assert!(error.to_string().contains("Hot-path auto-clone rejected by policy"));
+        assert!(error.to_string().contains("--allow-hot-clone-place text"));
+    }
+
+    #[test]
+    fn compile_allows_hot_clone_when_place_is_explicitly_approved() {
+        let source = r#"
+            fn consume(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn demo(text: String) {
+                for i in 0..3 {
+                    std::mem::drop(i);
+                    consume(text);
+                }
+                return;
+            }
+        "#;
+        let mut options = CompileOptions::default();
+        options.fail_on_hot_clone = true;
+        options.allow_hot_clone_places.push("text".to_string());
+
+        let output = compile_source_with_options(source, &options).expect("expected compile success");
+        assert!(output.rust_code.contains("consume(text.clone());"));
+        assert!(
+            output
+                .ownership_notes
+                .iter()
+                .any(|note| note.starts_with("hot-clone:auto "))
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 

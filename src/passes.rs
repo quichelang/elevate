@@ -175,6 +175,8 @@ pub fn lower_to_rust_with_hints(
 struct LoweringContext {
     ownership_plan: OwnershipPlan,
     scope_name: String,
+    loop_depth: usize,
+    rebind_place: Option<OwnershipPlace>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -677,6 +679,7 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
     let mut context = LoweringContext {
         ownership_plan: OwnershipPlan::from_stmts(&def.body),
         scope_name: def.name.clone(),
+        ..LoweringContext::default()
     };
     RustFunction {
         is_public: def.is_public,
@@ -3824,7 +3827,15 @@ fn lower_stmt_with_context(
                 TypedAssignOp::Assign => RustAssignOp::Assign,
                 TypedAssignOp::AddAssign => RustAssignOp::AddAssign,
             },
-            value: lower_expr_with_context(value, context, ExprPosition::Value, state),
+            value: {
+                let saved_rebind = context.rebind_place.clone();
+                if matches!(op, TypedAssignOp::Assign) {
+                    context.rebind_place = assignment_rebind_place(target, value);
+                }
+                let lowered = lower_expr_with_context(value, context, ExprPosition::Value, state);
+                context.rebind_place = saved_rebind;
+                lowered
+            },
         },
         TypedStmt::Return(value) => RustStmt::Return(
             value
@@ -3850,10 +3861,15 @@ fn lower_stmt_with_context(
         },
         TypedStmt::While { condition, body } => RustStmt::While {
             condition: lower_expr_with_context(condition, context, ExprPosition::Value, state),
-            body: body
-                .iter()
-                .map(|stmt| lower_stmt_with_context(stmt, context, state))
-                .collect(),
+            body: {
+                context.loop_depth += 1;
+                let lowered = body
+                    .iter()
+                    .map(|stmt| lower_stmt_with_context(stmt, context, state))
+                    .collect();
+                context.loop_depth = context.loop_depth.saturating_sub(1);
+                lowered
+            },
         },
         TypedStmt::For {
             binding,
@@ -3862,16 +3878,26 @@ fn lower_stmt_with_context(
         } => RustStmt::For {
             binding: lower_destructure_pattern(binding),
             iter: lower_expr_with_context(iter, context, ExprPosition::Value, state),
-            body: body
-                .iter()
-                .map(|stmt| lower_stmt_with_context(stmt, context, state))
-                .collect(),
+            body: {
+                context.loop_depth += 1;
+                let lowered = body
+                    .iter()
+                    .map(|stmt| lower_stmt_with_context(stmt, context, state))
+                    .collect();
+                context.loop_depth = context.loop_depth.saturating_sub(1);
+                lowered
+            },
         },
         TypedStmt::Loop { body } => RustStmt::Loop {
-            body: body
-                .iter()
-                .map(|stmt| lower_stmt_with_context(stmt, context, state))
-                .collect(),
+            body: {
+                context.loop_depth += 1;
+                let lowered = body
+                    .iter()
+                    .map(|stmt| lower_stmt_with_context(stmt, context, state))
+                    .collect();
+                context.loop_depth = context.loop_depth.saturating_sub(1);
+                lowered
+            },
         },
         TypedStmt::Break => RustStmt::Break,
         TypedStmt::Continue => RustStmt::Continue,
@@ -3882,6 +3908,166 @@ fn lower_stmt_with_context(
             ExprPosition::Value,
             state,
         )),
+    }
+}
+
+fn assignment_rebind_place(target: &TypedAssignTarget, value: &TypedExpr) -> Option<OwnershipPlace> {
+    let target_place = place_for_assign_target(target)?;
+    let uses = count_exact_place_uses_in_expr(value, &target_place);
+    if uses == 1 {
+        Some(target_place)
+    } else {
+        None
+    }
+}
+
+fn place_for_assign_target(target: &TypedAssignTarget) -> Option<OwnershipPlace> {
+    match target {
+        TypedAssignTarget::Path(name) => Some(OwnershipPlace::from_root(name)),
+        TypedAssignTarget::Field { base, field } => place_for_expr(base)
+            .map(|place| place.with_projection(OwnershipProjection::Field(field.clone()))),
+        TypedAssignTarget::Index { base, .. } => {
+            place_for_expr(base).map(|place| place.with_projection(OwnershipProjection::Index))
+        }
+        TypedAssignTarget::Tuple(_) => None,
+    }
+}
+
+fn count_exact_place_uses_in_expr(expr: &TypedExpr, target: &OwnershipPlace) -> usize {
+    let mut count = 0usize;
+    count_exact_place_uses_in_expr_rec(expr, target, &mut count);
+    count
+}
+
+fn count_exact_place_uses_in_expr_rec(
+    expr: &TypedExpr,
+    target: &OwnershipPlace,
+    count: &mut usize,
+) {
+    if let Some(place) = place_for_expr(expr) {
+        if &place == target {
+            *count += 1;
+        }
+        return;
+    }
+
+    match &expr.kind {
+        TypedExprKind::Call { callee, args } => {
+            count_exact_place_uses_in_expr_rec(callee, target, count);
+            for arg in args {
+                count_exact_place_uses_in_expr_rec(arg, target, count);
+            }
+        }
+        TypedExprKind::MacroCall { args, .. } => {
+            for arg in args {
+                count_exact_place_uses_in_expr_rec(arg, target, count);
+            }
+        }
+        TypedExprKind::Binary { left, right, .. } => {
+            count_exact_place_uses_in_expr_rec(left, target, count);
+            count_exact_place_uses_in_expr_rec(right, target, count);
+        }
+        TypedExprKind::Unary { expr, .. } => count_exact_place_uses_in_expr_rec(expr, target, count),
+        TypedExprKind::Tuple(items) => {
+            for item in items {
+                count_exact_place_uses_in_expr_rec(item, target, count);
+            }
+        }
+        TypedExprKind::Array(items) => {
+            for item in items {
+                count_exact_place_uses_in_expr_rec(item, target, count);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                count_exact_place_uses_in_expr_rec(&field.value, target, count);
+            }
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            count_exact_place_uses_in_expr_rec(scrutinee, target, count);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    count_exact_place_uses_in_expr_rec(guard, target, count);
+                }
+                count_exact_place_uses_in_expr_rec(&arm.value, target, count);
+            }
+        }
+        TypedExprKind::Closure { body, .. } => {
+            for stmt in body {
+                count_exact_place_uses_in_stmt_rec(stmt, target, count);
+            }
+        }
+        TypedExprKind::Range { start, end, .. } => {
+            if let Some(start) = start {
+                count_exact_place_uses_in_expr_rec(start, target, count);
+            }
+            if let Some(end) = end {
+                count_exact_place_uses_in_expr_rec(end, target, count);
+            }
+        }
+        TypedExprKind::Try(inner) => count_exact_place_uses_in_expr_rec(inner, target, count),
+        TypedExprKind::Field { .. }
+        | TypedExprKind::Index { .. }
+        | TypedExprKind::Path(_)
+        | TypedExprKind::Int(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::String(_)
+        | TypedExprKind::Char(_) => {}
+    }
+}
+
+fn count_exact_place_uses_in_stmt_rec(
+    stmt: &TypedStmt,
+    target: &OwnershipPlace,
+    count: &mut usize,
+) {
+    match stmt {
+        TypedStmt::Const(def) => count_exact_place_uses_in_expr_rec(&def.value, target, count),
+        TypedStmt::DestructureConst { value, .. } => {
+            count_exact_place_uses_in_expr_rec(value, target, count)
+        }
+        TypedStmt::Assign { target: _, value, .. } => {
+            count_exact_place_uses_in_expr_rec(value, target, count);
+        }
+        TypedStmt::Return(value) => {
+            if let Some(value) = value {
+                count_exact_place_uses_in_expr_rec(value, target, count);
+            }
+        }
+        TypedStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            count_exact_place_uses_in_expr_rec(condition, target, count);
+            for stmt in then_body {
+                count_exact_place_uses_in_stmt_rec(stmt, target, count);
+            }
+            if let Some(block) = else_body {
+                for stmt in block {
+                    count_exact_place_uses_in_stmt_rec(stmt, target, count);
+                }
+            }
+        }
+        TypedStmt::While { condition, body } => {
+            count_exact_place_uses_in_expr_rec(condition, target, count);
+            for stmt in body {
+                count_exact_place_uses_in_stmt_rec(stmt, target, count);
+            }
+        }
+        TypedStmt::For { iter, body, .. } => {
+            count_exact_place_uses_in_expr_rec(iter, target, count);
+            for stmt in body {
+                count_exact_place_uses_in_stmt_rec(stmt, target, count);
+            }
+        }
+        TypedStmt::Loop { body } => {
+            for stmt in body {
+                count_exact_place_uses_in_stmt_rec(stmt, target, count);
+            }
+        }
+        TypedStmt::Expr(expr) => count_exact_place_uses_in_expr_rec(expr, target, count),
+        TypedStmt::Break | TypedStmt::Continue | TypedStmt::RustBlock(_) => {}
     }
 }
 
@@ -3992,17 +4178,10 @@ fn lower_expr_with_context(
             if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
                 && remaining_conflicting_before > 1
                 && should_clone_for_reuse(&expr.ty, state)
+                && !should_preserve_rebind_move(expr, context)
             {
                 if let Some(name) = place_name {
-                    let scope = if context.scope_name.is_empty() {
-                        "<module>"
-                    } else {
-                        context.scope_name.as_str()
-                    };
-                    state.push_ownership_note(format!(
-                        "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
-                        expr.ty.trim()
-                    ));
+                    push_auto_clone_notes(state, context, &name, expr.ty.trim());
                 }
                 clone_expr(lowered_field)
             } else {
@@ -4048,17 +4227,10 @@ fn lower_expr_with_context(
             if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
                 && remaining_conflicting_before > 1
                 && should_clone_for_reuse(&expr.ty, state)
+                && !should_preserve_rebind_move(expr, context)
             {
                 if let Some(name) = place_name {
-                    let scope = if context.scope_name.is_empty() {
-                        "<module>"
-                    } else {
-                        context.scope_name.as_str()
-                    };
-                    state.push_ownership_note(format!(
-                        "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
-                        expr.ty.trim()
-                    ));
+                    push_auto_clone_notes(state, context, &name, expr.ty.trim());
                 }
                 clone_expr(lowered_index_expr)
             } else {
@@ -4227,6 +4399,8 @@ fn lower_expr_with_context(
             let mut closure_context = LoweringContext {
                 ownership_plan: OwnershipPlan::from_stmts(body),
                 scope_name: format!("{}::<closure>", context.scope_name),
+                loop_depth: context.loop_depth,
+                ..LoweringContext::default()
             };
             RustExpr::Closure {
                 params: params
@@ -4298,16 +4472,12 @@ fn lower_path_expr(
     if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
         && should_clone_for_reuse(ty, state)
     {
-        if remaining_conflicting > 1 || state.is_forced_clone_expr(expr) {
-            let scope = if context.scope_name.is_empty() {
-                "<module>"
-            } else {
-                context.scope_name.as_str()
-            };
-            state.push_ownership_note(format!(
-                "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
-                ty.trim()
-            ));
+        if (remaining_conflicting > 1 && !should_preserve_rebind_move(expr, context))
+            || state.is_forced_clone_expr(expr)
+        {
+            if remaining_conflicting > 1 {
+                push_auto_clone_notes(state, context, &name, ty.trim());
+            }
             return clone_expr(path_expr);
         }
     }
@@ -4340,6 +4510,49 @@ fn resolve_common_numeric_output_name(left: &str, right: &str) -> Option<String>
 
 fn should_clone_for_reuse(ty: &str, state: &LoweringState) -> bool {
     state.registry.is_clone_candidate(ty)
+}
+
+fn should_preserve_rebind_move(expr: &TypedExpr, context: &LoweringContext) -> bool {
+    let Some(rebind) = &context.rebind_place else {
+        return false;
+    };
+    let Some(place) = place_for_expr(expr) else {
+        return false;
+    };
+    place == *rebind
+}
+
+fn push_auto_clone_notes(
+    state: &mut LoweringState,
+    context: &LoweringContext,
+    name: &str,
+    ty: &str,
+) {
+    let scope = if context.scope_name.is_empty() {
+        "<module>"
+    } else {
+        context.scope_name.as_str()
+    };
+    state.push_ownership_note(format!(
+        "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
+        ty.trim()
+    ));
+    if context.loop_depth > 0 && is_expensive_clone_type(ty) {
+        state.push_ownership_note(format!(
+            "hot-clone:auto place=`{name}` type=`{}` scope=`{scope}` loop-depth={}",
+            ty.trim(),
+            context.loop_depth
+        ));
+    }
+}
+
+fn is_expensive_clone_type(ty: &str) -> bool {
+    matches!(
+        last_path_segment(ty.trim()),
+        "String" | "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
+    ) || parse_tuple_items(ty)
+        .map(|items| items.iter().any(|item| is_expensive_clone_type(item)))
+        .unwrap_or(false)
 }
 
 fn clone_expr(expr: RustExpr) -> RustExpr {

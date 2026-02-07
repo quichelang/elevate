@@ -178,6 +178,9 @@ fn usage() {
     eprintln!("  --exp-infer-local-bidi");
     eprintln!("  --exp-effect-rows-internal");
     eprintln!("  --exp-infer-principal-fallback");
+    eprintln!("  --fail-on-hot-clone");
+    eprintln!("  --allow-hot-clone-place <place>");
+    eprintln!("  --force-clone-place <place>");
 }
 
 fn parse_init_root(args: &[String]) -> Option<PathBuf> {
@@ -295,9 +298,35 @@ fn apply_experiment_flag(flag: &str, experiments: &mut ExperimentFlags) -> bool 
 
 fn parse_compile_options(args: &[String]) -> Result<CompileOptions, String> {
     let mut options = CompileOptions::default();
-    for arg in args {
-        if !apply_experiment_flag(arg, &mut options.experiments) {
-            return Err(format!("unknown argument '{arg}'"));
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        if apply_experiment_flag(arg, &mut options.experiments) {
+            index += 1;
+            continue;
+        }
+        match arg.as_str() {
+            "--fail-on-hot-clone" => {
+                options.fail_on_hot_clone = true;
+                index += 1;
+            }
+            "--allow-hot-clone-place" => {
+                if index + 1 >= args.len() {
+                    return Err("`--allow-hot-clone-place` expects a place name".to_string());
+                }
+                options
+                    .allow_hot_clone_places
+                    .push(args[index + 1].clone());
+                index += 2;
+            }
+            "--force-clone-place" => {
+                if index + 1 >= args.len() {
+                    return Err("`--force-clone-place` expects a place name".to_string());
+                }
+                options.forced_clone_places.push(args[index + 1].clone());
+                index += 2;
+            }
+            _ => return Err(format!("unknown argument '{arg}'")),
         }
     }
     Ok(options)
