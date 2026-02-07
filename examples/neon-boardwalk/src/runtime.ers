@@ -87,7 +87,7 @@ impl Board {
         if col < 0 or col > 8 {
             return (self, []);
         }
-        const values: Vec<i64> = [];
+        let values: Vec<i64> = [];
         for row in 0..9 {
             values.push(self.cells[row * 9 + col]);
         }
@@ -102,7 +102,7 @@ impl Board {
             return (self, []);
         }
 
-        const values: Vec<i64> = [];
+        let values: Vec<i64> = [];
         const box_row = (row / 3) * 3;
         const box_col = (col / 3) * 3;
         for r in box_row..(box_row + 3) {
@@ -147,8 +147,8 @@ impl Board {
                 if r == row and c == col {
                     ()
                 } else {
-                    const (next_board, candidate) = Board::get(self, r, c);
-                    self = next_board;
+                    const (loop_board, candidate) = Board::get(self, r, c);
+                    self = loop_board;
                     if candidate == value {
                         return (self, true);
                     }
@@ -244,7 +244,7 @@ fn normalize_puzzle_index(index: i64) -> i64 {
 }
 
 fn parse_cells(text: String) -> Vec<i64> {
-    const cells: Vec<i64> = [];
+    let cells: Vec<i64> = [];
     for ch in text.chars() {
         cells.push(char_to_digit(ch));
     }
@@ -252,7 +252,7 @@ fn parse_cells(text: String) -> Vec<i64> {
 }
 
 fn build_fixed(cells: Vec<i64>) -> Vec<bool> {
-    const fixed: Vec<bool> = [];
+    let fixed: Vec<bool> = [];
     for value in cells {
         fixed.push(value != 0);
     }

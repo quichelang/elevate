@@ -13,7 +13,7 @@ pub struct Canvas {
 
 impl Canvas {
     pub fn new(width: i64, height: i64, fg: i64, bg: i64) -> Self {
-        const cells: Vec<Pixel> = [];
+        let cells: Vec<Pixel> = [];
         for row in 0..height {
             for col in 0..width {
                 std::mem::drop(row);
@@ -70,7 +70,7 @@ impl Canvas {
     }
 
     pub fn to_ansi(self: Self) -> String {
-        const out: String = String::from("\x1b[H");
+        let out: String = String::from("\x1b[H");
         for row in 0..self.height {
             out.push_str(format!("\x1b[{};1H", row + 1));
             for col in 0..self.width {
