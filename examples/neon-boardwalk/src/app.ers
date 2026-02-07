@@ -13,12 +13,17 @@ pub struct Game {
     message: String;
     running: bool;
     needs_redraw: bool;
+    debug_enabled: bool;
+    fps_window_start_ms: i64;
+    fps_frames: i64;
+    fps_display: i64;
 }
 
 impl Game {
     pub fn new() -> Self {
         const runtime_handle = runtime::runtime_start();
         const board_state = Board::from_puzzle(0);
+        const now_ms: i64 = runtime::runtime_now_millis();
         Game {
             runtime: runtime_handle;
             board: board_state;
@@ -29,11 +34,17 @@ impl Game {
             message: String::from("Use arrows/WASD, 1-9, 0 clear, c check, n next, r reset, v renderer, q quit");
             running: true;
             needs_redraw: true;
+            debug_enabled: true;
+            fps_window_start_ms: now_ms;
+            fps_frames: 0;
+            fps_display: 0;
         }
     }
 
     pub fn run(self) {
         while self.running {
+            self = Game::tick_fps(self);
+
             if self.needs_redraw {
                 self.board = runtime::runtime_render(
                     self.board,
@@ -41,6 +52,8 @@ impl Game {
                     self.cursor_col,
                     format!("{}", self.message),
                     self.render_mode,
+                    self.debug_enabled,
+                    self.fps_display,
                 );
                 self.needs_redraw = false;
             }
@@ -72,6 +85,7 @@ impl Game {
             KeyEvent::Next => Game::load_next_puzzle(self);
             KeyEvent::Reset => Game::reset_puzzle(self);
             KeyEvent::ToggleRenderer => Game::toggle_renderer(self);
+            KeyEvent::ToggleDebug => Game::toggle_debug(self);
             KeyEvent::Hint => Game::set_message(self, String::from("Hint engine pending in Neon Boardwalk"));
             KeyEvent::Save => Game::set_message(self, String::from("Save pending in Neon Boardwalk"));
             KeyEvent::Load => Game::set_message(self, String::from("Load pending in Neon Boardwalk"));
@@ -91,6 +105,25 @@ impl Game {
 
     fn set_message(self, message: String) -> Self {
         self.message = message;
+        self
+    }
+
+    fn tick_fps(self) -> Self {
+        const now: i64 = runtime::runtime_now_millis();
+        self.fps_frames += 1;
+        const elapsed: i64 = now - self.fps_window_start_ms;
+        if elapsed >= 1000 {
+            if elapsed > 0 {
+                self.fps_display = (self.fps_frames * 1000) / elapsed;
+            } else {
+                self.fps_display = 0;
+            }
+            self.fps_frames = 0;
+            self.fps_window_start_ms = now;
+            if self.debug_enabled {
+                self.needs_redraw = true;
+            }
+        }
         self
     }
 
@@ -166,6 +199,15 @@ impl Game {
             "Renderer switched to {} mode",
             runtime::render_mode_name(self.render_mode)
         );
+        self
+    }
+
+    fn toggle_debug(self) -> Self {
+        self.debug_enabled = not self.debug_enabled;
+        self.message = match self.debug_enabled {
+            true => String::from("Debug overlay enabled");
+            false => String::from("Debug overlay disabled");
+        };
         self
     }
 }

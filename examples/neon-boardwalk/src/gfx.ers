@@ -48,6 +48,16 @@ impl Canvas {
         self
     }
 
+    pub fn text_top_right(self: Self, y: i64, text: String, fg: i64, bg: i64, bold: bool) -> Self {
+        let width = Canvas::text_width(text);
+        let x = self.width - width;
+        let clamped_x = x;
+        if clamped_x < 0 {
+            clamped_x = 0;
+        }
+        Canvas::text(self, clamped_x, y, text, fg, bg, bold)
+    }
+
     pub fn hline(self: Self, x: i64, y: i64, len: i64, ch: char, fg: i64, bg: i64, bold: bool) -> Self {
         for offset in 0..len {
             self = Canvas::put(self, x + offset, y, ch, fg, bg, bold);
@@ -106,4 +116,14 @@ fn style_escape(fg: i64, bg: i64, bold: bool) -> String {
         return format!("\x1b[1;38;5;{};48;5;{}m", fg, bg);
     }
     format!("\x1b[22;38;5;{};48;5;{}m", fg, bg)
+}
+
+impl Canvas {
+    fn text_width(text: String) -> i64 {
+        let width = 0;
+        for _ in text.chars() {
+            width += 1;
+        }
+        width
+    }
 }

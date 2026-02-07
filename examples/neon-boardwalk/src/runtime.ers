@@ -198,12 +198,32 @@ pub fn runtime_poll_key(handle: i64) -> Option<KeyEvent> {
     host::runtime_poll_key(handle)
 }
 
+pub fn runtime_now_millis() -> i64 {
+    host::runtime_now_millis()
+}
+
 pub fn runtime_shutdown(handle: i64) {
     host::runtime_shutdown(handle);
 }
 
-pub fn runtime_render(board: Board, cursor_row: i64, cursor_col: i64, message: String, mode: RenderMode) -> Board {
-    const (next_board, frame) = render_frame(board, cursor_row, cursor_col, message, mode);
+pub fn runtime_render(
+    board: Board,
+    cursor_row: i64,
+    cursor_col: i64,
+    message: String,
+    mode: RenderMode,
+    debug_enabled: bool,
+    fps: i64,
+) -> Board {
+    const (next_board, frame) = render_frame(
+        board,
+        cursor_row,
+        cursor_col,
+        message,
+        mode,
+        debug_enabled,
+        fps,
+    );
     host::runtime_draw(frame);
     next_board
 }
@@ -291,7 +311,15 @@ fn digit_to_char(value: i64) -> char {
     }
 }
 
-fn render_frame(board: Board, cursor_row: i64, cursor_col: i64, message: String, mode: RenderMode) -> (Board, String) {
+fn render_frame(
+    board: Board,
+    cursor_row: i64,
+    cursor_col: i64,
+    message: String,
+    mode: RenderMode,
+    debug_enabled: bool,
+    fps: i64,
+) -> (Board, String) {
     const width = 96;
     const height = 40;
     const panel_bg = theme_panel_bg(mode);
@@ -306,13 +334,29 @@ fn render_frame(board: Board, cursor_row: i64, cursor_col: i64, message: String,
     const board_height = 19;
     const canvas4 = Canvas::fill_rect(canvas3, board_left, board_top, board_width, board_height, ' ', theme_fg(mode), panel_bg, false);
     const (canvas5, next_board) = draw_board_rows(canvas4, board, cursor_row, cursor_col, board_left, board_top, mode, 0);
-    const canvas6 = Canvas::fill_rect(canvas5, 1, 30, 88, 7, ' ', theme_fg(mode), theme_bg(mode), false);
-    const canvas7 = Canvas::text(canvas6, 2, 32, "Controls: arrows/WASD move | 1-9 set | 0/space/backspace clear", theme_hud_fg(mode), theme_bg(mode), false);
-    const canvas8 = Canvas::text(canvas7, 2, 33, "          c check | n next | r reset | v renderer | q quit", theme_hud_fg(mode), theme_bg(mode), false);
-    const canvas9 = Canvas::text(canvas8, 2, 35, "Status:", theme_status_fg(mode), theme_bg(mode), true);
-    const canvas10 = Canvas::text(canvas9, 10, 35, message, theme_hud_fg(mode), theme_bg(mode), false);
-    const frame = Canvas::to_ansi(canvas10);
+    const canvas6 = draw_debug_overlay(canvas5, mode, debug_enabled, fps);
+    const canvas7 = Canvas::fill_rect(canvas6, 1, 30, 88, 7, ' ', theme_fg(mode), theme_bg(mode), false);
+    const canvas8 = Canvas::text(canvas7, 2, 32, "Controls: arrows/WASD move | 1-9 set | 0/space/backspace clear", theme_hud_fg(mode), theme_bg(mode), false);
+    const canvas9 = Canvas::text(canvas8, 2, 33, "          c check | n next | r reset | v renderer | g debug | q quit", theme_hud_fg(mode), theme_bg(mode), false);
+    const canvas10 = Canvas::text(canvas9, 2, 35, "Status:", theme_status_fg(mode), theme_bg(mode), true);
+    const canvas11 = Canvas::text(canvas10, 10, 35, message, theme_hud_fg(mode), theme_bg(mode), false);
+    const frame = Canvas::to_ansi(canvas11);
     (next_board, frame)
+}
+
+fn draw_debug_overlay(canvas: Canvas, mode: RenderMode, enabled: bool, fps: i64) -> Canvas {
+    if not enabled {
+        return canvas;
+    }
+    const text = format!("FPS {:>3}", fps);
+    Canvas::text_top_right(
+        canvas,
+        0,
+        text,
+        theme_debug_fg(mode),
+        theme_debug_bg(mode),
+        true,
+    )
 }
 
 fn draw_board_rows(
@@ -665,5 +709,19 @@ fn theme_status_fg(mode: RenderMode) -> i64 {
     match mode {
         RenderMode::Neon => 220;
         RenderMode::Vga => 226;
+    }
+}
+
+fn theme_debug_fg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 46;
+        RenderMode::Vga => 226;
+    }
+}
+
+fn theme_debug_bg(mode: RenderMode) -> i64 {
+    match mode {
+        RenderMode::Neon => 18;
+        RenderMode::Vga => 18;
     }
 }

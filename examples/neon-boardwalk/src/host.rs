@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
 struct TerminalState {
@@ -31,6 +31,7 @@ pub enum KeyEvent {
     Next,
     Reset,
     ToggleRenderer,
+    ToggleDebug,
     Hint,
     Save,
     Load,
@@ -124,6 +125,13 @@ pub fn runtime_draw(frame: String) {
     let _ = out.flush();
 }
 
+pub fn runtime_now_millis() -> i64 {
+    let Ok(elapsed) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return 0;
+    };
+    elapsed.as_millis() as i64
+}
+
 fn decode_key(first: u8, lock: &mut dyn Read) -> Option<KeyEvent> {
     if first == 0x03 {
         return Some(KeyEvent::Quit);
@@ -167,6 +175,7 @@ fn decode_key(first: u8, lock: &mut dyn Read) -> Option<KeyEvent> {
         'n' => Some(KeyEvent::Next),
         'r' => Some(KeyEvent::Reset),
         'v' => Some(KeyEvent::ToggleRenderer),
+        'g' => Some(KeyEvent::ToggleDebug),
         'q' => Some(KeyEvent::Quit),
         'H' => Some(KeyEvent::Hint),
         'p' => Some(KeyEvent::Save),
