@@ -81,6 +81,7 @@ pub enum RustStmt {
     DestructureConst {
         pattern: RustDestructurePattern,
         value: RustExpr,
+        is_const: bool,
     },
     Assign {
         target: RustAssignTarget,
@@ -134,6 +135,7 @@ pub enum RustAssignOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustConst {
     pub is_public: bool,
+    pub is_const: bool,
     pub name: String,
     pub ty: String,
     pub value: RustExpr,

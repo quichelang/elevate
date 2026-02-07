@@ -451,14 +451,24 @@ fn emit_type_param(param: &crate::ir::lowered::RustTypeParam) -> String {
     }
 }
 
-fn emit_destructure_pattern(pattern: &RustDestructurePattern) -> String {
+fn emit_destructure_pattern(
+    pattern: &RustDestructurePattern,
+    mutated: &std::collections::HashSet<String>,
+    allow_mut: bool,
+) -> String {
     match pattern {
-        RustDestructurePattern::Name(name) => name.clone(),
+        RustDestructurePattern::Name(name) => {
+            if allow_mut && mutated.contains(name) {
+                format!("mut {name}")
+            } else {
+                name.clone()
+            }
+        }
         RustDestructurePattern::Ignore => "_".to_string(),
         RustDestructurePattern::Tuple(items) => {
             let inner = items
                 .iter()
-                .map(emit_destructure_pattern)
+                .map(|item| emit_destructure_pattern(item, mutated, allow_mut))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("({inner})")
@@ -469,13 +479,25 @@ fn emit_destructure_pattern(pattern: &RustDestructurePattern) -> String {
             suffix,
         } => {
             let mut items = Vec::new();
-            items.extend(prefix.iter().map(emit_destructure_pattern));
+            items.extend(
+                prefix
+                    .iter()
+                    .map(|item| emit_destructure_pattern(item, mutated, allow_mut)),
+            );
             if let Some(name) = rest {
-                items.push(format!("{name} @ .."));
+                if allow_mut && mutated.contains(name) {
+                    items.push(format!("mut {name} @ .."));
+                } else {
+                    items.push(format!("{name} @ .."));
+                }
             } else if !suffix.is_empty() {
                 items.push("..".to_string());
             }
-            items.extend(suffix.iter().map(emit_destructure_pattern));
+            items.extend(
+                suffix
+                    .iter()
+                    .map(|item| emit_destructure_pattern(item, mutated, allow_mut)),
+            );
             format!("[{}]", items.join(", "))
         }
     }
@@ -491,7 +513,11 @@ fn emit_stmt_with_indent(
     match stmt {
         RustStmt::Const(def) => {
             let value = emit_expr(&def.value);
-            let mut_kw = if mutated.contains(&def.name) { "mut " } else { "" };
+            let mut_kw = if !def.is_const && mutated.contains(&def.name) {
+                "mut "
+            } else {
+                ""
+            };
             if should_annotate_local_binding(&def.ty, &def.value) {
                 out.push_str(&format!(
                     "{pad}let {mut_kw}{}: {} = {};\n",
@@ -505,14 +531,18 @@ fn emit_stmt_with_indent(
             out.push_str(&format!("{pad}return {};\n", emit_expr(expr)))
         }
         RustStmt::Return(None) => out.push_str(&format!("{pad}return;\n")),
-        RustStmt::DestructureConst { pattern, value } => {
-            let binding = emit_destructure_pattern(pattern);
+        RustStmt::DestructureConst {
+            pattern,
+            value,
+            is_const,
+        } => {
+            let binding = emit_destructure_pattern(pattern, mutated, !*is_const);
             let value = emit_expr(value);
             if matches!(pattern, RustDestructurePattern::Slice { .. }) {
                 out.push_str(&format!(
                     "{pad}let {binding} = {value}.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n"
                 ));
-                emit_slice_element_rebinds(pattern, out, indent);
+                emit_slice_element_rebinds(pattern, out, indent, *is_const);
             } else {
                 out.push_str(&format!("{pad}let {binding} = {value};\n"));
             }
@@ -564,9 +594,9 @@ fn emit_stmt_with_indent(
                 out.push_str(&format!("{pad}for __item in {} {{\n", emit_expr(iter)));
                 out.push_str(&format!(
                     "{pad}    let {} = __item.as_slice() else {{ panic!(\"slice destructure mismatch\") }};\n",
-                    emit_destructure_pattern(binding)
+                    emit_destructure_pattern(binding, mutated, true)
                 ));
-                emit_slice_element_rebinds(binding, out, indent + 1);
+                emit_slice_element_rebinds(binding, out, indent + 1, false);
                 for nested in body {
                     emit_stmt_with_indent(nested, out, indent + 1, mutated);
                 }
@@ -574,7 +604,7 @@ fn emit_stmt_with_indent(
             } else {
                 out.push_str(&format!(
                     "{pad}for {} in {} {{\n",
-                    emit_destructure_pattern(binding),
+                    emit_destructure_pattern(binding, mutated, true),
                     emit_expr(iter)
                 ));
                 for nested in body {
@@ -856,16 +886,29 @@ fn emit_char_literal(value: char) -> String {
     }
 }
 
-fn emit_slice_element_rebinds(pattern: &RustDestructurePattern, out: &mut String, indent: usize) {
+fn emit_slice_element_rebinds(
+    pattern: &RustDestructurePattern,
+    out: &mut String,
+    indent: usize,
+    is_const: bool,
+) {
     let mut names = Vec::new();
     let rest_name = slice_rest_binding_name(pattern);
     collect_slice_element_binding_names(pattern, rest_name, &mut names);
     let pad = "    ".repeat(indent);
     for name in names {
-        out.push_str(&format!("{pad}let {name} = (*{name}).clone();\n"));
+        if is_const {
+            out.push_str(&format!("{pad}let {name} = (*{name}).clone();\n"));
+        } else {
+            out.push_str(&format!("{pad}let mut {name} = (*{name}).clone();\n"));
+        }
     }
     if let Some(rest) = rest_name {
-        out.push_str(&format!("{pad}let {rest} = {rest}.to_vec();\n"));
+        if is_const {
+            out.push_str(&format!("{pad}let {rest} = {rest}.to_vec();\n"));
+        } else {
+            out.push_str(&format!("{pad}let mut {rest} = {rest}.to_vec();\n"));
+        }
     }
 }
 

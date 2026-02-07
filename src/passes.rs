@@ -136,6 +136,7 @@ pub fn lower_to_rust_with_hints(
             TypedItem::Function(def) => RustItem::Function(lower_function(def, &mut state)),
             TypedItem::Const(def) => RustItem::Const(RustConst {
                 is_public: def.is_public,
+                is_const: def.is_const,
                 name: def.name.clone(),
                 ty: def.ty.clone(),
                 value: lower_expr_with_context(
@@ -997,6 +998,7 @@ fn lower_item(
             }
             Some(TypedItem::Const(TypedConst {
                 is_public: def.visibility == Visibility::Public,
+                is_const: def.is_const,
                 name: def.name.clone(),
                 ty: type_to_string(&final_ty),
                 value: typed_value,
@@ -1153,6 +1155,7 @@ fn lower_stmt_with_types(
         Stmt::Const(def) => {
             let (typed_value, inferred) =
                 infer_expr(&def.value, context, locals, return_ty, diagnostics);
+            diagnose_const_mutations_in_expr(&typed_value, immutable_locals, diagnostics);
             let declared = def.ty.as_ref().map(type_from_ast);
             let final_ty = if let Some(declared_ty) = declared {
                 if !is_compatible(&inferred, &declared_ty) {
@@ -1170,23 +1173,61 @@ fn lower_stmt_with_types(
             } else {
                 inferred
             };
-            locals.insert(def.name.clone(), final_ty.clone());
-            immutable_locals.insert(def.name.clone());
+            if immutable_locals.contains(&def.name) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Cannot redeclare `{}` because it is an immutable const in scope",
+                        def.name
+                    ),
+                    Span::new(0, 0),
+                ));
+            } else {
+                locals.insert(def.name.clone(), final_ty.clone());
+                if def.is_const {
+                    immutable_locals.insert(def.name.clone());
+                }
+            }
             Some(TypedStmt::Const(TypedConst {
                 is_public: false,
+                is_const: def.is_const,
                 name: def.name.clone(),
                 ty: type_to_string(&final_ty),
                 value: typed_value,
             }))
         }
-        Stmt::DestructureConst { pattern, value } => {
+        Stmt::DestructureConst {
+            pattern,
+            value,
+            is_const,
+        } => {
             let (typed_value, value_ty) =
                 infer_expr(value, context, locals, return_ty, diagnostics);
-            bind_destructure_pattern(pattern, &value_ty, locals, diagnostics);
-            collect_destructure_pattern_names(pattern, immutable_locals);
+            diagnose_const_mutations_in_expr(&typed_value, immutable_locals, diagnostics);
+            let mut binding_names = HashSet::new();
+            collect_destructure_pattern_names(pattern, &mut binding_names);
+            let mut has_const_shadow_conflict = false;
+            for name in &binding_names {
+                if immutable_locals.contains(name) {
+                    has_const_shadow_conflict = true;
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Cannot redeclare `{}` because it is an immutable const in scope",
+                            name
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+            }
+            if !has_const_shadow_conflict {
+                bind_destructure_pattern(pattern, &value_ty, locals, diagnostics);
+            }
+            if *is_const && !has_const_shadow_conflict {
+                collect_destructure_pattern_names(pattern, immutable_locals);
+            }
             Some(TypedStmt::DestructureConst {
                 pattern: lower_destructure_pattern_typed(pattern),
                 value: typed_value,
+                is_const: *is_const,
             })
         }
         Stmt::Assign { target, op, value } => {
@@ -1199,6 +1240,7 @@ fn lower_stmt_with_types(
                 diagnostics,
             )?;
             let (typed_value, value_ty) = infer_expr(value, context, locals, return_ty, diagnostics);
+            diagnose_const_mutations_in_expr(&typed_value, immutable_locals, diagnostics);
             match op {
                 AssignOp::Assign => {
                     if !is_compatible(&value_ty, &target_ty) {
@@ -1245,6 +1287,7 @@ fn lower_stmt_with_types(
             if let Some(expr) = value {
                 let (typed_expr, inferred) =
                     infer_expr(expr, context, locals, return_ty, diagnostics);
+                diagnose_const_mutations_in_expr(&typed_expr, immutable_locals, diagnostics);
                 inferred_returns.push(inferred.clone());
                 if *return_ty != SemType::Unknown && !is_compatible(&inferred, return_ty) {
                     diagnostics.push(Diagnostic::new(
@@ -1273,10 +1316,12 @@ fn lower_stmt_with_types(
         }
         Stmt::Expr(expr) => {
             let (typed_expr, _) = infer_expr(expr, context, locals, return_ty, diagnostics);
+            diagnose_const_mutations_in_expr(&typed_expr, immutable_locals, diagnostics);
             Some(TypedStmt::Expr(typed_expr))
         }
         Stmt::TailExpr(expr) => {
             let (typed_expr, _) = infer_expr(expr, context, locals, return_ty, diagnostics);
+            diagnose_const_mutations_in_expr(&typed_expr, immutable_locals, diagnostics);
             Some(TypedStmt::Expr(typed_expr))
         }
         Stmt::If {
@@ -1286,6 +1331,7 @@ fn lower_stmt_with_types(
         } => {
             let (typed_condition, condition_ty) =
                 infer_expr(condition, context, locals, return_ty, diagnostics);
+            diagnose_const_mutations_in_expr(&typed_condition, immutable_locals, diagnostics);
             if !is_compatible(&condition_ty, &named_type("bool")) {
                 diagnostics.push(Diagnostic::new(
                     format!(
@@ -1326,6 +1372,7 @@ fn lower_stmt_with_types(
         Stmt::While { condition, body } => {
             let (typed_condition, condition_ty) =
                 infer_expr(condition, context, locals, return_ty, diagnostics);
+            diagnose_const_mutations_in_expr(&typed_condition, immutable_locals, diagnostics);
             if !is_compatible(&condition_ty, &named_type("bool")) {
                 diagnostics.push(Diagnostic::new(
                     format!(
@@ -1355,6 +1402,7 @@ fn lower_stmt_with_types(
             body,
         } => {
             let (typed_iter, iter_ty) = infer_expr(iter, context, locals, return_ty, diagnostics);
+            diagnose_const_mutations_in_expr(&typed_iter, immutable_locals, diagnostics);
             let item_ty = infer_for_item_type(&typed_iter, &iter_ty);
             let mut loop_locals = locals.clone();
             let mut loop_immutable_locals = immutable_locals.clone();
@@ -1428,6 +1476,14 @@ fn infer_assign_target(
         }
         AssignTarget::Field { base, field } => {
             let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
+            if let Some(root) = typed_root_path_name(&typed_base)
+                && immutable_locals.contains(root)
+            {
+                diagnostics.push(Diagnostic::new(
+                    format!("Cannot assign through immutable const `{root}`"),
+                    Span::new(0, 0),
+                ));
+            }
             let resolved_ty = resolve_field_type(&base_ty, field, context, diagnostics);
             Some((
                 TypedAssignTarget::Field {
@@ -1439,6 +1495,14 @@ fn infer_assign_target(
         }
         AssignTarget::Index { base, index } => {
             let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
+            if let Some(root) = typed_root_path_name(&typed_base)
+                && immutable_locals.contains(root)
+            {
+                diagnostics.push(Diagnostic::new(
+                    format!("Cannot assign through immutable const `{root}`"),
+                    Span::new(0, 0),
+                ));
+            }
             let (typed_index, index_ty) =
                 infer_expr(index, context, locals, return_ty, diagnostics);
             let resolved_ty = match &base_ty {
@@ -2133,6 +2197,196 @@ fn infer_expr(
                 resolved,
             )
         }
+    }
+}
+
+fn diagnose_const_mutations_in_expr(
+    expr: &TypedExpr,
+    immutable_locals: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match &expr.kind {
+        TypedExprKind::Call { callee, args } => {
+            if let TypedExprKind::Field { base, field } = &callee.kind
+                && typed_method_mutates_receiver(field)
+                && let Some(root) = typed_root_path_name(base)
+                && immutable_locals.contains(root)
+            {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Cannot mutate immutable const `{root}` via method `{field}`"
+                    ),
+                    Span::new(0, 0),
+                ));
+            }
+            diagnose_const_mutations_in_expr(callee, immutable_locals, diagnostics);
+            for arg in args {
+                diagnose_const_mutations_in_expr(arg, immutable_locals, diagnostics);
+            }
+        }
+        TypedExprKind::MacroCall { args, .. } => {
+            for arg in args {
+                diagnose_const_mutations_in_expr(arg, immutable_locals, diagnostics);
+            }
+        }
+        TypedExprKind::Field { base, .. } => {
+            diagnose_const_mutations_in_expr(base, immutable_locals, diagnostics);
+        }
+        TypedExprKind::Index { base, index } => {
+            diagnose_const_mutations_in_expr(base, immutable_locals, diagnostics);
+            diagnose_const_mutations_in_expr(index, immutable_locals, diagnostics);
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            diagnose_const_mutations_in_expr(scrutinee, immutable_locals, diagnostics);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    diagnose_const_mutations_in_expr(guard, immutable_locals, diagnostics);
+                }
+                diagnose_const_mutations_in_expr(&arm.value, immutable_locals, diagnostics);
+            }
+        }
+        TypedExprKind::Unary { expr, .. } => {
+            diagnose_const_mutations_in_expr(expr, immutable_locals, diagnostics);
+        }
+        TypedExprKind::Binary { left, right, .. } => {
+            diagnose_const_mutations_in_expr(left, immutable_locals, diagnostics);
+            diagnose_const_mutations_in_expr(right, immutable_locals, diagnostics);
+        }
+        TypedExprKind::Array(items) | TypedExprKind::Tuple(items) => {
+            for item in items {
+                diagnose_const_mutations_in_expr(item, immutable_locals, diagnostics);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                diagnose_const_mutations_in_expr(&field.value, immutable_locals, diagnostics);
+            }
+        }
+        TypedExprKind::Closure { body, .. } => {
+            for stmt in body {
+                diagnose_const_mutations_in_stmt(stmt, immutable_locals, diagnostics);
+            }
+        }
+        TypedExprKind::Range { start, end, .. } => {
+            if let Some(start) = start {
+                diagnose_const_mutations_in_expr(start, immutable_locals, diagnostics);
+            }
+            if let Some(end) = end {
+                diagnose_const_mutations_in_expr(end, immutable_locals, diagnostics);
+            }
+        }
+        TypedExprKind::Try(inner) => {
+            diagnose_const_mutations_in_expr(inner, immutable_locals, diagnostics);
+        }
+        TypedExprKind::Int(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::String(_)
+        | TypedExprKind::Path(_) => {}
+    }
+}
+
+fn diagnose_const_mutations_in_stmt(
+    stmt: &TypedStmt,
+    immutable_locals: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match stmt {
+        TypedStmt::Const(def) => {
+            diagnose_const_mutations_in_expr(&def.value, immutable_locals, diagnostics)
+        }
+        TypedStmt::DestructureConst { value, .. } => {
+            diagnose_const_mutations_in_expr(value, immutable_locals, diagnostics)
+        }
+        TypedStmt::Assign { target, value, .. } => {
+            diagnose_const_mutations_in_assign_target(target, immutable_locals, diagnostics);
+            diagnose_const_mutations_in_expr(value, immutable_locals, diagnostics);
+        }
+        TypedStmt::Return(Some(expr)) | TypedStmt::Expr(expr) => {
+            diagnose_const_mutations_in_expr(expr, immutable_locals, diagnostics)
+        }
+        TypedStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            diagnose_const_mutations_in_expr(condition, immutable_locals, diagnostics);
+            for stmt in then_body {
+                diagnose_const_mutations_in_stmt(stmt, immutable_locals, diagnostics);
+            }
+            if let Some(else_body) = else_body {
+                for stmt in else_body {
+                    diagnose_const_mutations_in_stmt(stmt, immutable_locals, diagnostics);
+                }
+            }
+        }
+        TypedStmt::While { condition, body } => {
+            diagnose_const_mutations_in_expr(condition, immutable_locals, diagnostics);
+            for stmt in body {
+                diagnose_const_mutations_in_stmt(stmt, immutable_locals, diagnostics);
+            }
+        }
+        TypedStmt::For { iter, body, .. } => {
+            diagnose_const_mutations_in_expr(iter, immutable_locals, diagnostics);
+            for stmt in body {
+                diagnose_const_mutations_in_stmt(stmt, immutable_locals, diagnostics);
+            }
+        }
+        TypedStmt::Loop { body } => {
+            for stmt in body {
+                diagnose_const_mutations_in_stmt(stmt, immutable_locals, diagnostics);
+            }
+        }
+        TypedStmt::Return(None)
+        | TypedStmt::Break
+        | TypedStmt::Continue
+        | TypedStmt::RustBlock(_) => {}
+    }
+}
+
+fn diagnose_const_mutations_in_assign_target(
+    target: &TypedAssignTarget,
+    immutable_locals: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match target {
+        TypedAssignTarget::Path(name) => {
+            if immutable_locals.contains(name) {
+                diagnostics.push(Diagnostic::new(
+                    format!("Cannot assign to immutable const `{name}`"),
+                    Span::new(0, 0),
+                ));
+            }
+        }
+        TypedAssignTarget::Field { base, .. } | TypedAssignTarget::Index { base, .. } => {
+            if let Some(root) = typed_root_path_name(base)
+                && immutable_locals.contains(root)
+            {
+                diagnostics.push(Diagnostic::new(
+                    format!("Cannot assign through immutable const `{root}`"),
+                    Span::new(0, 0),
+                ));
+            }
+        }
+        TypedAssignTarget::Tuple(items) => {
+            for item in items {
+                diagnose_const_mutations_in_assign_target(item, immutable_locals, diagnostics);
+            }
+        }
+    }
+}
+
+fn typed_method_mutates_receiver(field: &str) -> bool {
+    matches!(field, "push" | "push_str")
+}
+
+fn typed_root_path_name(expr: &TypedExpr) -> Option<&str> {
+    match &expr.kind {
+        TypedExprKind::Path(path) if path.len() == 1 => Some(path[0].as_str()),
+        TypedExprKind::Field { base, .. } | TypedExprKind::Index { base, .. } => {
+            typed_root_path_name(base)
+        }
+        _ => None,
     }
 }
 
@@ -3550,13 +3804,19 @@ fn lower_stmt_with_context(
     match stmt {
         TypedStmt::Const(def) => RustStmt::Const(RustConst {
             is_public: false,
+            is_const: def.is_const,
             name: def.name.clone(),
             ty: inferred_local_const_rust_ty(&def.ty, &def.value),
             value: lower_expr_with_context(&def.value, context, ExprPosition::Value, state),
         }),
-        TypedStmt::DestructureConst { pattern, value } => RustStmt::DestructureConst {
+        TypedStmt::DestructureConst {
+            pattern,
+            value,
+            is_const,
+        } => RustStmt::DestructureConst {
             pattern: lower_destructure_pattern(pattern),
             value: lower_expr_with_context(value, context, ExprPosition::Value, state),
+            is_const: *is_const,
         },
         TypedStmt::Assign { target, op, value } => RustStmt::Assign {
             target: lower_assign_target(target, context, state),
@@ -4529,6 +4789,7 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
                         RustDestructurePattern::Name("__right".to_string()),
                     ]),
                     value: unwrap_call,
+                    is_const: true,
                 },
                 RustStmt::Return(Some(RustExpr::Tuple(vec![
                     RustExpr::Call {

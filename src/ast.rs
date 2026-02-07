@@ -91,6 +91,7 @@ pub enum Stmt {
     DestructureConst {
         pattern: DestructurePattern,
         value: Expr,
+        is_const: bool,
     },
     Assign {
         target: AssignTarget,
@@ -128,6 +129,7 @@ pub struct ConstDef {
     pub name: String,
     pub ty: Option<Type>,
     pub value: Expr,
+    pub is_const: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

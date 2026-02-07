@@ -80,6 +80,7 @@ pub enum TypedStmt {
     DestructureConst {
         pattern: TypedDestructurePattern,
         value: TypedExpr,
+        is_const: bool,
     },
     Assign {
         target: TypedAssignTarget,
@@ -133,6 +134,7 @@ pub enum TypedAssignOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedConst {
     pub is_public: bool,
+    pub is_const: bool,
     pub name: String,
     pub ty: String,
     pub value: TypedExpr,

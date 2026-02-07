@@ -15,6 +15,7 @@ pub enum TokenKind {
     Enum,
     Impl,
     Fn,
+    Let,
     Const,
     Static,
     Return,
@@ -548,6 +549,7 @@ impl<'a> Lexer<'a> {
             "enum" => TokenKind::Enum,
             "impl" => TokenKind::Impl,
             "fn" => TokenKind::Fn,
+            "let" => TokenKind::Let,
             "const" => TokenKind::Const,
             "static" => TokenKind::Static,
             "return" => TokenKind::Return,
@@ -869,6 +871,13 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Pipe)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Arrow)));
+    }
+
+    #[test]
+    fn lex_let_tokens() {
+        let source = "let value = 1;";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Let)));
     }
 
     #[test]

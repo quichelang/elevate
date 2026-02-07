@@ -974,10 +974,10 @@ mod tests {
     }
 
     #[test]
-    fn compile_supports_local_vec_push_mut_inference() {
+    fn compile_supports_local_let_vec_push_mut_inference() {
         let source = r#"
             fn demo() -> usize {
-                const values: Vec<i64> = [];
+                let values: Vec<i64> = [];
                 values.push(1);
                 return Vec::len(values);
             }
@@ -990,6 +990,56 @@ mod tests {
         assert!(output.rust_code.contains("values.push(1);"));
         assert!(output.rust_code.contains("Vec::len(&values)"));
         assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_rejects_const_mutating_method_calls() {
+        let source = r#"
+            fn demo() {
+                const values: Vec<i64> = [];
+                values.push(1);
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(error
+            .to_string()
+            .contains("Cannot mutate immutable const `values` via method `push`"));
+    }
+
+    #[test]
+    fn compile_rejects_shadowing_const_with_let() {
+        let source = r#"
+            fn demo() -> i64 {
+                const value = 1;
+                let value = 2;
+                value
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(error
+            .to_string()
+            .contains("Cannot redeclare `value` because it is an immutable const in scope"));
+    }
+
+    #[test]
+    fn compile_rejects_shadowing_const_in_nested_block() {
+        let source = r#"
+            fn demo() -> i64 {
+                const value = 1;
+                if true {
+                    let value = 2;
+                    return value;
+                }
+                value
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected compile error");
+        assert!(error
+            .to_string()
+            .contains("Cannot redeclare `value` because it is an immutable const in scope"));
     }
 
     #[test]

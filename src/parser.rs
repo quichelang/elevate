@@ -257,6 +257,7 @@ impl Parser {
             name,
             ty,
             value,
+            is_const: true,
         })
     }
 
@@ -288,38 +289,10 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
         if self.match_kind(TokenKind::Const) {
-            if self.match_kind(TokenKind::LParen) || self.match_kind(TokenKind::LBracket) {
-                let pattern = if matches!(self.tokens[self.cursor - 1].kind, TokenKind::LParen) {
-                    self.parse_destructure_pattern_tuple()?
-                } else {
-                    self.parse_destructure_pattern_slice()?
-                };
-                self.expect(
-                    TokenKind::Equal,
-                    "Expected '=' after destructuring const pattern",
-                )?;
-                let value = self.parse_expr()?;
-                self.expect(
-                    TokenKind::Semicolon,
-                    "Expected ';' after destructuring const",
-                )?;
-                return Some(Stmt::DestructureConst { pattern, value });
-            }
-            let name = self.expect_ident("Expected const name")?;
-            let ty = if self.match_kind(TokenKind::Colon) {
-                Some(self.parse_type()?)
-            } else {
-                None
-            };
-            self.expect(TokenKind::Equal, "Expected '=' after const declaration")?;
-            let value = self.parse_expr()?;
-            self.expect(TokenKind::Semicolon, "Expected ';' after const statement")?;
-            return Some(Stmt::Const(ConstDef {
-                visibility: Visibility::Private,
-                name,
-                ty,
-                value,
-            }));
+            return self.parse_local_binding_stmt(true);
+        }
+        if self.match_kind(TokenKind::Let) {
+            return self.parse_local_binding_stmt(false);
         }
         if self.match_kind(TokenKind::Return) {
             if self.match_kind(TokenKind::Semicolon) {
@@ -396,6 +369,53 @@ impl Parser {
         }
         self.error_current("Expected ';' after expression statement");
         None
+    }
+
+    fn parse_local_binding_stmt(&mut self, is_const: bool) -> Option<Stmt> {
+        if self.match_kind(TokenKind::LParen) || self.match_kind(TokenKind::LBracket) {
+            let pattern = if matches!(self.tokens[self.cursor - 1].kind, TokenKind::LParen) {
+                self.parse_destructure_pattern_tuple()?
+            } else {
+                self.parse_destructure_pattern_slice()?
+            };
+            self.expect(
+                TokenKind::Equal,
+                "Expected '=' after destructuring binding pattern",
+            )?;
+            let value = self.parse_expr()?;
+            self.expect(
+                TokenKind::Semicolon,
+                "Expected ';' after destructuring binding",
+            )?;
+            return Some(Stmt::DestructureConst {
+                pattern,
+                value,
+                is_const,
+            });
+        }
+        let keyword = if is_const { "const" } else { "let" };
+        let name = self.expect_ident(&format!("Expected {keyword} name"))?;
+        let ty = if self.match_kind(TokenKind::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.expect(
+            TokenKind::Equal,
+            &format!("Expected '=' after {keyword} declaration"),
+        )?;
+        let value = self.parse_expr()?;
+        self.expect(
+            TokenKind::Semicolon,
+            &format!("Expected ';' after {keyword} statement"),
+        )?;
+        Some(Stmt::Const(ConstDef {
+            visibility: Visibility::Private,
+            name,
+            ty,
+            value,
+            is_const,
+        }))
     }
 
     fn parse_expr(&mut self) -> Option<Expr> {
@@ -1255,6 +1275,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Enum, Enum)
             | (Impl, Impl)
             | (Fn, Fn)
+            | (Let, Let)
             | (Const, Const)
             | (Static, Static)
             | (Return, Return)
@@ -1412,6 +1433,22 @@ mod tests {
                     total += i;
                 }
                 return total;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_let_bindings() {
+        let source = r#"
+            fn sum_to(n: i64) -> i64 {
+                let total = 0;
+                for i in 0..=n {
+                    total += i;
+                }
+                total
             }
         "#;
         let tokens = lex(source).expect("expected lex success");
