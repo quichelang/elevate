@@ -1,6 +1,6 @@
 use std::io::{self, Read, Write};
 use std::process::Command;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::thread::JoinHandle;
@@ -85,13 +85,28 @@ pub fn runtime_start() -> i64 {
 pub fn runtime_poll_key(handle: i64) -> Option<KeyEvent> {
     with_terminal_mut(
         handle,
-        |terminal| match terminal.rx.recv_timeout(Duration::from_millis(33)) {
-            Ok(key) => Some(key),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => Some(KeyEvent::Quit),
-        },
+        |terminal| poll_key_coalesced(terminal),
     )
     .flatten()
+}
+
+fn poll_key_coalesced(terminal: &mut TerminalState) -> Option<KeyEvent> {
+    // Wait briefly for at least one event, then drain pending events and keep
+    // the most recent key so input queue growth does not translate into lag.
+    let first = match terminal.rx.recv_timeout(Duration::from_millis(16)) {
+        Ok(key) => key,
+        Err(RecvTimeoutError::Timeout) => return None,
+        Err(RecvTimeoutError::Disconnected) => return Some(KeyEvent::Quit),
+    };
+
+    let mut latest = first;
+    loop {
+        match terminal.rx.try_recv() {
+            Ok(key) => latest = key,
+            Err(TryRecvError::Empty) => return Some(latest),
+            Err(TryRecvError::Disconnected) => return Some(KeyEvent::Quit),
+        }
+    }
 }
 
 pub fn runtime_shutdown(handle: i64) {
