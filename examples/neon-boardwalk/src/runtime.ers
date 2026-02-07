@@ -304,7 +304,7 @@ fn render_frame(board: Board, cursor_row: i64, cursor_col: i64, message: String,
     const board_top = 7;
     const board_width = 37;
     const board_height = 19;
-    const canvas4 = Canvas::fill_rect(canvas3, board_left, board_top, board_width + 2, board_height + 2, ' ', theme_fg(mode), panel_bg, false);
+    const canvas4 = Canvas::fill_rect(canvas3, board_left, board_top, board_width, board_height, ' ', theme_fg(mode), panel_bg, false);
     const (canvas5, next_board) = draw_board_rows(canvas4, board, cursor_row, cursor_col, board_left, board_top, mode, 0);
     const canvas6 = Canvas::fill_rect(canvas5, 1, 30, 88, 7, ' ', theme_fg(mode), theme_bg(mode), false);
     const canvas7 = Canvas::text(canvas6, 2, 32, "Controls: arrows/WASD move | 1-9 set | 0/space/backspace clear", theme_hud_fg(mode), theme_bg(mode), false);

@@ -12,6 +12,7 @@ pub struct Game {
     render_mode: RenderMode;
     message: String;
     running: bool;
+    needs_redraw: bool;
 }
 
 impl Game {
@@ -27,18 +28,22 @@ impl Game {
             render_mode: runtime::default_render_mode();
             message: String::from("Use arrows/WASD, 1-9, 0 clear, c check, n next, r reset, v renderer, q quit");
             running: true;
+            needs_redraw: true;
         }
     }
 
     pub fn run(self) {
         while self.running {
-            self.board = runtime::runtime_render(
-                self.board,
-                self.cursor_row,
-                self.cursor_col,
-                format!("{}", self.message),
-                self.render_mode,
-            );
+            if self.needs_redraw {
+                self.board = runtime::runtime_render(
+                    self.board,
+                    self.cursor_row,
+                    self.cursor_col,
+                    format!("{}", self.message),
+                    self.render_mode,
+                );
+                self.needs_redraw = false;
+            }
 
             const key = runtime::runtime_poll_key(self.runtime);
             self = match key {
@@ -51,7 +56,11 @@ impl Game {
     }
 
     fn on_key(self, key: KeyEvent) -> Self {
-        return match key {
+        if key == KeyEvent::Quit {
+            return Game::stop(self);
+        }
+
+        const next = match key {
             KeyEvent::Quit => Game::stop(self);
             KeyEvent::Up => Game::move_cursor(self, -1, 0);
             KeyEvent::Down => Game::move_cursor(self, 1, 0);
@@ -67,10 +76,16 @@ impl Game {
             KeyEvent::Save => Game::set_message(self, String::from("Save pending in Neon Boardwalk"));
             KeyEvent::Load => Game::set_message(self, String::from("Load pending in Neon Boardwalk"));
         };
+        Game::mark_dirty(next)
     }
 
     fn stop(self) -> Self {
         self.running = false;
+        self
+    }
+
+    fn mark_dirty(self) -> Self {
+        self.needs_redraw = true;
         self
     }
 

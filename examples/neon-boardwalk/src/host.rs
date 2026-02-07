@@ -105,7 +105,7 @@ pub fn runtime_shutdown(handle: i64) {
 
 pub fn runtime_draw(frame: String) {
     let mut out = io::stdout();
-    let _ = write!(out, "{frame}");
+    let _ = out.write_all(frame.as_bytes());
     let _ = out.flush();
 }
 

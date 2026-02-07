@@ -72,6 +72,7 @@ impl Canvas {
     pub fn to_ansi(self: Self) -> String {
         const out: String = String::from("\x1b[H");
         for row in 0..self.height {
+            out.push_str(format!("\x1b[{};1H", row + 1));
             for col in 0..self.width {
                 const idx = canvas_index(self.width, col, row);
                 out.push_str(style_escape(
@@ -81,7 +82,7 @@ impl Canvas {
                 ));
                 out.push_str(format!("{}", self.cells[idx].ch));
             }
-            out.push_str("\x1b[0m\x1b[K\n");
+            out.push_str("\x1b[0m\x1b[K");
         }
         out
     }
