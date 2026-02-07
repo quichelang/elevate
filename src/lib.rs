@@ -4,6 +4,7 @@ pub mod crate_builder;
 pub mod diag;
 pub mod ir;
 pub mod lexer;
+pub mod ownership_planner;
 pub mod parser;
 pub mod passes;
 pub mod source;

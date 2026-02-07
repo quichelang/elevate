@@ -19,6 +19,7 @@ use crate::ir::typed::{
     TypedStruct, TypedStructLiteralField, TypedTypeParam, TypedUnaryOp, TypedVariant,
     TypedPatternField,
 };
+use crate::ownership_planner::{decide_clone, CloneDecision, ClonePlannerInput};
 use crate::DirectBorrowHint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4175,24 +4176,24 @@ fn lower_expr_with_context(
                 )),
                 field: field.clone(),
             };
-            if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
-                && remaining_conflicting_before > 1
-                && should_clone_for_reuse(&expr.ty, state)
-                && !should_preserve_rebind_move(expr, context)
-            {
-                if let Some(name) = place_name {
-                    push_auto_clone_notes(state, context, &name, expr.ty.trim());
-                }
-                clone_expr(lowered_field)
-            } else {
-                if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
-                    && state.is_forced_clone_expr(expr)
-                    && should_clone_for_reuse(&expr.ty, state)
-                {
+            let (decision, forced_clone) = clone_decision_for_expr(
+                expr,
+                &expr.ty,
+                position,
+                remaining_conflicting_before,
+                context,
+                state,
+            );
+            match decision {
+                CloneDecision::Clone { is_hot } => {
+                    if !forced_clone
+                        && let Some(name) = place_name
+                    {
+                        push_auto_clone_notes(state, context, &name, expr.ty.trim(), is_hot);
+                    }
                     clone_expr(lowered_field)
-                } else {
-                    lowered_field
                 }
+                CloneDecision::Move => lowered_field,
             }
         }
         TypedExprKind::Index { base, index } => {
@@ -4224,24 +4225,24 @@ fn lower_expr_with_context(
                     args: Vec::new(),
                 };
             }
-            if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
-                && remaining_conflicting_before > 1
-                && should_clone_for_reuse(&expr.ty, state)
-                && !should_preserve_rebind_move(expr, context)
-            {
-                if let Some(name) = place_name {
-                    push_auto_clone_notes(state, context, &name, expr.ty.trim());
-                }
-                clone_expr(lowered_index_expr)
-            } else {
-                if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
-                    && state.is_forced_clone_expr(expr)
-                    && should_clone_for_reuse(&expr.ty, state)
-                {
+            let (decision, forced_clone) = clone_decision_for_expr(
+                expr,
+                &expr.ty,
+                position,
+                remaining_conflicting_before,
+                context,
+                state,
+            );
+            match decision {
+                CloneDecision::Clone { is_hot } => {
+                    if !forced_clone
+                        && let Some(name) = place_name
+                    {
+                        push_auto_clone_notes(state, context, &name, expr.ty.trim(), is_hot);
+                    }
                     clone_expr(lowered_index_expr)
-                } else {
-                    lowered_index_expr
                 }
+                CloneDecision::Move => lowered_index_expr,
             }
         }
         TypedExprKind::Match { scrutinee, arms } => RustExpr::Match {
@@ -4469,17 +4470,19 @@ fn lower_path_expr(
     context.ownership_plan.consume_expr(expr);
 
     let path_expr = RustExpr::Path(path.to_vec());
-    if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
-        && should_clone_for_reuse(ty, state)
-    {
-        if (remaining_conflicting > 1 && !should_preserve_rebind_move(expr, context))
-            || state.is_forced_clone_expr(expr)
-        {
-            if remaining_conflicting > 1 {
-                push_auto_clone_notes(state, context, &name, ty.trim());
-            }
-            return clone_expr(path_expr);
+    let (decision, forced_clone) = clone_decision_for_expr(
+        expr,
+        ty,
+        position,
+        remaining_conflicting,
+        context,
+        state,
+    );
+    if let CloneDecision::Clone { is_hot } = decision {
+        if !forced_clone {
+            push_auto_clone_notes(state, context, &name, ty.trim(), is_hot);
         }
+        return clone_expr(path_expr);
     }
     path_expr
 }
@@ -4512,6 +4515,28 @@ fn should_clone_for_reuse(ty: &str, state: &LoweringState) -> bool {
     state.registry.is_clone_candidate(ty)
 }
 
+fn clone_decision_for_expr(
+    expr: &TypedExpr,
+    ty: &str,
+    position: ExprPosition,
+    remaining_conflicting_uses: usize,
+    context: &LoweringContext,
+    state: &LoweringState,
+) -> (CloneDecision, bool) {
+    let in_owned_position = matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand);
+    let forced_clone = in_owned_position && state.is_forced_clone_expr(expr);
+    let decision = decide_clone(ClonePlannerInput {
+        ty,
+        in_owned_position,
+        remaining_conflicting_uses,
+        forced_clone,
+        preserve_rebind_move: should_preserve_rebind_move(expr, context),
+        clone_candidate: should_clone_for_reuse(ty, state),
+        loop_depth: context.loop_depth,
+    });
+    (decision, forced_clone)
+}
+
 fn should_preserve_rebind_move(expr: &TypedExpr, context: &LoweringContext) -> bool {
     let Some(rebind) = &context.rebind_place else {
         return false;
@@ -4527,6 +4552,7 @@ fn push_auto_clone_notes(
     context: &LoweringContext,
     name: &str,
     ty: &str,
+    is_hot: bool,
 ) {
     let scope = if context.scope_name.is_empty() {
         "<module>"
@@ -4537,36 +4563,13 @@ fn push_auto_clone_notes(
         "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
         ty.trim()
     ));
-    if context.loop_depth > 0 && is_expensive_clone_type(ty) {
+    if is_hot {
         state.push_ownership_note(format!(
             "hot-clone:auto place=`{name}` type=`{}` scope=`{scope}` loop-depth={}",
             ty.trim(),
             context.loop_depth
         ));
     }
-}
-
-fn is_expensive_clone_type(ty: &str) -> bool {
-    let trimmed = ty.trim();
-    if parse_tuple_items(trimmed)
-        .map(|items| items.iter().any(|item| is_expensive_clone_type(item)))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-
-    let (head, args) = split_type_head_and_args(trimmed);
-    let base = last_path_segment(head);
-    if args.iter().any(|arg| is_expensive_clone_type(arg)) {
-        return true;
-    }
-    if matches!(base, "String" | "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet") {
-        return true;
-    }
-    if is_copy_primitive_type(base) {
-        return false;
-    }
-    is_probably_nominal_type(base)
 }
 
 fn clone_expr(expr: RustExpr) -> RustExpr {
@@ -4669,7 +4672,7 @@ fn resolve_method_call_modes(
         CallArgMode::Borrowed
     } else if method_receiver_should_borrow_heuristic(&base.ty, field) {
         for (index, arg) in args.iter().enumerate() {
-            if method_arg_should_borrow_heuristic(field, arg, context, state) {
+            if method_arg_should_borrow_heuristic(field, arg, context, state, true) {
                 set_borrowed(&mut arg_modes, index);
             }
         }
@@ -4694,7 +4697,7 @@ fn resolve_heuristic_path_call_arg_modes(
         return None;
     };
     let resolved = state.resolve_callee_path(path);
-    if state.known_functions.contains(&resolved.join("::")) {
+    if is_known_function_path(state, &resolved) {
         return None;
     }
     let Some(name) = path.last() else {
@@ -4706,7 +4709,7 @@ fn resolve_heuristic_path_call_arg_modes(
     let mut modes = vec![CallArgMode::Owned; args.len()];
     let mut borrowed_any = false;
     for (index, arg) in args.iter().enumerate() {
-        if method_arg_should_borrow_heuristic(name, arg, context, state) {
+        if method_arg_should_borrow_heuristic(name, arg, context, state, false) {
             set_borrowed(&mut modes, index);
             borrowed_any = true;
         }
@@ -4716,6 +4719,24 @@ fn resolve_heuristic_path_call_arg_modes(
     } else {
         None
     }
+}
+
+fn is_known_function_path(state: &LoweringState, path: &[String]) -> bool {
+    if state.known_functions.contains(&path.join("::")) {
+        return true;
+    }
+    if let Some(name) = path.last()
+        && state.known_functions.contains(name)
+    {
+        return true;
+    }
+    if path.len() >= 2 {
+        let short = format!("{}::{}", path[path.len() - 2], path[path.len() - 1]);
+        if state.known_functions.contains(&short) {
+            return true;
+        }
+    }
+    false
 }
 
 fn lower_method_callee(
@@ -4801,6 +4822,7 @@ fn method_arg_should_borrow_heuristic(
     arg: &TypedExpr,
     context: &LoweringContext,
     state: &LoweringState,
+    allow_nominal: bool,
 ) -> bool {
     if !call_name_suggests_read_only(method) {
         return false;
@@ -4808,11 +4830,19 @@ fn method_arg_should_borrow_heuristic(
     if type_is_string_like(&arg.ty) {
         return true;
     }
-    if !is_known_borrow_container_type(&arg.ty) {
-        return false;
-    }
     let remaining_conflicting = context.ownership_plan.remaining_conflicting_for_expr(arg);
     if remaining_conflicting <= 1 {
+        return false;
+    }
+    if is_known_borrow_container_type(&arg.ty) {
+        return type_should_prefer_borrow(&arg.ty, state);
+    }
+    let ty = arg.ty.trim();
+    let head = last_path_segment(ty);
+    if allow_nominal && is_probably_nominal_type(head) && !is_copy_primitive_type(head) {
+        return true;
+    }
+    if !allow_nominal {
         return false;
     }
     type_should_prefer_borrow(&arg.ty, state)
