@@ -53,10 +53,9 @@ impl Board {
         if row < 0 or row > 8 {
             return (self, []);
         }
-        const values: Vec<i64> = [];
-        for col in 0..9 {
-            values.push(self.cells[row * 9 + col]);
-        }
+        const start = row * 9;
+        const end = start + 9;
+        const values = self.cells[start..end];
         (self, values)
     }
 
@@ -91,7 +90,7 @@ impl Board {
     }
 
     pub fn has_conflict(self: Self, row: i64, col: i64) -> (Self, bool) {
-        const (next_board, value) = board_get(self, row, col);
+        const (next_board, value) = Board::get(self, row, col);
         self = next_board;
         if value == 0 {
             return (self, false);
@@ -124,7 +123,7 @@ impl Board {
                 if r == row and c == col {
                     ()
                 } else {
-                    const (next_board, candidate) = board_get(self, r, c);
+                    const (next_board, candidate) = Board::get(self, r, c);
                     self = next_board;
                     if candidate == value {
                         return (self, true);
@@ -147,7 +146,7 @@ impl Board {
             }
 
             for col in 0..9 {
-                const (conflict_board, conflict) = board_has_conflict(self, row, col);
+                const (conflict_board, conflict) = Board::has_conflict(self, row, col);
                 self = conflict_board;
                 if conflict {
                     return (self, false);
@@ -187,30 +186,6 @@ pub fn runtime_render(board: Board, cursor_row: i64, cursor_col: i64, message: S
 
 pub fn puzzle_count() -> i64 {
     3
-}
-
-pub fn board_from_puzzle(index: i64) -> Board {
-    Board::from_puzzle(index)
-}
-
-pub fn board_get(board: Board, row: i64, col: i64) -> (Board, i64) {
-    Board::get(board, row, col)
-}
-
-pub fn board_set(board: Board, row: i64, col: i64, value: i64) -> (Board, bool) {
-    Board::set(board, row, col, value)
-}
-
-pub fn board_clear(board: Board, row: i64, col: i64) -> (Board, bool) {
-    Board::clear(board, row, col)
-}
-
-pub fn board_has_conflict(board: Board, row: i64, col: i64) -> (Board, bool) {
-    Board::has_conflict(board, row, col)
-}
-
-pub fn board_is_complete(board: Board) -> (Board, bool) {
-    Board::is_complete(board)
 }
 
 fn board_index(row: i64, col: i64) -> i64 {
@@ -277,48 +252,39 @@ fn char_to_digit(ch: char) -> i64 {
 }
 
 fn render_frame(board: Board, cursor_row: i64, cursor_col: i64, message: String) -> (Board, String) {
-    const prefix = String::from("\x1b[HNeon Boardwalk :: Sudoku\n\n");
-    const (next_board, grid) = render_rows(board, 0, cursor_row, cursor_col, prefix);
-    const footer = String::from(
-        "+-------+-------+-------+\n\nControls: arrows/WASD move | 1-9 set | 0/space/backspace clear\n          c check | n next | r reset | q quit\nStatus: ",
-    );
-    (next_board, format!("{}{}{}\n", grid, footer, message))
-}
+    const frame: String = String::from("\x1b[H");
+    frame.push_str("Neon Boardwalk :: Sudoku\n\n");
 
-fn render_rows(board: Board, row: i64, cursor_row: i64, cursor_col: i64, frame: String) -> (Board, String) {
-    if row >= 9 {
-        return (board, frame);
+    for row in 0..9 {
+        if row % 3 == 0 {
+            frame.push_str("+-------+-------+-------+\n");
+        }
+
+        frame.push_str("|");
+        const (next_board, row_values) = Board::row_values(board, row);
+        board = next_board;
+
+        for col in 0..9 {
+            const value = row_values[col];
+            const is_cursor = row == cursor_row and col == cursor_col;
+            const is_fixed = board.fixed[row * 9 + col];
+            const cell = render_cell(value, is_cursor, is_fixed);
+            frame.push_str(cell);
+
+            if col % 3 == 2 {
+                frame.push_str(" |");
+            }
+        }
+        frame.push_str("\n");
     }
 
-    if row % 3 == 0 {
-        frame = format!("{}+-------+-------+-------+\n", frame);
-    }
-    frame = format!("{}|", frame);
-    const (next_board, row_frame) = render_cols(board, row, 0, cursor_row, cursor_col, frame);
-    render_rows(next_board, row + 1, cursor_row, cursor_col, format!("{}\n", row_frame))
-}
-
-fn render_cols(
-    board: Board,
-    row: i64,
-    col: i64,
-    cursor_row: i64,
-    cursor_col: i64,
-    frame: String,
-) -> (Board, String) {
-    if col >= 9 {
-        return (board, frame);
-    }
-
-    const (next_board, value) = board_get(board, row, col);
-    board = next_board;
-    const is_cursor = row == cursor_row and col == cursor_col;
-    const is_fixed = board.fixed[row * 9 + col];
-    frame = format!("{}{}", frame, render_cell(value, is_cursor, is_fixed));
-    if col % 3 == 2 {
-        frame = format!("{} |", frame);
-    }
-    render_cols(board, row, col + 1, cursor_row, cursor_col, frame)
+    frame.push_str("+-------+-------+-------+\n\n");
+    frame.push_str("Controls: arrows/WASD move | 1-9 set | 0/space/backspace clear\n");
+    frame.push_str("          c check | n next | r reset | q quit\n");
+    frame.push_str("Status: ");
+    frame.push_str(message);
+    frame.push_str("\n");
+    (board, frame)
 }
 
 fn render_cell(value: i64, is_cursor: bool, is_fixed: bool) -> String {

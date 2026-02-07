@@ -103,13 +103,13 @@ impl Game {
     }
 
     fn check_status(self) -> Self {
-        const (board_after_complete, complete) = runtime::board_is_complete(self.board);
+        const (board_after_complete, complete) = Board::is_complete(self.board);
         self.board = board_after_complete;
         if complete {
             self.message = String::from("Solved! Press n for next puzzle or q to quit");
             return self;
         }
-        const (board_after_conflict, conflict) = runtime::board_has_conflict(self.board, self.cursor_row, self.cursor_col);
+        const (board_after_conflict, conflict) = Board::has_conflict(self.board, self.cursor_row, self.cursor_col);
         self.board = board_after_conflict;
         if conflict {
             self.message = String::from("Current cell conflicts with row/column/box");

@@ -4318,8 +4318,14 @@ fn method_arg_should_borrow_heuristic(
     if !call_name_suggests_read_only(method) {
         return false;
     }
+    if type_is_string_like(&arg.ty) {
+        return true;
+    }
+    if !is_known_borrow_container_type(&arg.ty) {
+        return false;
+    }
     let remaining_conflicting = context.ownership_plan.remaining_conflicting_for_expr(arg);
-    if remaining_conflicting <= 1 && !type_is_string_like(&arg.ty) {
+    if remaining_conflicting <= 1 {
         return false;
     }
     type_should_prefer_borrow(&arg.ty, state)
@@ -4350,6 +4356,13 @@ fn type_should_prefer_borrow(ty: &str, state: &LoweringState) -> bool {
 
 fn type_is_string_like(ty: &str) -> bool {
     matches!(last_path_segment(ty.trim()), "str" | "String")
+}
+
+fn is_known_borrow_container_type(ty: &str) -> bool {
+    matches!(
+        last_path_segment(ty.trim()),
+        "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet" | "Option" | "Result"
+    )
 }
 
 fn lower_index_expr(
