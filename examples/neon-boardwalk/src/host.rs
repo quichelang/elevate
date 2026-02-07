@@ -6,8 +6,6 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::runtime::Board;
-
 #[derive(Debug)]
 struct TerminalState {
     _raw: RawModeGuard,
@@ -104,54 +102,10 @@ pub fn runtime_shutdown(handle: i64) {
     let _ = out.flush();
 }
 
-pub fn runtime_render(board: Board, cursor_row: i64, cursor_col: i64, message: String) -> Board {
+pub fn runtime_draw(frame: String) {
     let mut out = io::stdout();
-    let _ = write!(out, "\x1b[H");
-
-    let _ = writeln!(out, "Neon Boardwalk :: Sudoku");
-    let _ = writeln!(out);
-
-    for row in 0..9 {
-        if row % 3 == 0 {
-            let _ = writeln!(out, "+-------+-------+-------+");
-        }
-
-        let _ = write!(out, "|");
-        for col in 0..9 {
-            let idx = (row as usize) * 9 + (col as usize);
-            let value = board.cells.get(idx).copied().unwrap_or(0);
-            let ch = if value == 0 {
-                '.'
-            } else {
-                char::from_digit(value as u32, 10).unwrap_or('?')
-            };
-
-            let is_cursor = row == cursor_row && col == cursor_col;
-            let is_fixed = board.fixed.get(idx).copied().unwrap_or(false);
-
-            if is_cursor {
-                let _ = write!(out, "\x1b[7m");
-            } else if is_fixed {
-                let _ = write!(out, "\x1b[1m");
-            }
-
-            let _ = write!(out, " {}", ch);
-            let _ = write!(out, "\x1b[0m");
-
-            if col % 3 == 2 {
-                let _ = write!(out, " |");
-            }
-        }
-        let _ = writeln!(out);
-    }
-    let _ = writeln!(out, "+-------+-------+-------+");
-    let _ = writeln!(out);
-    let _ = writeln!(out, "Controls: arrows/WASD move | 1-9 set | 0/space/backspace clear");
-    let _ = writeln!(out, "          c check | n next | r reset | q quit");
-    let _ = writeln!(out, "Status: {message}");
-
+    let _ = write!(out, "{frame}");
     let _ = out.flush();
-    board
 }
 
 fn decode_key(first: u8, lock: &mut dyn Read) -> Option<KeyEvent> {

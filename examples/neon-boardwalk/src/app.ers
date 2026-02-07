@@ -15,7 +15,7 @@ pub struct Game {
 impl Game {
     pub fn new() -> Self {
         const runtime_handle = runtime::runtime_start();
-        const board_state = runtime::board_from_puzzle(0);
+        const board_state = Board::from_puzzle(0);
         Game {
             runtime: runtime_handle;
             board: board_state;
@@ -81,7 +81,7 @@ impl Game {
     }
 
     fn apply_digit(self, value: i64) -> Self {
-        const (next_board, ok) = runtime::board_set(self.board, self.cursor_row, self.cursor_col, value);
+        const (next_board, ok) = Board::set(self.board, self.cursor_row, self.cursor_col, value);
         self.board = next_board;
         if ok {
             self.message = String::from("");
@@ -92,7 +92,7 @@ impl Game {
     }
 
     fn clear_cell(self) -> Self {
-        const (next_board, ok) = runtime::board_clear(self.board, self.cursor_row, self.cursor_col);
+        const (next_board, ok) = Board::clear(self.board, self.cursor_row, self.cursor_col);
         self.board = next_board;
         if ok {
             self.message = String::from("");
@@ -103,13 +103,13 @@ impl Game {
     }
 
     fn check_status(self) -> Self {
-        const (board_after_complete, complete) = board_complete(self.board);
+        const (board_after_complete, complete) = runtime::board_is_complete(self.board);
         self.board = board_after_complete;
         if complete {
             self.message = String::from("Solved! Press n for next puzzle or q to quit");
             return self;
         }
-        const (board_after_conflict, conflict) = cell_conflict(self.board, self.cursor_row, self.cursor_col);
+        const (board_after_conflict, conflict) = runtime::board_has_conflict(self.board, self.cursor_row, self.cursor_col);
         self.board = board_after_conflict;
         if conflict {
             self.message = String::from("Current cell conflicts with row/column/box");
@@ -125,7 +125,7 @@ impl Game {
         if self.puzzle_index >= total {
             self.puzzle_index = 0;
         }
-        self.board = runtime::board_from_puzzle(self.puzzle_index);
+        self.board = Board::from_puzzle(self.puzzle_index);
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.message = format!("Loaded puzzle {}", self.puzzle_index + 1);
@@ -133,7 +133,7 @@ impl Game {
     }
 
     fn reset_puzzle(self) -> Self {
-        self.board = runtime::board_from_puzzle(self.puzzle_index);
+        self.board = Board::from_puzzle(self.puzzle_index);
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.message = String::from("Puzzle reset");
@@ -149,77 +149,4 @@ fn wrap_0_to_8(value: i64) -> i64 {
         return 0;
     }
     value
-}
-
-fn cell_conflict(board: Board, row: i64, col: i64) -> (Board, bool) {
-    const (board_after_value, value) = runtime::board_get(board, row, col);
-    board = board_after_value;
-    if value == 0 {
-        return (board, false);
-    }
-
-    for c in 0..9 {
-        const (next_board, candidate) = runtime::board_get(board, row, c);
-        board = next_board;
-        if c != col {
-            if candidate == value {
-                return (board, true);
-            }
-        }
-    }
-
-    for r in 0..9 {
-        const (next_board, candidate) = runtime::board_get(board, r, col);
-        board = next_board;
-        if r != row {
-            if candidate == value {
-                return (board, true);
-            }
-        }
-    }
-
-    const box_row = (row / 3) * 3;
-    const box_col = (col / 3) * 3;
-    for r in box_row..(box_row + 3) {
-        for c in box_col..(box_col + 3) {
-            if r == row {
-                if c == col {
-                    ()
-                } else {
-                    const (next_board, candidate) = runtime::board_get(board, r, c);
-                    board = next_board;
-                    if candidate == value {
-                        return (board, true);
-                    }
-                }
-            } else {
-                const (next_board, candidate) = runtime::board_get(board, r, c);
-                board = next_board;
-                if candidate == value {
-                    return (board, true);
-                }
-            }
-        }
-    }
-
-    (board, false)
-}
-
-fn board_complete(board: Board) -> (Board, bool) {
-    for row in 0..9 {
-        for col in 0..9 {
-            const (board_after_get, value) = runtime::board_get(board, row, col);
-            board = board_after_get;
-            if value == 0 {
-                return (board, false);
-            }
-            const (board_after_check, conflict) = cell_conflict(board, row, col);
-            board = board_after_check;
-            if conflict {
-                return (board, false);
-            }
-        }
-    }
-
-    (board, true)
 }

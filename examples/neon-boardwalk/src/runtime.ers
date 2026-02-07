@@ -6,6 +6,167 @@ pub struct Board {
     fixed: Vec<bool>;
 }
 
+impl Board {
+    pub fn from_puzzle(index: i64) -> Self {
+        const text = puzzle_text(index);
+        const cells = parse_cells(text);
+        const fixed = build_fixed(cells);
+        Board {
+            cells: cells;
+            fixed: fixed;
+        }
+    }
+
+    pub fn get(self: Self, row: i64, col: i64) -> (Self, i64) {
+        const index = board_index(row, col);
+        if index < 0 {
+            return (self, 0);
+        }
+        const value = self.cells[index];
+        (self, value)
+    }
+
+    pub fn set(self: Self, row: i64, col: i64, value: i64) -> (Self, bool) {
+        if value < 1 {
+            return (self, false);
+        }
+        if value > 9 {
+            return (self, false);
+        }
+
+        const index = board_index(row, col);
+        if index < 0 {
+            return (self, false);
+        }
+        Board::set_at_index(self, index, value)
+    }
+
+    pub fn clear(self: Self, row: i64, col: i64) -> (Self, bool) {
+        const index = board_index(row, col);
+        if index < 0 {
+            return (self, false);
+        }
+        Board::set_at_index(self, index, 0)
+    }
+
+    pub fn row_values(self: Self, row: i64) -> (Self, Vec<i64>) {
+        if row < 0 or row > 8 {
+            return (self, []);
+        }
+        const values: Vec<i64> = [];
+        for col in 0..9 {
+            values.push(self.cells[row * 9 + col]);
+        }
+        (self, values)
+    }
+
+    pub fn col_values(self: Self, col: i64) -> (Self, Vec<i64>) {
+        if col < 0 or col > 8 {
+            return (self, []);
+        }
+        const values: Vec<i64> = [];
+        for row in 0..9 {
+            values.push(self.cells[row * 9 + col]);
+        }
+        (self, values)
+    }
+
+    pub fn box_values(self: Self, row: i64, col: i64) -> (Self, Vec<i64>) {
+        if row < 0 or row > 8 {
+            return (self, []);
+        }
+        if col < 0 or col > 8 {
+            return (self, []);
+        }
+
+        const values: Vec<i64> = [];
+        const box_row = (row / 3) * 3;
+        const box_col = (col / 3) * 3;
+        for r in box_row..(box_row + 3) {
+            for c in box_col..(box_col + 3) {
+                values.push(self.cells[r * 9 + c]);
+            }
+        }
+        (self, values)
+    }
+
+    pub fn has_conflict(self: Self, row: i64, col: i64) -> (Self, bool) {
+        const (next_board, value) = board_get(self, row, col);
+        self = next_board;
+        if value == 0 {
+            return (self, false);
+        }
+
+        const (row_board, row_values) = Board::row_values(self, row);
+        self = row_board;
+        for c in 0..9 {
+            if c != col {
+                if row_values[c] == value {
+                    return (self, true);
+                }
+            }
+        }
+
+        const (col_board, col_values) = Board::col_values(self, col);
+        self = col_board;
+        for r in 0..9 {
+            if r != row {
+                if col_values[r] == value {
+                    return (self, true);
+                }
+            }
+        }
+
+        const box_row = (row / 3) * 3;
+        const box_col = (col / 3) * 3;
+        for r in box_row..(box_row + 3) {
+            for c in box_col..(box_col + 3) {
+                if r == row and c == col {
+                    ()
+                } else {
+                    const (next_board, candidate) = board_get(self, r, c);
+                    self = next_board;
+                    if candidate == value {
+                        return (self, true);
+                    }
+                }
+            }
+        }
+
+        (self, false)
+    }
+
+    pub fn is_complete(self: Self) -> (Self, bool) {
+        for row in 0..9 {
+            const (row_board, row_values) = Board::row_values(self, row);
+            self = row_board;
+            for value in row_values {
+                if value == 0 {
+                    return (self, false);
+                }
+            }
+
+            for col in 0..9 {
+                const (conflict_board, conflict) = board_has_conflict(self, row, col);
+                self = conflict_board;
+                if conflict {
+                    return (self, false);
+                }
+            }
+        }
+
+        (self, true)
+    }
+
+    fn set_at_index(self: Self, index: i64, value: i64) -> (Self, bool) {
+        if self.fixed[index] {
+            return (self, false);
+        }
+        self.cells[index] = value;
+        (self, true)
+    }
+}
+
 pub fn runtime_start() -> i64 {
     host::runtime_start()
 }
@@ -19,7 +180,9 @@ pub fn runtime_shutdown(handle: i64) {
 }
 
 pub fn runtime_render(board: Board, cursor_row: i64, cursor_col: i64, message: String) -> Board {
-    host::runtime_render(board, cursor_row, cursor_col, message)
+    const (next_board, frame) = render_frame(board, cursor_row, cursor_col, message);
+    host::runtime_draw(frame);
+    next_board
 }
 
 pub fn puzzle_count() -> i64 {
@@ -27,53 +190,27 @@ pub fn puzzle_count() -> i64 {
 }
 
 pub fn board_from_puzzle(index: i64) -> Board {
-    const text = puzzle_text(index);
-    const cells = parse_cells(text);
-    const fixed = build_fixed(cells);
-    Board {
-        cells: cells;
-        fixed: fixed;
-    }
+    Board::from_puzzle(index)
 }
 
 pub fn board_get(board: Board, row: i64, col: i64) -> (Board, i64) {
-    const index = board_index(row, col);
-    if index < 0 {
-        return (board, 0);
-    }
-    const value = board.cells[index];
-    (board, value)
+    Board::get(board, row, col)
 }
 
 pub fn board_set(board: Board, row: i64, col: i64, value: i64) -> (Board, bool) {
-    if value < 1 {
-        return (board, false);
-    }
-    if value > 9 {
-        return (board, false);
-    }
-
-    const index = board_index(row, col);
-    if index < 0 {
-        return (board, false);
-    }
-    board_set_at_index(board, index, value)
+    Board::set(board, row, col, value)
 }
 
 pub fn board_clear(board: Board, row: i64, col: i64) -> (Board, bool) {
-    const index = board_index(row, col);
-    if index < 0 {
-        return (board, false);
-    }
-    board_set_at_index(board, index, 0)
+    Board::clear(board, row, col)
 }
 
-fn board_set_at_index(board: Board, index: i64, value: i64) -> (Board, bool) {
-    if board.fixed[index] {
-        return (board, false);
-    }
-    board.cells[index] = value;
-    (board, true)
+pub fn board_has_conflict(board: Board, row: i64, col: i64) -> (Board, bool) {
+    Board::has_conflict(board, row, col)
+}
+
+pub fn board_is_complete(board: Board) -> (Board, bool) {
+    Board::is_complete(board)
 }
 
 fn board_index(row: i64, col: i64) -> i64 {
@@ -136,5 +273,77 @@ fn char_to_digit(ch: char) -> i64 {
         '8' => 8;
         '9' => 9;
         _ => 0;
+    }
+}
+
+fn render_frame(board: Board, cursor_row: i64, cursor_col: i64, message: String) -> (Board, String) {
+    const prefix = String::from("\x1b[HNeon Boardwalk :: Sudoku\n\n");
+    const (next_board, grid) = render_rows(board, 0, cursor_row, cursor_col, prefix);
+    const footer = String::from(
+        "+-------+-------+-------+\n\nControls: arrows/WASD move | 1-9 set | 0/space/backspace clear\n          c check | n next | r reset | q quit\nStatus: ",
+    );
+    (next_board, format!("{}{}{}\n", grid, footer, message))
+}
+
+fn render_rows(board: Board, row: i64, cursor_row: i64, cursor_col: i64, frame: String) -> (Board, String) {
+    if row >= 9 {
+        return (board, frame);
+    }
+
+    if row % 3 == 0 {
+        frame = format!("{}+-------+-------+-------+\n", frame);
+    }
+    frame = format!("{}|", frame);
+    const (next_board, row_frame) = render_cols(board, row, 0, cursor_row, cursor_col, frame);
+    render_rows(next_board, row + 1, cursor_row, cursor_col, format!("{}\n", row_frame))
+}
+
+fn render_cols(
+    board: Board,
+    row: i64,
+    col: i64,
+    cursor_row: i64,
+    cursor_col: i64,
+    frame: String,
+) -> (Board, String) {
+    if col >= 9 {
+        return (board, frame);
+    }
+
+    const (next_board, value) = board_get(board, row, col);
+    board = next_board;
+    const is_cursor = row == cursor_row and col == cursor_col;
+    const is_fixed = board.fixed[row * 9 + col];
+    frame = format!("{}{}", frame, render_cell(value, is_cursor, is_fixed));
+    if col % 3 == 2 {
+        frame = format!("{} |", frame);
+    }
+    render_cols(board, row, col + 1, cursor_row, cursor_col, frame)
+}
+
+fn render_cell(value: i64, is_cursor: bool, is_fixed: bool) -> String {
+    const ch = digit_to_char(value);
+    if is_cursor {
+        return format!("\x1b[7m {}\x1b[0m", ch);
+    }
+    if is_fixed {
+        return format!("\x1b[1m {}\x1b[0m", ch);
+    }
+    format!(" {}", ch)
+}
+
+fn digit_to_char(value: i64) -> char {
+    match value {
+        0 => '.';
+        1 => '1';
+        2 => '2';
+        3 => '3';
+        4 => '4';
+        5 => '5';
+        6 => '6';
+        7 => '7';
+        8 => '8';
+        9 => '9';
+        _ => '?';
     }
 }
