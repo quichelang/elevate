@@ -1899,6 +1899,91 @@ mod tests {
     }
 
     #[test]
+    fn transpile_crate_with_read_views_and_loop_ownership_compiles_with_rustc() {
+        let root = create_temp_dir("elevate-read-view-loop-build");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            r#"
+                pub struct Game {
+                    title: String;
+                    rounds: Vec<String>;
+                }
+
+                fn consume(value: String) {
+                    std::mem::drop(value);
+                    return;
+                }
+
+                pub fn score(game: Game, text: String) -> usize {
+                    const snapshot = view(game);
+                    for round in snapshot.rounds.iter() {
+                        std::mem::drop(round);
+                        std::mem::drop(snapshot.title.len());
+                        consume(text);
+                    }
+                    return snapshot.rounds.len();
+                }
+            "#,
+        )
+        .expect("write lib.ers should succeed");
+
+        let summary = transpile_ers_crate(&root).expect("transpile should succeed");
+        let generated_src = summary.generated_root.join("src");
+        let generated_lib =
+            fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");
+        assert!(generated_lib.contains("let snapshot: &Game = &game;"));
+        assert!(generated_lib.contains("consume(text.clone());"));
+
+        let output = std::process::Command::new("rustc")
+            .arg("--crate-type=lib")
+            .arg(generated_src.join("lib.rs"))
+            .arg("-o")
+            .arg(summary.generated_root.join("libreadview_test.rlib"))
+            .output()
+            .expect("rustc should execute");
+        assert!(
+            output.status.success(),
+            "rustc compile failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn transpile_crate_reports_extended_generic_bound_violation() {
+        let root = create_temp_dir("elevate-generic-bound-violation");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            r#"
+                struct User { id: i64; }
+
+                fn eq_user<T: PartialEq>(left: T, right: T) -> bool {
+                    return left == right;
+                }
+
+                pub fn run(left: User, right: User) -> bool {
+                    eq_user(left, right)
+                }
+            "#,
+        )
+        .expect("write lib.ers should succeed");
+
+        let error = transpile_ers_crate(&root).expect_err("expected bound violation");
+        assert!(error.contains("does not satisfy bound `PartialEq`"));
+    }
+
+    #[test]
     fn parse_location_supports_relative_generated_paths() {
         let generated_root = PathBuf::from("/tmp/generated");
         let line = " --> src/lib.rs:13:12";

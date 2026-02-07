@@ -297,9 +297,9 @@ Quality gates:
 
 ### Known Incomplete Areas
 
-- Ownership lowering policy is improved for several core/interoperability paths, but a globally optimal move/clone/borrow planner is not complete.
-- Borrow-free read ergonomics for large owned structs still require explicit state-threading in some flows (for example repeated reads inside loops); first-class non-consuming read views are pending.
-- Generic constrained bounds are partially complete (syntax + Rust emission + initial compile-time checks for `Clone`/`Copy` are implemented; broader trait-bound enforcement remains pending).
+- Ownership lowering policy now includes place-level conflict analysis, loop-weighted liveness heuristics, and adaptive borrow feedback from Rust compile diagnostics; a globally optimal whole-program planner is still not complete.
+- Borrow-free read ergonomics now include first-class non-consuming read views via `view(...)` (lowered to Rust borrows), but richer view ergonomics and reference-typed inference are still pending.
+- Generic constrained bounds now include compile-time enforcement for `Clone`, `Copy`, `Debug`, `Default`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, and `Hash`; full trait-solver parity and path-qualified trait handling are still pending.
 - Full iterator-model ergonomics for `for` loops are not complete beyond current lowering support.
 - Slices are not complete (current support focuses on `Vec` literals/index/range expressions and slice-style match patterns).
 - Full exhaustiveness diagnostics are not complete (current checks focus on bool/finite-tuple finite domains and enum variants).

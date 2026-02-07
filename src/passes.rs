@@ -2734,6 +2734,16 @@ fn resolve_builtin_assert_call(
     }
     let name = path[0].as_str();
     match name {
+        "view" => {
+            if args.len() != 1 {
+                diagnostics.push(Diagnostic::new(
+                    "view(...) expects exactly one argument",
+                    Span::new(0, 0),
+                ));
+                return Some(SemType::Unknown);
+            }
+            Some(args[0].clone())
+        }
         "assert" => {
             if args.len() != 1 {
                 diagnostics.push(Diagnostic::new(
@@ -3498,7 +3508,7 @@ fn lower_stmt_with_context(
         TypedStmt::Const(def) => RustStmt::Const(RustConst {
             is_public: false,
             name: def.name.clone(),
-            ty: def.ty.clone(),
+            ty: inferred_local_const_rust_ty(&def.ty, &def.value),
             value: lower_expr_with_context(&def.value, context, ExprPosition::Value, state),
         }),
         TypedStmt::DestructureConst { pattern, value } => RustStmt::DestructureConst {
@@ -3572,6 +3582,26 @@ fn lower_stmt_with_context(
     }
 }
 
+fn inferred_local_const_rust_ty(original_ty: &str, value: &TypedExpr) -> String {
+    if is_view_call_expr(value) {
+        let trimmed = original_ty.trim();
+        if trimmed != "_" && !trimmed.starts_with('&') {
+            return format!("&{trimmed}");
+        }
+    }
+    original_ty.to_string()
+}
+
+fn is_view_call_expr(expr: &TypedExpr) -> bool {
+    let TypedExprKind::Call { callee, args } = &expr.kind else {
+        return false;
+    };
+    let TypedExprKind::Path(path) = &callee.kind else {
+        return false;
+    };
+    path.len() == 1 && path[0] == "view" && args.len() == 1
+}
+
 fn lower_expr_with_context(
     expr: &TypedExpr,
     context: &mut LoweringContext,
@@ -3600,6 +3630,18 @@ fn lower_expr_with_context(
                         })
                         .collect(),
                 };
+            }
+            if let TypedExprKind::Path(path) = &callee.kind
+                && path.len() == 1
+                && path[0] == "view"
+                && args.len() == 1
+            {
+                return borrow_expr(lower_expr_with_context(
+                    &args[0],
+                    context,
+                    ExprPosition::Value,
+                    state,
+                ));
             }
             let (lowered_callee, arg_modes) = lower_call_callee(callee, args, context, state);
             RustExpr::Call {
@@ -4509,6 +4551,7 @@ fn collect_place_uses_in_stmts(stmts: &[TypedStmt]) -> HashMap<OwnershipPlace, u
 }
 
 fn collect_place_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<OwnershipPlace, usize>) {
+    const LOOP_BODY_WEIGHT: usize = 3;
     match stmt {
         TypedStmt::Const(def) => collect_place_uses_in_expr(&def.value, uses),
         TypedStmt::DestructureConst { value, .. } => collect_place_uses_in_expr(value, uses),
@@ -4534,25 +4577,43 @@ fn collect_place_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<OwnershipPlac
             }
         }
         TypedStmt::While { condition, body } => {
-            collect_place_uses_in_expr(condition, uses);
+            let mut loop_uses = HashMap::new();
+            collect_place_uses_in_expr(condition, &mut loop_uses);
             for stmt in body {
-                collect_place_uses_in_stmt(stmt, uses);
+                collect_place_uses_in_stmt(stmt, &mut loop_uses);
             }
+            merge_weighted_place_uses(uses, &loop_uses, LOOP_BODY_WEIGHT);
         }
         TypedStmt::For { iter, body, .. } => {
             collect_place_uses_in_expr(iter, uses);
+            let mut loop_uses = HashMap::new();
             for stmt in body {
-                collect_place_uses_in_stmt(stmt, uses);
+                collect_place_uses_in_stmt(stmt, &mut loop_uses);
             }
+            merge_weighted_place_uses(uses, &loop_uses, LOOP_BODY_WEIGHT);
         }
         TypedStmt::Loop { body } => {
+            let mut loop_uses = HashMap::new();
             for stmt in body {
-                collect_place_uses_in_stmt(stmt, uses);
+                collect_place_uses_in_stmt(stmt, &mut loop_uses);
             }
+            merge_weighted_place_uses(uses, &loop_uses, LOOP_BODY_WEIGHT);
         }
         TypedStmt::Break | TypedStmt::Continue => {}
         TypedStmt::RustBlock(_) => {}
         TypedStmt::Expr(expr) => collect_place_uses_in_expr(expr, uses),
+    }
+}
+
+fn merge_weighted_place_uses(
+    target: &mut HashMap<OwnershipPlace, usize>,
+    source: &HashMap<OwnershipPlace, usize>,
+    weight: usize,
+) {
+    for (place, count) in source {
+        let weighted = count.saturating_mul(weight);
+        let slot = target.entry(place.clone()).or_insert(0);
+        *slot = slot.saturating_add(weighted);
     }
 }
 
@@ -4720,6 +4781,13 @@ fn type_satisfies_bound(actual: &SemType, bound: &SemType) -> bool {
     match bound_name {
         "Clone" => type_is_clone(actual),
         "Copy" => type_is_copy(actual),
+        "Debug" => type_is_debug(actual),
+        "Default" => type_is_default(actual),
+        "PartialEq" => type_is_partial_eq(actual),
+        "Eq" => type_is_eq(actual),
+        "PartialOrd" => type_is_partial_ord(actual),
+        "Ord" => type_is_ord(actual),
+        "Hash" => type_is_hash(actual),
         _ => true,
     }
 }
@@ -4773,6 +4841,197 @@ fn type_is_copy(ty: &SemType) -> bool {
             args.is_empty() && is_copy_primitive_type(head)
         }
     }
+}
+
+fn type_is_debug(ty: &SemType) -> bool {
+    match ty {
+        SemType::Unknown | SemType::Unit => true,
+        SemType::Tuple(items) => items.iter().all(type_is_debug),
+        SemType::Iter(item) => type_is_debug(item),
+        SemType::Fn { .. } => false,
+        SemType::Path { path, args } => {
+            let Some(head) = path.last().map(|part| part.as_str()) else {
+                return false;
+            };
+            if is_copy_primitive_type(head) || head == "String" {
+                return true;
+            }
+            if matches!(
+                head,
+                "Option"
+                    | "Result"
+                    | "Vec"
+                    | "HashMap"
+                    | "BTreeMap"
+                    | "HashSet"
+                    | "BTreeSet"
+            ) {
+                return args.iter().all(type_is_debug);
+            }
+            is_probably_nominal_type(head)
+        }
+    }
+}
+
+fn type_is_default(ty: &SemType) -> bool {
+    match ty {
+        SemType::Unknown | SemType::Unit => true,
+        SemType::Tuple(items) => items.iter().all(type_is_default),
+        SemType::Iter(_) | SemType::Fn { .. } => false,
+        SemType::Path { path, args } => {
+            let Some(head) = path.last().map(|part| part.as_str()) else {
+                return false;
+            };
+            if is_copy_primitive_type(head) || head == "String" {
+                return true;
+            }
+            match head {
+                "Option" | "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet" => true,
+                "Result" => args.iter().all(type_is_default),
+                _ => false,
+            }
+        }
+    }
+}
+
+fn type_is_partial_eq(ty: &SemType) -> bool {
+    match ty {
+        SemType::Unknown | SemType::Unit => true,
+        SemType::Tuple(items) => items.iter().all(type_is_partial_eq),
+        SemType::Iter(_) | SemType::Fn { .. } => false,
+        SemType::Path { path, args } => {
+            let Some(head) = path.last().map(|part| part.as_str()) else {
+                return false;
+            };
+            if is_copy_primitive_type(head) || head == "String" {
+                return true;
+            }
+            if matches!(
+                head,
+                "Option"
+                    | "Result"
+                    | "Vec"
+                    | "HashMap"
+                    | "BTreeMap"
+                    | "HashSet"
+                    | "BTreeSet"
+            ) {
+                return args.iter().all(type_is_partial_eq);
+            }
+            false
+        }
+    }
+}
+
+fn type_is_eq(ty: &SemType) -> bool {
+    match ty {
+        SemType::Path { path, args } => {
+            let Some(head) = path.last().map(|part| part.as_str()) else {
+                return false;
+            };
+            if is_float_primitive_type(head) {
+                return false;
+            }
+            if args.is_empty() && is_copy_primitive_type(head) {
+                return true;
+            }
+            if head == "String" {
+                return true;
+            }
+            if matches!(
+                head,
+                "Option"
+                    | "Result"
+                    | "Vec"
+                    | "HashMap"
+                    | "BTreeMap"
+                    | "HashSet"
+                    | "BTreeSet"
+            ) {
+                return args.iter().all(type_is_eq);
+            }
+            false
+        }
+        SemType::Tuple(items) => items.iter().all(type_is_eq),
+        SemType::Unknown | SemType::Unit => true,
+        SemType::Iter(_) | SemType::Fn { .. } => false,
+    }
+}
+
+fn type_is_partial_ord(ty: &SemType) -> bool {
+    match ty {
+        SemType::Unknown | SemType::Unit => true,
+        SemType::Tuple(items) => items.iter().all(type_is_partial_ord),
+        SemType::Iter(_) | SemType::Fn { .. } => false,
+        SemType::Path { path, args } => {
+            let Some(head) = path.last().map(|part| part.as_str()) else {
+                return false;
+            };
+            if is_copy_primitive_type(head) || head == "String" {
+                return true;
+            }
+            if matches!(head, "Option" | "Result" | "Vec") {
+                return args.iter().all(type_is_partial_ord);
+            }
+            false
+        }
+    }
+}
+
+fn type_is_ord(ty: &SemType) -> bool {
+    match ty {
+        SemType::Unknown | SemType::Unit => true,
+        SemType::Tuple(items) => items.iter().all(type_is_ord),
+        SemType::Iter(_) | SemType::Fn { .. } => false,
+        SemType::Path { path, args } => {
+            let Some(head) = path.last().map(|part| part.as_str()) else {
+                return false;
+            };
+            if is_float_primitive_type(head) {
+                return false;
+            }
+            if args.is_empty() && is_copy_primitive_type(head) {
+                return true;
+            }
+            if head == "String" {
+                return true;
+            }
+            if matches!(head, "Option" | "Result" | "Vec") {
+                return args.iter().all(type_is_ord);
+            }
+            false
+        }
+    }
+}
+
+fn type_is_hash(ty: &SemType) -> bool {
+    match ty {
+        SemType::Unknown | SemType::Unit => true,
+        SemType::Tuple(items) => items.iter().all(type_is_hash),
+        SemType::Iter(_) | SemType::Fn { .. } => false,
+        SemType::Path { path, args } => {
+            let Some(head) = path.last().map(|part| part.as_str()) else {
+                return false;
+            };
+            if is_float_primitive_type(head) {
+                return false;
+            }
+            if args.is_empty() && is_copy_primitive_type(head) {
+                return true;
+            }
+            if head == "String" {
+                return true;
+            }
+            if matches!(head, "Option" | "Result" | "Vec") {
+                return args.iter().all(type_is_hash);
+            }
+            false
+        }
+    }
+}
+
+fn is_float_primitive_type(head: &str) -> bool {
+    matches!(head, "f32" | "f64")
 }
 
 fn bind_generic_params(

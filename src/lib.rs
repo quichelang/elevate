@@ -482,6 +482,56 @@ mod tests {
     }
 
     #[test]
+    fn compile_auto_clones_owned_args_inside_loops() {
+        let source = r#"
+            fn consume(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn demo(text: String) {
+                for i in 0..3 {
+                    std::mem::drop(i);
+                    consume(text);
+                }
+                return;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for i in 0..3"));
+        assert!(output.rust_code.contains("consume(text.clone());"));
+        assert!(!output.rust_code.contains("consume(text);"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_read_views_for_looped_struct_reads() {
+        let source = r#"
+            pub struct Game {
+                title: String;
+                rounds: Vec<String>;
+            }
+
+            fn score(game: Game) -> usize {
+                const snapshot = view(game);
+                for round in snapshot.rounds.iter() {
+                    std::mem::drop(round);
+                    std::mem::drop(snapshot.title.len());
+                }
+                return snapshot.rounds.len();
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("let snapshot: &Game = &game;"));
+        assert!(output.rust_code.contains("snapshot.rounds.iter()"));
+        assert!(output.rust_code.contains("snapshot.title.len()"));
+        assert!(!output.rust_code.contains("game.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_auto_clones_reused_struct_field_call_argument() {
         let source = r#"
             pub struct State { text: String; }
@@ -1002,6 +1052,63 @@ mod tests {
 
         let error = compile_source(source).expect_err("expected bound violation");
         assert!(error.to_string().contains("does not satisfy bound `Copy`"));
+    }
+
+    #[test]
+    fn compile_supports_generic_default_ord_bounds() {
+        let source = r#"
+            fn ordered<T: Default + Ord>(left: T, right: T) -> bool {
+                const zero = T::default();
+                std::mem::drop(zero);
+                return left < right;
+            }
+
+            fn run() -> bool {
+                ordered(1, 2)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected generic bounds support");
+        assert!(output
+            .rust_code
+            .contains("fn ordered<T: Default + Ord>(left: T, right: T) -> bool"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_reports_generic_partial_eq_bound_violation_for_user_struct() {
+        let source = r#"
+            struct User { id: i64; }
+
+            fn eq_user<T: PartialEq>(left: T, right: T) -> bool {
+                return left == right;
+            }
+
+            fn run(left: User, right: User) -> bool {
+                eq_user(left, right)
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected PartialEq bound violation");
+        assert!(error.to_string().contains("does not satisfy bound `PartialEq`"));
+    }
+
+    #[test]
+    fn compile_reports_generic_hash_bound_violation_for_user_struct() {
+        let source = r#"
+            struct User { id: i64; }
+
+            fn keep<T: Hash>(value: T) -> T {
+                value
+            }
+
+            fn run(value: User) -> User {
+                keep(value)
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected Hash bound violation");
+        assert!(error.to_string().contains("does not satisfy bound `Hash`"));
     }
 
     #[test]
