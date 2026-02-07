@@ -272,6 +272,58 @@ impl<'a> Lexer<'a> {
                 });
                 return;
             }
+            if c == '\\' {
+                self.advance();
+                match self.peek_char() {
+                    Some('n') => {
+                        self.advance();
+                        value.push('\n');
+                    }
+                    Some('r') => {
+                        self.advance();
+                        value.push('\r');
+                    }
+                    Some('t') => {
+                        self.advance();
+                        value.push('\t');
+                    }
+                    Some('0') => {
+                        self.advance();
+                        value.push('\0');
+                    }
+                    Some('\\') => {
+                        self.advance();
+                        value.push('\\');
+                    }
+                    Some('"') => {
+                        self.advance();
+                        value.push('"');
+                    }
+                    Some('x') => {
+                        self.advance();
+                        match self.lex_hex_escape(start) {
+                            Some(ch) => value.push(ch),
+                            None => return,
+                        }
+                    }
+                    Some(other) => {
+                        self.advance();
+                        self.diagnostics.push(Diagnostic::new(
+                            format!("Unsupported string escape '\\{other}'"),
+                            Span::new(start, self.cursor),
+                        ));
+                        value.push(other);
+                    }
+                    None => {
+                        self.diagnostics.push(Diagnostic::new(
+                            "Unterminated string literal escape",
+                            Span::new(start, self.cursor),
+                        ));
+                        return;
+                    }
+                }
+                continue;
+            }
             value.push(c);
             self.advance();
         }
@@ -280,6 +332,60 @@ impl<'a> Lexer<'a> {
             "Unterminated string literal",
             Span::new(start, self.cursor),
         ));
+    }
+
+    fn lex_hex_escape(&mut self, start: usize) -> Option<char> {
+        let hi = match self.peek_char() {
+            Some(value) => value,
+            None => {
+                self.diagnostics.push(Diagnostic::new(
+                    "Unterminated string hex escape; expected two hex digits",
+                    Span::new(start, self.cursor),
+                ));
+                return None;
+            }
+        };
+        self.advance();
+        let lo = match self.peek_char() {
+            Some(value) => value,
+            None => {
+                self.diagnostics.push(Diagnostic::new(
+                    "Unterminated string hex escape; expected two hex digits",
+                    Span::new(start, self.cursor),
+                ));
+                return None;
+            }
+        };
+        self.advance();
+
+        let hi = match hi.to_digit(16) {
+            Some(value) => value,
+            None => {
+                self.diagnostics.push(Diagnostic::new(
+                    "Invalid string hex escape; expected two hex digits",
+                    Span::new(start, self.cursor),
+                ));
+                return None;
+            }
+        };
+        let lo = match lo.to_digit(16) {
+            Some(value) => value,
+            None => {
+                self.diagnostics.push(Diagnostic::new(
+                    "Invalid string hex escape; expected two hex digits",
+                    Span::new(start, self.cursor),
+                ));
+                return None;
+            }
+        };
+        let byte = (hi << 4) | lo;
+        char::from_u32(byte).or_else(|| {
+            self.diagnostics.push(Diagnostic::new(
+                "Invalid string hex escape; out of ASCII range",
+                Span::new(start, self.cursor),
+            ));
+            None
+        })
     }
 
     fn lex_char(&mut self, start: usize) {
@@ -823,5 +929,24 @@ last line"#;"##;
         assert!(tokens
             .iter()
             .any(|t| matches!(t.kind, TokenKind::CharLiteral('\''))));
+    }
+
+    #[test]
+    fn lex_string_escapes_and_hex_escape() {
+        let source = r#"const text = "line\n\t\"q\"\\\x1b";"#;
+        let tokens = lex(source).expect("expected lex success");
+        let literal = tokens
+            .iter()
+            .find_map(|token| match &token.kind {
+                TokenKind::StringLiteral(value) => Some(value),
+                _ => None,
+            })
+            .expect("expected string literal");
+        assert!(literal.contains('\n'));
+        assert!(literal.contains('\t'));
+        assert!(literal.contains('"'));
+        assert!(literal.contains('\\'));
+        assert!(literal.contains('\u{1b}'));
+        assert!(!literal.contains("\\x1b"));
     }
 }

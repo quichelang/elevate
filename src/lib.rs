@@ -2230,6 +2230,21 @@ world"#;
     }
 
     #[test]
+    fn compile_supports_string_escape_sequences() {
+        let source = r#"
+            pub fn frame() -> String {
+                const head = "\x1b[H\n";
+                head
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("\\u{1b}[H\\n"));
+        assert!(!output.rust_code.contains("\\\\x1b"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_char_literals_in_match() {
         let source = r#"
             fn classify(ch: char) -> i64 {
