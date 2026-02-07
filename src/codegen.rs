@@ -841,7 +841,7 @@ fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::Ha
 }
 
 fn method_mutates_receiver(field: &str) -> bool {
-    matches!(field, "push")
+    matches!(field, "push" | "push_str")
 }
 
 fn emit_char_literal(value: char) -> String {

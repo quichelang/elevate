@@ -699,6 +699,56 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_string_push_str_method_with_auto_borrow() {
+        let source = r#"
+            fn append(text: String, suffix: String) -> String {
+                text.push_str(suffix);
+                text
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("text.push_str(&suffix);"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_string_concat_chains_without_manual_borrows() {
+        let source = r#"
+            fn join3(a: String, b: String, c: String) -> String {
+                a + b + c
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("a + &b"));
+        assert!(output.rust_code.contains("+ &c"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_does_not_auto_borrow_known_by_value_associated_calls() {
+        let source = r#"
+            struct Catalog {}
+
+            impl Catalog {
+                fn get(self: Self, idx: i64) -> i64 {
+                    idx
+                }
+            }
+
+            fn demo(catalog: Catalog) -> i64 {
+                Catalog::get(catalog, 7)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("Catalog::get(catalog, 7)"));
+        assert!(!output.rust_code.contains("Catalog::get(&catalog, 7)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_heuristically_borrows_third_party_method_calls() {
         let source = r#"
             rust {
@@ -1993,7 +2043,24 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("values[1..3]"));
+        assert!(output.rust_code.contains("values[(1 as usize)..(3 as usize)].to_vec()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_vec_slice_range_with_i64_bounds() {
+        let source = r#"
+            pub fn view(values: Vec<i64>, start: i64, end: i64) -> i64 {
+                const middle = values[start..end];
+                std::mem::drop(middle);
+                values[0]
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("start as usize"));
+        assert!(output.rust_code.contains("end as usize"));
+        assert_rust_code_compiles(&output.rust_code);
     }
 
     #[test]

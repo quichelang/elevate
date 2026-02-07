@@ -277,6 +277,7 @@ fn ownership_projection_prefix(
 struct LoweringState {
     used_shims: BTreeSet<String>,
     imported_rust_paths: HashMap<String, Vec<Vec<String>>>,
+    known_functions: BTreeSet<String>,
     ownership_notes: Vec<String>,
     ownership_note_keys: BTreeSet<String>,
     registry: InteropPolicyRegistry,
@@ -352,6 +353,16 @@ impl LoweringState {
                 }
                 TypedItem::Enum(def) => {
                     state.registry.register_user_cloneable_type(&def.name);
+                }
+                TypedItem::Function(def) => {
+                    state.known_functions.insert(def.name.clone());
+                }
+                TypedItem::Impl(def) => {
+                    for method in &def.methods {
+                        state
+                            .known_functions
+                            .insert(format!("{}::{}", def.target, method.name));
+                    }
                 }
                 TypedItem::RustBlock(_) => {}
                 _ => {}
@@ -2832,6 +2843,19 @@ fn resolve_method_call_type(
                         named_type("bool")
                     };
                 }
+                "push_str" => {
+                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
+                    if args.len() == 1 && !is_compatible(&args[0], &named_type("String")) {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Method `String::push_str` expects `String`, got `{}`",
+                                type_to_string(&args[0])
+                            ),
+                            Span::new(0, 0),
+                        ));
+                    }
+                    return SemType::Unit;
+                }
                 "into_bytes" => {
                     expect_method_arity(type_name, method, args.len(), 0, diagnostics);
                     return SemType::Path {
@@ -3741,20 +3765,26 @@ fn lower_expr_with_context(
                 remaining
             };
             let place_name = place_for_expr(expr).map(|place| place.display_name());
-            let lowered_index_expr = RustExpr::Index {
+            let mut lowered_index_expr = RustExpr::Index {
                 base: Box::new(lower_expr_with_context(
                     base,
                     context,
                     ExprPosition::ProjectionBase,
                     state,
                 )),
-                index: Box::new(lower_expr_with_context(
-                    index,
-                    context,
-                    ExprPosition::Value,
-                    state,
-                )),
+                index: Box::new(lower_index_expr(index, context, state)),
             };
+            if matches!(index.kind, TypedExprKind::Range { .. })
+                && last_path_segment(&expr.ty) == "Vec"
+            {
+                lowered_index_expr = RustExpr::Call {
+                    callee: Box::new(RustExpr::Field {
+                        base: Box::new(lowered_index_expr),
+                        field: "to_vec".to_string(),
+                    }),
+                    args: Vec::new(),
+                };
+            }
             if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
                 && remaining_conflicting_before > 1
                 && should_clone_for_reuse(&expr.ty, state)
@@ -3858,6 +3888,14 @@ fn lower_expr_with_context(
                 lowered_left = cast_expr_to_numeric_if_needed(lowered_left, &left.ty, &expr.ty);
                 lowered_right =
                     cast_expr_to_numeric_if_needed(lowered_right, &right.ty, &expr.ty);
+            } else if matches!(op, TypedBinaryOp::Add)
+                && type_is_string_like(&expr.ty)
+                && type_is_string_like(&left.ty)
+                && type_is_string_like(&right.ty)
+                && !matches!(lowered_right, RustExpr::Borrow(_))
+            {
+                // Rust `String +` expects a borrowed RHS (`&str`-compatible).
+                lowered_right = borrow_expr(lowered_right);
             } else if matches!(
                 op,
                 TypedBinaryOp::Eq
@@ -4168,6 +4206,10 @@ fn resolve_heuristic_path_call_arg_modes(
     let TypedExprKind::Path(path) = &callee.kind else {
         return None;
     };
+    let resolved = state.resolve_callee_path(path);
+    if state.known_functions.contains(&resolved.join("::")) {
+        return None;
+    }
     let Some(name) = path.last() else {
         return None;
     };
@@ -4225,6 +4267,7 @@ fn method_receiver_is_borrowed(base_ty: &str, field: &str) -> bool {
                 | "ends_with"
                 | "strip_prefix"
                 | "split_once"
+                | "push_str"
         ),
         "Vec" => matches!(
             field,
@@ -4242,7 +4285,12 @@ fn method_borrows_first_arg(base_ty: &str, field: &str) -> bool {
     match last_path_segment(base_ty) {
         "String" => matches!(
             field,
-            "contains" | "starts_with" | "ends_with" | "strip_prefix" | "split_once"
+            "contains"
+                | "starts_with"
+                | "ends_with"
+                | "strip_prefix"
+                | "split_once"
+                | "push_str"
         ),
         "Vec" => matches!(field, "contains"),
         "HashMap" | "BTreeMap" => matches!(field, "contains_key"),
@@ -4302,6 +4350,42 @@ fn type_should_prefer_borrow(ty: &str, state: &LoweringState) -> bool {
 
 fn type_is_string_like(ty: &str) -> bool {
     matches!(last_path_segment(ty.trim()), "str" | "String")
+}
+
+fn lower_index_expr(
+    index: &TypedExpr,
+    context: &mut LoweringContext,
+    state: &mut LoweringState,
+) -> RustExpr {
+    match &index.kind {
+        TypedExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } => RustExpr::Range {
+            start: start
+                .as_ref()
+                .map(|value| Box::new(lower_index_range_bound(value, context, state))),
+            end: end
+                .as_ref()
+                .map(|value| Box::new(lower_index_range_bound(value, context, state))),
+            inclusive: *inclusive,
+        },
+        _ => lower_expr_with_context(index, context, ExprPosition::Value, state),
+    }
+}
+
+fn lower_index_range_bound(
+    expr: &TypedExpr,
+    context: &mut LoweringContext,
+    state: &mut LoweringState,
+) -> RustExpr {
+    let lowered = lower_expr_with_context(expr, context, ExprPosition::Value, state);
+    if is_numeric_type_name(&expr.ty) && expr.ty.trim() != "usize" {
+        cast_expr(lowered, "usize".to_string())
+    } else {
+        lowered
+    }
 }
 
 fn call_name_suggests_read_only(name: &str) -> bool {
