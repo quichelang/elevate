@@ -4547,12 +4547,26 @@ fn push_auto_clone_notes(
 }
 
 fn is_expensive_clone_type(ty: &str) -> bool {
-    matches!(
-        last_path_segment(ty.trim()),
-        "String" | "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
-    ) || parse_tuple_items(ty)
+    let trimmed = ty.trim();
+    if parse_tuple_items(trimmed)
         .map(|items| items.iter().any(|item| is_expensive_clone_type(item)))
         .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let (head, args) = split_type_head_and_args(trimmed);
+    let base = last_path_segment(head);
+    if args.iter().any(|arg| is_expensive_clone_type(arg)) {
+        return true;
+    }
+    if matches!(base, "String" | "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet") {
+        return true;
+    }
+    if is_copy_primitive_type(base) {
+        return false;
+    }
+    is_probably_nominal_type(base)
 }
 
 fn clone_expr(expr: RustExpr) -> RustExpr {
