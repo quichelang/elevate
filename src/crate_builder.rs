@@ -70,8 +70,13 @@ pub fn build_ers_crate_with_options(
                     &error.stderr,
                     &summary.generated_root,
                 );
-                let added = merge_direct_borrow_hints(&mut adaptive_options, inferred);
-                if added == 0 || retries_left == 0 {
+                let added_borrow = merge_direct_borrow_hints(&mut adaptive_options, inferred);
+                let inferred_clones = infer_forced_clone_places_from_cargo_error(
+                    &error.stderr,
+                    &summary.generated_root,
+                );
+                let added_clone = merge_forced_clone_places(&mut adaptive_options, inferred_clones);
+                if (added_borrow + added_clone) == 0 || retries_left == 0 {
                     return Err(format!(
                         "cargo build failed for generated crate {} (status: {})\n{}",
                         error.manifest.display(),
@@ -230,6 +235,22 @@ fn merge_direct_borrow_hints(
     added
 }
 
+fn merge_forced_clone_places(options: &mut CompileOptions, places: Vec<String>) -> usize {
+    let mut set = options
+        .forced_clone_places
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut added = 0usize;
+    for place in places {
+        if set.insert(place) {
+            added += 1;
+        }
+    }
+    options.forced_clone_places = set.into_iter().collect();
+    added
+}
+
 fn infer_direct_borrow_hints_from_cargo_error(
     stderr: &str,
     generated_root: &Path,
@@ -292,6 +313,54 @@ fn infer_direct_borrow_hints_from_cargo_error(
             })
         })
         .collect()
+}
+
+fn infer_forced_clone_places_from_cargo_error(stderr: &str, generated_root: &Path) -> Vec<String> {
+    let mut source_cache = HashMap::<PathBuf, Vec<String>>::new();
+    let mut current_location: Option<(PathBuf, usize)> = None;
+    let mut hinted = BTreeSet::<String>::new();
+    let lines = stderr.lines().collect::<Vec<_>>();
+    let mut index = 0usize;
+    while index < lines.len() {
+        let line = strip_ansi(lines[index]);
+        if let Some(location) = parse_diagnostic_location(&line, generated_root) {
+            current_location = Some(location);
+        }
+        if line.contains("consider cloning the value")
+            || line.contains("consider cloning this value")
+            || line.contains("consider cloning")
+        {
+            let mut probe = index + 1;
+            while probe < lines.len() {
+                let candidate = strip_ansi(lines[probe]);
+                if let Some((snippet_line, suggested_code)) = parse_snippet_line(&candidate) {
+                    if let Some((path, fallback_line)) = &current_location {
+                        let line_no = if snippet_line > 0 { snippet_line } else { *fallback_line };
+                        if let Some(original) = source_line(path, line_no, &mut source_cache) {
+                            for place in infer_clone_places_from_suggestion(&original, &suggested_code)
+                            {
+                                hinted.insert(place);
+                            }
+                        }
+                    }
+                    break;
+                }
+                if candidate.trim_start().starts_with("-->")
+                    || candidate.trim_start().starts_with("error")
+                    || candidate.trim_start().starts_with("warning")
+                    || candidate.trim_start().starts_with("note")
+                    || candidate.trim_start().starts_with("help:")
+                {
+                    break;
+                }
+                probe += 1;
+            }
+            index = probe;
+            continue;
+        }
+        index += 1;
+    }
+    hinted.into_iter().collect()
 }
 
 fn strip_ansi(input: &str) -> String {
@@ -398,6 +467,48 @@ fn infer_borrow_indexes_from_suggestion(
     } else {
         Some((orig_callee, borrowed_indexes))
     }
+}
+
+fn infer_clone_places_from_suggestion(original_line: &str, suggested_line: &str) -> Vec<String> {
+    let mut places = Vec::new();
+    for token in extract_clone_tokens(suggested_line) {
+        let bare = token.trim_end_matches(".clone()");
+        if bare.is_empty() {
+            continue;
+        }
+        if !original_line.contains(bare) {
+            continue;
+        }
+        if !original_line.contains(&token) {
+            places.push(bare.to_string());
+        }
+    }
+    places.sort();
+    places.dedup();
+    places
+}
+
+fn extract_clone_tokens(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let needle = ".clone()";
+    let mut search_from = 0usize;
+    while let Some(rel_idx) = line[search_from..].find(needle) {
+        let clone_start = search_from + rel_idx;
+        let mut start = clone_start;
+        while start > 0 {
+            let prev = line[..start].chars().last().unwrap_or(' ');
+            if prev.is_ascii_alphanumeric() || matches!(prev, '_' | '.' | '[' | ']') {
+                start -= prev.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if start < clone_start {
+            tokens.push(line[start..clone_start + needle.len()].to_string());
+        }
+        search_from = clone_start + needle.len();
+    }
+    tokens
 }
 
 fn parse_first_call(line: &str) -> Option<(String, Vec<String>)> {
@@ -1582,7 +1693,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        infer_borrow_indexes_from_suggestion, merge_direct_borrow_hints, parse_diagnostic_location,
+        infer_borrow_indexes_from_suggestion, infer_clone_places_from_suggestion,
+        merge_direct_borrow_hints, merge_forced_clone_places, parse_diagnostic_location,
         transpile_ers_crate,
     };
     use crate::{CompileOptions, DirectBorrowHint};
@@ -2038,6 +2150,31 @@ mod tests {
                 .direct_borrow_hints
                 .iter()
                 .any(|hint| hint.path == "Other::query" && hint.borrowed_arg_indexes == vec![0])
+        );
+    }
+
+    #[test]
+    fn infer_clone_places_detects_added_clone_calls() {
+        let original = "return state.text.into_bytes();";
+        let suggested = "return state.text.clone().into_bytes();";
+        let places = infer_clone_places_from_suggestion(original, suggested);
+        assert_eq!(places, vec!["state.text".to_string()]);
+    }
+
+    #[test]
+    fn merge_forced_clone_places_deduplicates() {
+        let mut options = CompileOptions {
+            forced_clone_places: vec!["state.text".to_string()],
+            ..CompileOptions::default()
+        };
+        let added = merge_forced_clone_places(
+            &mut options,
+            vec!["state.text".to_string(), "packet".to_string()],
+        );
+        assert_eq!(added, 1);
+        assert_eq!(
+            options.forced_clone_places,
+            vec!["packet".to_string(), "state.text".to_string()]
         );
     }
 

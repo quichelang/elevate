@@ -47,6 +47,7 @@ impl ExperimentFlags {
 pub struct CompileOptions {
     pub experiments: ExperimentFlags,
     pub direct_borrow_hints: Vec<DirectBorrowHint>,
+    pub forced_clone_places: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -104,7 +105,11 @@ pub fn compile_ast_with_options(
 ) -> Result<CompilerOutput, CompileError> {
     let typed =
         passes::lower_to_typed(module).map_err(|diagnostics| CompileError { diagnostics })?;
-    let mut lowered = passes::lower_to_rust_with_hints(&typed, &options.direct_borrow_hints);
+    let mut lowered = passes::lower_to_rust_with_hints(
+        &typed,
+        &options.direct_borrow_hints,
+        &options.forced_clone_places,
+    );
     for name in options.experiments.active_names() {
         lowered
             .ownership_notes
@@ -128,7 +133,7 @@ mod tests {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::compile_source;
+    use super::{compile_source, compile_source_with_options, CompileOptions};
 
     #[test]
     fn compile_smoke_test() {
@@ -479,6 +484,40 @@ mod tests {
                 .any(|note| note.contains("`text` of type `String`"))
         );
         assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_auto_clones_reused_consuming_receiver_in_single_chain_expression() {
+        let source = r#"
+            fn demo(text: String) -> usize {
+                return text.into_bytes().len() + text.into_bytes().len();
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output
+            .rust_code
+            .contains("text.clone().into_bytes().len() + text.into_bytes().len()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_respects_forced_clone_place_hints() {
+        let source = r#"
+            fn consume(value: String) {
+                std::mem::drop(value);
+                return;
+            }
+
+            fn demo(text: String) {
+                consume(text);
+                return;
+            }
+        "#;
+        let mut options = CompileOptions::default();
+        options.forced_clone_places.push("text".to_string());
+        let output = compile_source_with_options(source, &options).expect("expected compile");
+        assert!(output.rust_code.contains("consume(text.clone());"));
     }
 
     #[test]

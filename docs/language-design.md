@@ -195,9 +195,11 @@ Implemented:
 - Method-call ownership lowering for known Rust receiver methods:
 - borrowed receiver/arg handling for non-consuming calls (for example `len`, `contains`, `contains_key`);
 - auto-clone insertion for reused owned receivers on consuming-style calls when clone-safe.
+- Owned-operand chain lowering now applies clone insertion for consuming expression operands (for example repeated consuming method chains inside a single expression).
 - String interop shims for owned-return helpers (`str::strip_prefix_known`, `str::split_once_known`) with borrow-safe lowering.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 - Crate build diagnostics now include line/column output (plus symbol declaration hints when span data is coarse).
+- Crate build loop now includes adaptive borrow/clone feedback from Rust diagnostics (retrying transpile/build with inferred interop borrow hints and forced-clone places).
 - Interop contract preview via crate-level `elevate.interop` file:
 - allow-list validation for `rust use` imports.
 - deterministic generated adapter module (`elevate_interop.rs`) from declared adapter entries.
@@ -211,6 +213,7 @@ Implemented:
 - injects generated test wrappers,
 - transpiles and runs tests via `cargo test`.
 - Native assert function forms in Elevate source (non-macro syntax): `assert(...)`, `assert_eq(...)`, `assert_ne(...)`.
+- First-class non-consuming read views via `view(...)` (lowered to Rust borrows).
 - CLI support for `test` subcommand and experiment flag toggles.
 - Lexopt case study API now centered on `Parser` impl methods (compatibility wrapper surface removed).
 - Instance method-call syntax (`value.method(...)`) resolves against user `impl` methods, enabling object-native API style beyond associated-call form.

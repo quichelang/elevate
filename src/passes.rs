@@ -77,15 +77,22 @@ pub fn lower_to_typed(module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
 }
 
 pub fn lower_to_rust(module: &TypedModule) -> RustModule {
-    lower_to_rust_with_hints(module, &[])
+    lower_to_rust_with_hints(module, &[], &[])
 }
 
-pub fn lower_to_rust_with_hints(module: &TypedModule, hints: &[DirectBorrowHint]) -> RustModule {
+pub fn lower_to_rust_with_hints(
+    module: &TypedModule,
+    hints: &[DirectBorrowHint],
+    forced_clone_places: &[String],
+) -> RustModule {
     let mut state = LoweringState::from_module(module);
     for hint in hints {
         state
             .registry
             .register_direct_borrow_policy(&hint.path, &hint.borrowed_arg_indexes);
+    }
+    for place in forced_clone_places {
+        state.force_clone_place(place);
     }
     let mut items = Vec::new();
     for item in &module.items {
@@ -273,12 +280,14 @@ struct LoweringState {
     ownership_notes: Vec<String>,
     ownership_note_keys: BTreeSet<String>,
     registry: InteropPolicyRegistry,
+    forced_clone_places: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExprPosition {
     Value,
     CallArgOwned,
+    OwnedOperand,
     ProjectionBase,
 }
 
@@ -368,6 +377,16 @@ impl LoweringState {
         if self.ownership_note_keys.insert(note.clone()) {
             self.ownership_notes.push(note);
         }
+    }
+
+    fn force_clone_place(&mut self, place: &str) {
+        self.forced_clone_places.insert(place.to_string());
+    }
+
+    fn is_forced_clone_expr(&self, expr: &TypedExpr) -> bool {
+        place_for_expr(expr)
+            .map(|place| self.forced_clone_places.contains(&place.display_name()))
+            .unwrap_or(false)
     }
 }
 
@@ -3686,7 +3705,7 @@ fn lower_expr_with_context(
                 )),
                 field: field.clone(),
             };
-            if position == ExprPosition::CallArgOwned
+            if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
                 && remaining_conflicting_before > 1
                 && should_clone_for_reuse(&expr.ty, state)
             {
@@ -3703,7 +3722,14 @@ fn lower_expr_with_context(
                 }
                 clone_expr(lowered_field)
             } else {
-                lowered_field
+                if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
+                    && state.is_forced_clone_expr(expr)
+                    && should_clone_for_reuse(&expr.ty, state)
+                {
+                    clone_expr(lowered_field)
+                } else {
+                    lowered_field
+                }
             }
         }
         TypedExprKind::Index { base, index } => {
@@ -3729,7 +3755,7 @@ fn lower_expr_with_context(
                     state,
                 )),
             };
-            if position == ExprPosition::CallArgOwned
+            if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
                 && remaining_conflicting_before > 1
                 && should_clone_for_reuse(&expr.ty, state)
             {
@@ -3746,7 +3772,14 @@ fn lower_expr_with_context(
                 }
                 clone_expr(lowered_index_expr)
             } else {
-                lowered_index_expr
+                if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
+                    && state.is_forced_clone_expr(expr)
+                    && should_clone_for_reuse(&expr.ty, state)
+                {
+                    clone_expr(lowered_index_expr)
+                } else {
+                    lowered_index_expr
+                }
             }
         }
         TypedExprKind::Match { scrutinee, arms } => RustExpr::Match {
@@ -3778,7 +3811,7 @@ fn lower_expr_with_context(
         },
         TypedExprKind::Unary { op, expr: inner } => {
             let mut lowered_expr =
-                lower_expr_with_context(inner, context, ExprPosition::Value, state);
+                lower_expr_with_context(inner, context, ExprPosition::OwnedOperand, state);
             match op {
                 TypedUnaryOp::Not => RustExpr::Unary {
                     op: RustUnaryOp::Not,
@@ -3796,10 +3829,22 @@ fn lower_expr_with_context(
             }
         }
         TypedExprKind::Binary { op, left, right } => {
+            let operand_position = if matches!(
+                op,
+                TypedBinaryOp::Add
+                    | TypedBinaryOp::Sub
+                    | TypedBinaryOp::Mul
+                    | TypedBinaryOp::Div
+                    | TypedBinaryOp::Rem
+            ) {
+                ExprPosition::OwnedOperand
+            } else {
+                ExprPosition::Value
+            };
             let mut lowered_left =
-                lower_expr_with_context(left, context, ExprPosition::Value, state);
+                lower_expr_with_context(left, context, operand_position, state);
             let mut lowered_right =
-                lower_expr_with_context(right, context, ExprPosition::Value, state);
+                lower_expr_with_context(right, context, operand_position, state);
 
             if matches!(
                 op,
@@ -3952,20 +3997,21 @@ fn lower_path_expr(
     context.ownership_plan.consume_expr(expr);
 
     let path_expr = RustExpr::Path(path.to_vec());
-    if position == ExprPosition::CallArgOwned
-        && remaining_conflicting > 1
+    if matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand)
         && should_clone_for_reuse(ty, state)
     {
-        let scope = if context.scope_name.is_empty() {
-            "<module>"
-        } else {
-            context.scope_name.as_str()
-        };
-        state.push_ownership_note(format!(
-            "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
-            ty.trim()
-        ));
-        return clone_expr(path_expr);
+        if remaining_conflicting > 1 || state.is_forced_clone_expr(expr) {
+            let scope = if context.scope_name.is_empty() {
+                "<module>"
+            } else {
+                context.scope_name.as_str()
+            };
+            state.push_ownership_note(format!(
+                "auto-clone inserted in `{scope}` for `{name}` of type `{}`",
+                ty.trim()
+            ));
+            return clone_expr(path_expr);
+        }
     }
     path_expr
 }
