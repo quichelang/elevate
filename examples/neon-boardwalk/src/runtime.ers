@@ -253,14 +253,26 @@ fn char_to_digit(ch: char) -> i64 {
 
 fn render_frame(board: Board, cursor_row: i64, cursor_col: i64, message: String) -> (Board, String) {
     const frame: String = String::from("\x1b[H");
-    frame.push_str("Neon Boardwalk :: Sudoku\n\n");
+    frame.push_str(render_background_strip(0));
+    frame.push_str(render_background_strip(1));
+    frame.push_str(render_background_strip(2));
+    frame.push_str(render_background_strip(3));
+    frame.push_str(render_background_strip(4));
+    frame.push_str("\n");
+    frame.push_str("\x1b[1;38;5;123m  NEON BOARDWALK :: SUDOKU GRID\x1b[0m\n");
+    frame.push_str("\x1b[38;5;81m  ##=================##=================##=================##\x1b[0m\n");
 
     for row in 0..9 {
-        if row % 3 == 0 {
-            frame.push_str("+-------+-------+-------+\n");
+        if row > 0 {
+            if row % 3 == 0 {
+                frame.push_str("\x1b[38;5;81m  ##=================##=================##=================##\x1b[0m");
+            } else {
+                frame.push_str("\x1b[38;5;33m  ||-----------------||-----------------||-----------------||\x1b[0m");
+            }
+            frame.push_str("\x1b[48;5;236m  \x1b[0m\n");
         }
 
-        frame.push_str("|");
+        frame.push_str("\x1b[38;5;81m  ||\x1b[0m");
         const (next_board, row_values) = Board::row_values(board, row);
         board = next_board;
 
@@ -268,34 +280,46 @@ fn render_frame(board: Board, cursor_row: i64, cursor_col: i64, message: String)
             const value = row_values[col];
             const is_cursor = row == cursor_row and col == cursor_col;
             const is_fixed = board.fixed[row * 9 + col];
-            const cell = render_cell(value, is_cursor, is_fixed);
+            const (conflict_board, has_conflict) = Board::has_conflict(board, row, col);
+            board = conflict_board;
+            const cell = render_cell(value, is_cursor, is_fixed, has_conflict);
             frame.push_str(cell);
 
             if col % 3 == 2 {
-                frame.push_str(" |");
+                frame.push_str("\x1b[38;5;81m||\x1b[0m");
+            } else {
+                frame.push_str("\x1b[38;5;33m|\x1b[0m");
             }
         }
-        frame.push_str("\n");
+        frame.push_str("\x1b[48;5;236m  \x1b[0m\n");
     }
 
-    frame.push_str("+-------+-------+-------+\n\n");
-    frame.push_str("Controls: arrows/WASD move | 1-9 set | 0/space/backspace clear\n");
-    frame.push_str("          c check | n next | r reset | q quit\n");
-    frame.push_str("Status: ");
+    frame.push_str("\x1b[38;5;81m  ##=================##=================##=================##\x1b[0m\x1b[48;5;236m  \x1b[0m\n");
+    frame.push_str("\x1b[48;5;236m   \x1b[48;5;235m                                                       \x1b[0m\n");
+    frame.push_str("\x1b[48;5;236m    \x1b[48;5;234m                                                      \x1b[0m\n\n");
+    frame.push_str("\x1b[38;5;153m  Controls:\x1b[0m arrows/WASD move | 1-9 set | 0/space/backspace clear\n");
+    frame.push_str("\x1b[38;5;153m            \x1b[0m c check | n next | r reset | q quit\n");
+    frame.push_str("\x1b[1;38;5;220m  Status:\x1b[0m ");
     frame.push_str(message);
-    frame.push_str("\n");
+    frame.push_str("\n\n");
     (board, frame)
 }
 
-fn render_cell(value: i64, is_cursor: bool, is_fixed: bool) -> String {
+fn render_cell(value: i64, is_cursor: bool, is_fixed: bool, has_conflict: bool) -> String {
     const ch = digit_to_char(value);
     if is_cursor {
-        return format!("\x1b[7m {}\x1b[0m", ch);
+        return format!("\x1b[48;5;226m\x1b[1;38;5;16m {} \x1b[0m", ch);
+    }
+    if has_conflict {
+        return format!("\x1b[48;5;52m\x1b[1;38;5;210m {} \x1b[0m", ch);
+    }
+    if value == 0 {
+        return String::from("\x1b[48;5;236m\x1b[38;5;244m . \x1b[0m");
     }
     if is_fixed {
-        return format!("\x1b[1m {}\x1b[0m", ch);
+        return format!("\x1b[48;5;24m\x1b[1;38;5;231m {} \x1b[0m", ch);
     }
-    format!(" {}", ch)
+    format!("\x1b[48;5;238m\x1b[38;5;195m {} \x1b[0m", ch)
 }
 
 fn digit_to_char(value: i64) -> char {
@@ -311,5 +335,15 @@ fn digit_to_char(value: i64) -> char {
         8 => '8';
         9 => '9';
         _ => '?';
+    }
+}
+
+fn render_background_strip(index: i64) -> String {
+    match index {
+        0 => "\x1b[48;5;17m                                                                                \x1b[0m\n";
+        1 => "\x1b[48;5;18m    .---.      .---.      .---.      .---.      .---.      .---.             \x1b[0m\n";
+        2 => "\x1b[48;5;19m   /_#_#_\\    /_#_#_\\    /_#_#_\\    /_#_#_\\    /_#_#_\\    /_#_#_\\            \x1b[0m\n";
+        3 => "\x1b[48;5;20m   |#|#|#|    |#|#|#|    |#|#|#|    |#|#|#|    |#|#|#|    |#|#|#|            \x1b[0m\n";
+        _ => "\x1b[48;5;21m================================================================================\x1b[0m\n";
     }
 }
