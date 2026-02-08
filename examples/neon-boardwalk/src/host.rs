@@ -448,19 +448,57 @@ fn pump_window_keys(window: &MinifbWindow, key_tx: &Sender<KeyEvent>) {
 }
 
 fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket) {
-    draw_vertical_gradient(buffer, width, height, 0, 0, width, height / 2, rgb(36, 102, 183), rgb(129, 194, 255));
-    draw_vertical_gradient(buffer, width, height, 0, height / 2, width, height / 2, rgb(74, 57, 36), rgb(112, 86, 48));
+    draw_vertical_gradient(
+        buffer,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height / 2,
+        rgb(72, 134, 214),
+        rgb(187, 225, 255),
+    );
+    draw_vertical_gradient(
+        buffer,
+        width,
+        height,
+        0,
+        height / 2,
+        width,
+        height / 2,
+        rgb(99, 74, 44),
+        rgb(73, 54, 37),
+    );
 
+    draw_sun_glow(buffer, width, height, width - 170, 90, 165);
+    draw_cloud_bands(buffer, width, height);
     draw_hills(buffer, width, height);
     draw_floor_tiles(buffer, width, height);
 
-    let board_x = 150;
-    let board_y = 130;
-    let cell = 52;
+    let board_x = 110;
+    let board_y = 120;
+    let cell = 58;
     let board_size = cell * 9;
 
-    draw_shadow_panel(buffer, width, height, board_x - 34, board_y - 34, board_size + 68, board_size + 68);
-    draw_wood_panel(buffer, width, height, board_x - 28, board_y - 28, board_size + 56, board_size + 56);
+    draw_shadow_panel(
+        buffer,
+        width,
+        height,
+        board_x - 52,
+        board_y - 40,
+        board_size + 96,
+        board_size + 86,
+    );
+    draw_wood_panel(
+        buffer,
+        width,
+        height,
+        board_x - 42,
+        board_y - 30,
+        board_size + 84,
+        board_size + 74,
+    );
     draw_parchment_grid(
         buffer,
         width,
@@ -477,16 +515,30 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
 
     draw_hud_panel(buffer, width, height, frame);
 
-    draw_label(buffer, width, height, 70, 52, 3, rgb(244, 237, 205), "PLAYER 1");
-    draw_label(buffer, width, height, 315, 52, 3, rgb(244, 237, 205), "CPU");
-    draw_label(buffer, width, height, 90, 86, 4, rgb(255, 248, 208), "34");
-    draw_label(buffer, width, height, 332, 86, 4, rgb(255, 248, 208), "28");
+    draw_wood_panel(buffer, width, height, 58, 30, 250, 96);
+    draw_wood_panel(buffer, width, height, 330, 30, 250, 96);
+    draw_label(buffer, width, height, 84, 48, 3, rgb(255, 245, 206), "PLAYER 1");
+    draw_label(buffer, width, height, 368, 48, 3, rgb(255, 245, 206), "CPU");
+    draw_label(buffer, width, height, 140, 84, 4, rgb(255, 252, 232), "34");
+    draw_label(buffer, width, height, 428, 84, 4, rgb(255, 252, 232), "28");
 
     draw_bottom_bar(buffer, width, height, frame);
 
     if frame.debug_enabled {
         let fps_text = format!("FPS {:>3}", frame.fps);
-        draw_label(buffer, width, height, width - 220, 20, 2, rgb(145, 255, 162), &fps_text);
+        draw_bevel_box(
+            buffer,
+            width,
+            height,
+            width - 210,
+            16,
+            170,
+            36,
+            rgb(145, 171, 102),
+            rgb(57, 67, 35),
+            rgb(28, 34, 18),
+        );
+        draw_label(buffer, width, height, width - 188, 26, 2, rgb(220, 255, 184), &fps_text);
     }
 }
 
@@ -503,15 +555,29 @@ fn draw_parchment_grid(
     cursor_col: i64,
     vga: bool,
 ) {
-    let parchment = if vga { rgb(231, 201, 142) } else { rgb(233, 206, 150) };
-    let parchment_dark = if vga { rgb(210, 174, 114) } else { rgb(212, 178, 120) };
+    let parchment = if vga { rgb(227, 194, 132) } else { rgb(232, 205, 151) };
+    let parchment_dark = if vga { rgb(204, 164, 104) } else { rgb(209, 174, 118) };
+    let board_w = cell * 9;
+    let board_h = cell * 9;
 
-    fill_rect(buffer, width, height, board_x, board_y, cell * 9, cell * 9, parchment);
+    fill_rect(buffer, width, height, board_x, board_y, board_w, board_h, parchment);
+    fill_rect_grain(
+        buffer,
+        width,
+        height,
+        board_x,
+        board_y,
+        board_w,
+        board_h,
+        parchment,
+        0x9c4d_u32,
+        7,
+    );
 
     for row in 0..9 {
         for col in 0..9 {
             if ((row + col) & 1) == 0 {
-                fill_rect(
+                fill_rect_grain(
                     buffer,
                     width,
                     height,
@@ -520,10 +586,23 @@ fn draw_parchment_grid(
                     cell,
                     cell,
                     parchment_dark,
+                    0x1839_u32 + (row * 17 + col * 23) as u32,
+                    5,
                 );
             }
         }
     }
+
+    fill_rect(
+        buffer,
+        width,
+        height,
+        board_x + cell * 3,
+        board_y + cell * 3,
+        cell * 3,
+        cell * 3,
+        tint(parchment_dark, -12),
+    );
 
     for row in 0..9 {
         for col in 0..9 {
@@ -537,7 +616,18 @@ fn draw_parchment_grid(
                     board_y + row * cell,
                     cell,
                     cell,
-                    4,
+                    5,
+                    rgb(255, 231, 118),
+                );
+                draw_rect_border(
+                    buffer,
+                    width,
+                    height,
+                    board_x + col * cell + 4,
+                    board_y + row * cell + 4,
+                    cell - 8,
+                    cell - 8,
+                    2,
                     rgb(255, 214, 73),
                 );
             }
@@ -548,16 +638,30 @@ fn draw_parchment_grid(
                 let is_fixed = fixed.get(idx as usize).copied().unwrap_or(false);
                 let color = if is_fixed { rgb(17, 48, 126) } else { rgb(37, 82, 170) };
                 let text = value.to_string();
-                let tx = board_x + col * cell + (cell / 2) - 10;
-                let ty = board_y + row * cell + (cell / 2) - 16;
+                let tx = board_x + col * cell + (cell / 2) - 11;
+                let ty = board_y + row * cell + (cell / 2) - 17;
+                draw_label(
+                    buffer,
+                    width,
+                    height,
+                    tx + 2,
+                    ty + 2,
+                    4,
+                    rgba_dim(rgb(17, 20, 28), 0.45),
+                    &text,
+                );
                 draw_label(buffer, width, height, tx, ty, 4, color, &text);
             }
         }
     }
 
     for i in 0..=9 {
-        let thick = if i % 3 == 0 { 5 } else { 2 };
-        let color = if i % 3 == 0 { rgb(108, 64, 34) } else { rgb(135, 95, 58) };
+        let thick = if i % 3 == 0 { 6 } else { 2 };
+        let color = if i % 3 == 0 {
+            rgb(97, 57, 31)
+        } else {
+            rgb(132, 91, 57)
+        };
         let x = board_x + i * cell;
         fill_rect(
             buffer,
@@ -581,52 +685,130 @@ fn draw_parchment_grid(
             color,
         );
     }
+
+    draw_rect_border(
+        buffer,
+        width,
+        height,
+        board_x - 5,
+        board_y - 5,
+        board_w + 10,
+        board_h + 10,
+        5,
+        rgb(82, 49, 29),
+    );
 }
 
 fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket) {
     let panel_x = 700;
-    let panel_y = 150;
-    let panel_w = 420;
-    let panel_h = 500;
+    let panel_y = 122;
+    let panel_w = 440;
+    let panel_h = 548;
 
     draw_shadow_panel(buffer, width, height, panel_x + 8, panel_y + 8, panel_w, panel_h);
     draw_wood_panel(buffer, width, height, panel_x, panel_y, panel_w, panel_h);
 
-    draw_bevel_box(buffer, width, height, panel_x + 26, panel_y + 26, 368, 95, rgb(57, 33, 17), rgb(80, 48, 24), rgb(43, 22, 11));
-    draw_label(buffer, width, height, panel_x + 48, panel_y + 42, 3, rgb(255, 245, 180), "TIME:");
-    draw_label(buffer, width, height, panel_x + 52, panel_y + 80, 4, rgb(255, 248, 212), "02:15");
+    draw_bevel_box(
+        buffer,
+        width,
+        height,
+        panel_x + 28,
+        panel_y + 28,
+        384,
+        102,
+        rgb(63, 40, 21),
+        rgb(50, 35, 21),
+        rgb(28, 18, 11),
+    );
+    draw_label(buffer, width, height, panel_x + 54, panel_y + 46, 3, rgb(255, 246, 191), "TIME:");
+    draw_label(buffer, width, height, panel_x + 54, panel_y + 86, 4, rgb(255, 250, 224), "02:15");
 
-    draw_bevel_box(buffer, width, height, panel_x + 26, panel_y + 138, 368, 95, rgb(57, 33, 17), rgb(80, 48, 24), rgb(43, 22, 11));
-    draw_label(buffer, width, height, panel_x + 48, panel_y + 154, 3, rgb(255, 245, 180), "LEVEL:");
-    draw_label(buffer, width, height, panel_x + 48, panel_y + 192, 4, rgb(255, 248, 212), "MEDIUM");
+    draw_bevel_box(
+        buffer,
+        width,
+        height,
+        panel_x + 28,
+        panel_y + 146,
+        384,
+        102,
+        rgb(63, 40, 21),
+        rgb(50, 35, 21),
+        rgb(28, 18, 11),
+    );
+    draw_label(buffer, width, height, panel_x + 54, panel_y + 164, 3, rgb(255, 246, 191), "LEVEL:");
+    draw_label(buffer, width, height, panel_x + 54, panel_y + 204, 4, rgb(255, 250, 224), "MEDIUM");
 
-    let button_w = 104;
-    let button_h = 74;
-    let keypad_x = panel_x + 26;
-    let keypad_y = panel_y + 252;
+    let button_w = 106;
+    let button_h = 76;
+    let keypad_x = panel_x + 28;
+    let keypad_y = panel_y + 272;
     for row in 0..3 {
         for col in 0..3 {
             let bx = keypad_x + col * (button_w + 9);
             let by = keypad_y + row * (button_h + 10);
-            draw_bevel_box(buffer, width, height, bx, by, button_w, button_h, rgb(62, 41, 24), rgb(90, 63, 38), rgb(45, 27, 15));
+            draw_bevel_box(
+                buffer,
+                width,
+                height,
+                bx,
+                by,
+                button_w,
+                button_h,
+                rgb(156, 122, 71),
+                rgb(91, 62, 35),
+                rgb(45, 29, 16),
+            );
             let number = (row * 3 + col + 1).to_string();
-            draw_label(buffer, width, height, bx + 34, by + 22, 4, rgb(253, 236, 145), &number);
+            draw_label(buffer, width, height, bx + 36, by + 24, 4, rgb(255, 238, 138), &number);
         }
     }
 
     let erase_color = rgb(188, 48, 40);
     let hint_color = rgb(37, 150, 63);
-    draw_bevel_box(buffer, width, height, panel_x + 26, panel_y + 486, 180, 60, rgb(255, 140, 140), erase_color, rgb(118, 21, 18));
-    draw_bevel_box(buffer, width, height, panel_x + 214, panel_y + 486, 180, 60, rgb(158, 255, 170), hint_color, rgb(16, 90, 35));
-    draw_label(buffer, width, height, panel_x + 66, panel_y + 506, 3, rgb(255, 248, 233), "ERASE");
-    draw_label(buffer, width, height, panel_x + 266, panel_y + 506, 3, rgb(240, 255, 240), "HINT");
+    draw_bevel_box(
+        buffer,
+        width,
+        height,
+        panel_x + 28,
+        panel_y + 504,
+        188,
+        62,
+        rgb(255, 158, 143),
+        erase_color,
+        rgb(110, 18, 18),
+    );
+    draw_bevel_box(
+        buffer,
+        width,
+        height,
+        panel_x + 224,
+        panel_y + 504,
+        188,
+        62,
+        rgb(168, 255, 176),
+        hint_color,
+        rgb(13, 83, 35),
+    );
+    draw_label(buffer, width, height, panel_x + 70, panel_y + 524, 3, rgb(255, 248, 233), "ERASE");
+    draw_label(buffer, width, height, panel_x + 274, panel_y + 524, 3, rgb(240, 255, 240), "HINT");
 
     let mode_text = if frame.vga { "MODE: VGA" } else { "MODE: NEON" };
-    draw_label(buffer, width, height, panel_x + 30, panel_y + 570, 2, rgb(255, 236, 170), mode_text);
+    draw_label(buffer, width, height, panel_x + 32, panel_y + 580, 2, rgb(255, 236, 170), mode_text);
 }
 
 fn draw_bottom_bar(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket) {
-    draw_bevel_box(buffer, width, height, 42, height - 108, width - 84, 74, rgb(89, 64, 38), rgb(66, 44, 23), rgb(46, 30, 17));
+    draw_bevel_box(
+        buffer,
+        width,
+        height,
+        34,
+        height - 112,
+        width - 68,
+        78,
+        rgb(139, 102, 58),
+        rgb(92, 61, 35),
+        rgb(43, 28, 18),
+    );
     draw_label(buffer, width, height, 70, height - 84, 2, rgb(233, 235, 220), "Status:");
     draw_label(
         buffer,
@@ -641,38 +823,58 @@ fn draw_bottom_bar(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPa
 }
 
 fn draw_hills(buffer: &mut [u32], width: i32, height: i32) {
-    let horizon = (height as f32 * 0.45) as i32;
-    for x in 0..width {
-        let xf = x as f32;
-        let y = horizon as f32
-            + (xf / 70.0).sin() * 28.0
-            + (xf / 39.0).sin() * 16.0
-            + (xf / 23.0).cos() * 8.0;
-        let start = y as i32;
-        for yy in start..(horizon + 90) {
-            let shade = ((yy - start).max(0) * 2).min(80) as u8;
-            let color = rgb(54, 136u8.saturating_add(shade / 3), 66);
-            put_pixel(buffer, width, height, x, yy, color);
+    let horizon = (height as f32 * 0.44) as i32;
+    for layer in 0..3 {
+        let base = horizon + layer * 24;
+        let depth = layer as f32 + 1.0;
+        let mut ridge = vec![0i32; width as usize];
+        for x in 0..width {
+            let xf = x as f32;
+            let y = base as f32
+                + (xf / (92.0 - depth * 10.0)).sin() * (26.0 - depth * 4.0)
+                + (xf / (53.0 - depth * 5.0)).cos() * (15.0 - depth * 2.0)
+                + (xf / (27.0 - depth * 2.0)).sin() * (7.0 - depth);
+            ridge[x as usize] = y as i32;
+        }
+
+        for x in 0..width {
+            let start = ridge[x as usize];
+            for yy in start..(horizon + 120 + layer * 12) {
+                let shade = ((yy - start).max(0) * 2).min(90) as i16;
+                let base_color = match layer {
+                    0 => rgb(88, 170, 106),
+                    1 => rgb(66, 149, 84),
+                    _ => rgb(51, 126, 69),
+                };
+                let noise = hash_noise(x, yy, 0xB17B_u32 + layer as u32) % 5;
+                let color = tint(base_color, -shade / 4 + noise as i16);
+                put_pixel(buffer, width, height, x, yy, color);
+            }
         }
     }
 }
 
 fn draw_floor_tiles(buffer: &mut [u32], width: i32, height: i32) {
-    let floor_y = (height as f32 * 0.72) as i32;
+    let floor_y = (height as f32 * 0.73) as i32;
     for y in floor_y..height {
+        let depth = ((y - floor_y) as f32 / (height - floor_y).max(1) as f32).clamp(0.0, 1.0);
+        let tile_w = (64.0 - depth * 30.0).max(26.0) as i32;
+        let tile_h = (34.0 - depth * 16.0).max(14.0) as i32;
         for x in 0..width {
-            let tile_x = x / 56;
-            let tile_y = (y - floor_y) / 32;
+            let tile_x = x / tile_w.max(1);
+            let tile_y = (y - floor_y) / tile_h.max(1);
             let mut color = match (tile_x + tile_y) % 4 {
-                0 => rgb(143, 103, 71),
-                1 => rgb(156, 121, 87),
-                2 => rgb(131, 95, 63),
-                _ => rgb(118, 86, 58),
+                0 => rgb(148, 108, 73),
+                1 => rgb(168, 130, 94),
+                2 => rgb(137, 98, 66),
+                _ => rgb(122, 89, 59),
             };
-            let mortar = x % 56 < 2 || (y - floor_y) % 32 < 2;
+            let mortar = x % tile_w.max(1) < 2 || (y - floor_y) % tile_h.max(1) < 2;
             if mortar {
-                color = rgb(78, 60, 44);
+                color = rgb(86, 66, 47);
             }
+            let noise = hash_noise(x, y, 0x77a1_u32) % 5;
+            color = tint(color, noise as i16 - 2);
             put_pixel(buffer, width, height, x, y, color);
         }
     }
@@ -683,17 +885,36 @@ fn draw_shadow_panel(buffer: &mut [u32], width: i32, height: i32, x: i32, y: i32
 }
 
 fn draw_wood_panel(buffer: &mut [u32], width: i32, height: i32, x: i32, y: i32, w: i32, h: i32) {
-    fill_rect(buffer, width, height, x, y, w, h, rgb(91, 62, 35));
-    fill_rect(buffer, width, height, x + 8, y + 8, w - 16, h - 16, rgb(126, 87, 51));
+    fill_rect(buffer, width, height, x, y, w, h, rgb(88, 58, 34));
+    fill_rect(buffer, width, height, x + 8, y + 8, w - 16, h - 16, rgb(126, 87, 52));
     for yy in (y + 8)..(y + h - 8) {
         for xx in (x + 8)..(x + w - 8) {
-            let stripe = ((xx * 13 + yy * 7) % 19) as i32 - 9;
-            let base = if (yy / 9) % 2 == 0 { 0 } else { -6 };
-            let tone = (base + stripe / 5) as i16;
-            put_pixel(buffer, width, height, xx, yy, tint(rgb(126, 87, 51), tone));
+            let stripe = ((xx * 11 + yy * 5) % 21) as i32 - 10;
+            let wave = (((xx / 23) + (yy / 17)) % 7 - 3) as i16;
+            let tone = (stripe / 5) as i16 + wave;
+            let grain = hash_noise(xx, yy, 0x4412_u32) % 6;
+            put_pixel(
+                buffer,
+                width,
+                height,
+                xx,
+                yy,
+                tint(rgb(126, 87, 52), tone + grain as i16 - 3),
+            );
         }
     }
-    draw_rect_border(buffer, width, height, x, y, w, h, 5, rgb(62, 40, 21));
+    draw_rect_border(buffer, width, height, x, y, w, h, 4, rgb(62, 40, 21));
+    draw_rect_border(
+        buffer,
+        width,
+        height,
+        x + 5,
+        y + 5,
+        w - 10,
+        h - 10,
+        2,
+        rgb(151, 113, 71),
+    );
 }
 
 fn draw_bevel_box(
@@ -736,6 +957,97 @@ fn draw_vertical_gradient(
         let b = (tb as f32 + (bb as f32 - tb as f32) * t) as u8;
         fill_rect(buffer, width, height, x, y + row, w, 1, rgb(r, g, b));
     }
+}
+
+fn draw_sun_glow(buffer: &mut [u32], width: i32, height: i32, cx: i32, cy: i32, radius: i32) {
+    let r2 = (radius * radius) as i64;
+    for y in (cy - radius).max(0)..(cy + radius).min(height) {
+        for x in (cx - radius).max(0)..(cx + radius).min(width) {
+            let dx = (x - cx) as i64;
+            let dy = (y - cy) as i64;
+            let d2 = dx * dx + dy * dy;
+            if d2 <= r2 {
+                let t = 1.0 - (d2 as f32 / r2 as f32);
+                let glow = rgb(
+                    (245.0 + 10.0 * t) as u8,
+                    (221.0 + 28.0 * t) as u8,
+                    (156.0 + 26.0 * t) as u8,
+                );
+                let mixed = blend(buffer[y as usize * width as usize + x as usize], glow, t * 0.35);
+                put_pixel(buffer, width, height, x, y, mixed);
+            }
+        }
+    }
+}
+
+fn draw_cloud_bands(buffer: &mut [u32], width: i32, height: i32) {
+    let top = 40;
+    let bottom = (height as f32 * 0.33) as i32;
+    for y in top..bottom {
+        let band = ((y - top) / 22) % 3;
+        for x in 0..width {
+            let wave = ((x / 33 + y / 21 + band * 3) % 11) - 5;
+            if wave > 1 {
+                let alpha = 0.06 + (wave as f32 * 0.018);
+                let cloud = match band {
+                    0 => rgb(237, 246, 255),
+                    1 => rgb(225, 239, 252),
+                    _ => rgb(213, 232, 249),
+                };
+                let idx = y as usize * width as usize + x as usize;
+                let mixed = blend(buffer[idx], cloud, alpha);
+                buffer[idx] = mixed;
+            }
+        }
+    }
+}
+
+fn fill_rect_grain(
+    buffer: &mut [u32],
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: u32,
+    seed: u32,
+    intensity: i16,
+) {
+    let x0 = x.max(0);
+    let y0 = y.max(0);
+    let x1 = (x + w).min(width);
+    let y1 = (y + h).min(height);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    for yy in y0..y1 {
+        for xx in x0..x1 {
+            let n = (hash_noise(xx, yy, seed) % (intensity as i32 * 2 + 1)) - intensity as i32;
+            put_pixel(buffer, width, height, xx, yy, tint(color, n as i16));
+        }
+    }
+}
+
+fn hash_noise(x: i32, y: i32, seed: u32) -> i32 {
+    let mut v = (x as u32).wrapping_mul(0x9E37_79B9)
+        ^ (y as u32).wrapping_mul(0x85EB_CA6B)
+        ^ seed.wrapping_mul(0xC2B2_AE35);
+    v ^= v >> 15;
+    v = v.wrapping_mul(0x2C1B_3C6D);
+    v ^= v >> 12;
+    (v & 0xFF) as i32
+}
+
+fn blend(base: u32, top: u32, alpha: f32) -> u32 {
+    let a = alpha.clamp(0.0, 1.0);
+    let (br, bg, bb) = unpack(base);
+    let (tr, tg, tb) = unpack(top);
+    rgb(
+        (br as f32 * (1.0 - a) + tr as f32 * a) as u8,
+        (bg as f32 * (1.0 - a) + tg as f32 * a) as u8,
+        (bb as f32 * (1.0 - a) + tb as f32 * a) as u8,
+    )
 }
 
 fn draw_label(buffer: &mut [u32], width: i32, height: i32, x: i32, y: i32, scale: i32, color: u32, text: &str) {
