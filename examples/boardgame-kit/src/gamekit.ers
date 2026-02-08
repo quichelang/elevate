@@ -593,7 +593,7 @@ fn palette_title(vga: bool) -> i64 {
     229
 }
 
-fn palette_footer_bg(vga: bool) -> i64 {
+pub fn palette_footer_bg(vga: bool) -> i64 {
     if vga {
         return 235;
     }
