@@ -152,7 +152,12 @@ fn emit_function(def: &RustFunction, out: &mut String) {
 }
 
 fn emit_impl(def: &RustImpl, out: &mut String) {
-    out.push_str(&format!("impl {} {{\n", def.target));
+    let in_trait_impl = def.trait_target.is_some();
+    if let Some(trait_target) = &def.trait_target {
+        out.push_str(&format!("impl {} for {} {{\n", trait_target, def.target));
+    } else {
+        out.push_str(&format!("impl {} {{\n", def.target));
+    }
     for method in &def.methods {
         let mutated = collect_mutated_paths_in_stmts(&method.body);
         let params = method
@@ -178,14 +183,21 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
                 .join(", ");
             format!("<{params}>")
         };
-        out.push_str(&format!(
-            "    {}fn {}{}({}) -> {} {{\n",
-            vis(method.is_public),
-            method.name,
-            generics,
-            params,
-            method.return_type
-        ));
+        if in_trait_impl {
+            out.push_str(&format!(
+                "    fn {}{}({}) -> {} {{\n",
+                method.name, generics, params, method.return_type
+            ));
+        } else {
+            out.push_str(&format!(
+                "    {}fn {}{}({}) -> {} {{\n",
+                vis(method.is_public),
+                method.name,
+                generics,
+                params,
+                method.return_type
+            ));
+        }
         for stmt in &method.body {
             emit_stmt_with_indent(stmt, out, 2, &mutated);
         }

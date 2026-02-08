@@ -6,4 +6,4 @@ allow crate::host::KeyEvent
 allow crate::gfx
 allow crate::gfx::Canvas
 allow crate::gamekit
-allow neon_boardwalk::app::Game
+allow boardwalk_sudoku::app::Game

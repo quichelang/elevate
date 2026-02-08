@@ -2347,6 +2347,30 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_trait_impl_blocks() {
+        let source = r#"
+            pub trait Greeter {
+                fn greet(self: Self) -> String;
+            }
+
+            pub struct User {
+                name: String;
+            }
+
+            impl Greeter for User {
+                pub fn greet(self) -> String {
+                    format!("hi {}", self.name)
+                }
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("impl Greeter for User"));
+        assert!(output.rust_code.contains("fn greet(self: User) -> String"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_infers_dyn_for_trait_object_shorthand_types() {
         let source = r#"
             pub trait Printable {}
@@ -2891,6 +2915,7 @@ world"#;
                 }),
                 ast::Item::Impl(ast::ImplBlock {
                     target: "Counter".to_string(),
+                    trait_target: None,
                     methods: vec![ast::FunctionDef {
                         visibility: ast::Visibility::Public,
                         name: "get".to_string(),
@@ -2999,6 +3024,21 @@ world"#;
         let output = compile_ast(&module).expect("usize indexing should compile");
         assert!(output.rust_code.contains("(0 as usize)"));
         assert!(output.rust_code.contains("values["));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_from_iter_associated_calls() {
+        let source = r#"
+            use std::collections::HashMap;
+
+            fn build_map(pairs: Vec<(String, i64)>) -> HashMap<String, i64> {
+                return HashMap::from_iter(pairs.into_iter());
+            }
+        "#;
+
+        let output = compile_source(source).expect("from_iter associated call should compile");
+        assert!(output.rust_code.contains("HashMap::from_iter(pairs.into_iter())"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

@@ -1,5 +1,5 @@
 [package]
-name = "neon-boardwalk"
+name = "boardwalk-sudoku"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,9 +10,9 @@ minifb = "0.27"
 sdl2 = { version = "0.38", features = ["bundled"] }
 
 [lib]
-name = "neon_boardwalk"
+name = "boardwalk_sudoku"
 path = "src/lib.rs"
 
 [[bin]]
-name = "neon-boardwalk"
+name = "boardwalk-sudoku"
 path = "src/main.rs"

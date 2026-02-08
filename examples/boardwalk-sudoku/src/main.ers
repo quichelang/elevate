@@ -1,4 +1,4 @@
-use neon_boardwalk::app::Game;
+use boardwalk_sudoku::app::Game;
 
 fn main() {
     const game = Game::new();

@@ -83,6 +83,7 @@ pub struct RustTraitMethod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustImpl {
     pub target: String,
+    pub trait_target: Option<String>,
     pub methods: Vec<RustFunction>,
 }
 

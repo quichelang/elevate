@@ -235,7 +235,7 @@ pub fn draw_scene_shell(
         top_bar,
         4,
         2,
-        format!("NEON BOARDWALK :: {} MODE", mode_label),
+        format!("BOARDWALK :: {} MODE", mode_label),
         palette_title(vga),
         palette_panel_fill(vga),
         true,

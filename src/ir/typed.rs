@@ -82,6 +82,7 @@ pub struct TypedTraitMethod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedImpl {
     pub target: String,
+    pub trait_target: Option<String>,
     pub methods: Vec<TypedFunction>,
 }
 

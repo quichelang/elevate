@@ -3,20 +3,30 @@ use crate::runtime::Board;
 use crate::runtime::RenderMode;
 use crate::host::KeyEvent;
 
+pub trait GameHudProfile {
+    fn default_player_name() -> String;
+    fn supports_second_player() -> bool;
+}
+
 pub struct Game {
     runtime: i64;
     board: Board;
     puzzle_index: i64;
+    player_name: String;
+    player_name_index: i64;
     cursor_row: i64;
     cursor_col: i64;
     render_mode: RenderMode;
     message: String;
     running: bool;
+    quit_armed: bool;
     needs_redraw: bool;
     debug_enabled: bool;
     fps_window_start_ms: i64;
     fps_frames: i64;
     fps_display: i64;
+    timer_started_ms: i64;
+    elapsed_secs: i64;
 }
 
 impl Game {
@@ -28,22 +38,30 @@ impl Game {
             runtime: runtime_handle;
             board: board_state;
             puzzle_index: 0;
+            player_name: Game::default_player_name();
+            player_name_index: 0;
             cursor_row: 0;
             cursor_col: 0;
             render_mode: runtime::default_render_mode();
-            message: String::from("Use arrows/WASD, 1-9, 0 clear, c check, n next, r reset, v renderer, q quit");
+            message: String::from(
+                "Use arrows/WASD, 1-9, 0 clear, c check, n next, r reset, p rename, v renderer, q quit"
+            );
             running: true;
+            quit_armed: false;
             needs_redraw: true;
             debug_enabled: true;
             fps_window_start_ms: now_ms;
             fps_frames: 0;
             fps_display: 0;
+            timer_started_ms: now_ms;
+            elapsed_secs: 0;
         }
     }
 
     pub fn run(self) {
         while self.running {
             self = Game::tick_fps(self);
+            self = Game::tick_timer(self);
 
             if self.needs_redraw {
                 self.board = runtime::runtime_render(
@@ -54,6 +72,11 @@ impl Game {
                     self.render_mode,
                     self.debug_enabled,
                     self.fps_display,
+                    format!("{}", self.player_name),
+                    format!("{}", Game::level_label(self.puzzle_index)),
+                    self.elapsed_secs,
+                    self.quit_armed,
+                    Game::supports_second_player(),
                 );
                 self.needs_redraw = false;
             }
@@ -69,12 +92,21 @@ impl Game {
     }
 
     fn on_key(self, key: KeyEvent) -> Self {
+        if self.quit_armed {
+            if key == KeyEvent::Quit {
+                return Game::stop(self);
+            }
+            self.quit_armed = false;
+            self.message = String::from("Quit cancelled");
+            return Game::mark_dirty(self);
+        }
+
         if key == KeyEvent::Quit {
-            return Game::stop(self);
+            return Game::arm_quit(self);
         }
 
         const next = match key {
-            KeyEvent::Quit => Game::stop(self);
+            KeyEvent::Quit => Game::arm_quit(self);
             KeyEvent::Up => Game::move_cursor(self, -1, 0);
             KeyEvent::Down => Game::move_cursor(self, 1, 0);
             KeyEvent::Left => Game::move_cursor(self, 0, -1);
@@ -86,9 +118,9 @@ impl Game {
             KeyEvent::Reset => Game::reset_puzzle(self);
             KeyEvent::ToggleRenderer => Game::toggle_renderer(self);
             KeyEvent::ToggleDebug => Game::toggle_debug(self);
-            KeyEvent::Hint => Game::set_message(self, String::from("Hint engine pending in Neon Boardwalk"));
-            KeyEvent::Save => Game::set_message(self, String::from("Save pending in Neon Boardwalk"));
-            KeyEvent::Load => Game::set_message(self, String::from("Load pending in Neon Boardwalk"));
+            KeyEvent::Hint => Game::set_message(self, String::from("Hint engine pending in Boardwalk Sudoku"));
+            KeyEvent::Save => Game::cycle_player_name(self);
+            KeyEvent::Load => Game::set_message(self, String::from("Load pending in Boardwalk Sudoku"));
         };
         Game::mark_dirty(next)
     }
@@ -108,6 +140,40 @@ impl Game {
         self
     }
 
+    fn arm_quit(self) -> Self {
+        self.quit_armed = true;
+        self.message = String::from("Press q again to quit. Any other key cancels.");
+        self
+    }
+
+    fn cycle_player_name(self) -> Self {
+        self.player_name_index += 1;
+        if self.player_name_index >= Game::player_name_count() {
+            self.player_name_index = 0;
+        }
+        self.player_name = Game::player_name_by_index(self.player_name_index);
+        self.message = format!("Player name set to {}", self.player_name);
+        self
+    }
+
+    fn player_name_count() -> i64 {
+        5
+    }
+
+    fn player_name_by_index(index: i64) -> String {
+        match index {
+            0 => String::from("PLAYER 1");
+            1 => String::from("JAGTESH");
+            2 => String::from("SOLVER");
+            3 => String::from("ACE");
+            _ => String::from("ELEVATOR");
+        }
+    }
+
+    fn level_label(puzzle_index: i64) -> String {
+        format!("PUZZLE {}", puzzle_index + 1)
+    }
+
     fn tick_fps(self) -> Self {
         const now: i64 = runtime::runtime_now_millis();
         self.fps_frames += 1;
@@ -123,6 +189,21 @@ impl Game {
             if self.debug_enabled {
                 self.needs_redraw = true;
             }
+        }
+        self
+    }
+
+    fn tick_timer(self) -> Self {
+        const now: i64 = runtime::runtime_now_millis();
+        const elapsed_ms: i64 = now - self.timer_started_ms;
+        if elapsed_ms < 0 {
+            self.elapsed_secs = 0;
+            return self;
+        }
+        const next_elapsed: i64 = elapsed_ms / 1000;
+        if next_elapsed != self.elapsed_secs {
+            self.elapsed_secs = next_elapsed;
+            self.needs_redraw = true;
         }
         self
     }
@@ -181,6 +262,9 @@ impl Game {
         self.board = Board::from_puzzle(self.puzzle_index);
         self.cursor_row = 0;
         self.cursor_col = 0;
+        self.quit_armed = false;
+        self.timer_started_ms = runtime::runtime_now_millis();
+        self.elapsed_secs = 0;
         self.message = format!("Loaded puzzle {}", self.puzzle_index + 1);
         self
     }
@@ -189,6 +273,9 @@ impl Game {
         self.board = Board::from_puzzle(self.puzzle_index);
         self.cursor_row = 0;
         self.cursor_col = 0;
+        self.quit_armed = false;
+        self.timer_started_ms = runtime::runtime_now_millis();
+        self.elapsed_secs = 0;
         self.message = String::from("Puzzle reset");
         self
     }
@@ -209,6 +296,16 @@ impl Game {
             false => String::from("Debug overlay disabled");
         };
         self
+    }
+}
+
+impl GameHudProfile for Game {
+    fn default_player_name() -> String {
+        String::from("PLAYER 1")
+    }
+
+    fn supports_second_player() -> bool {
+        false
     }
 }
 

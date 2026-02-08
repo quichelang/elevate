@@ -44,6 +44,11 @@ struct RenderPacket {
     vga: bool,
     debug_enabled: bool,
     fps: i64,
+    player_name: String,
+    level_label: String,
+    timer_label: String,
+    quit_armed: bool,
+    show_player_two: bool,
 }
 
 #[derive(Debug)]
@@ -176,6 +181,11 @@ pub fn runtime_draw_scene(
     vga: bool,
     debug_enabled: bool,
     fps: i64,
+    player_name: String,
+    level_label: String,
+    timer_label: String,
+    quit_armed: bool,
+    show_player_two: bool,
 ) -> bool {
     with_registry(|registry| {
         let mut rendered = false;
@@ -191,6 +201,11 @@ pub fn runtime_draw_scene(
                     vga,
                     debug_enabled,
                     fps,
+                    player_name: player_name.clone(),
+                    level_label: level_label.clone(),
+                    timer_label: timer_label.clone(),
+                    quit_armed,
+                    show_player_two,
                 });
             }
 
@@ -271,7 +286,7 @@ fn start_sdl_window_runtime() -> Option<SdlMainState> {
     let sdl = sdl2::init().ok()?;
     let video = sdl.video().ok()?;
     let window = video
-        .window("Neon Boardwalk - SDL/OpenGL Renderer", WIDTH, HEIGHT)
+        .window("Boardwalk Sudoku - SDL/OpenGL Renderer", WIDTH, HEIGHT)
         .position_centered()
         .allow_highdpi()
         .opengl()
@@ -301,7 +316,7 @@ fn run_minifb_window_loop(
     const HEIGHT: usize = 840;
 
     let mut window = match MinifbWindow::new(
-        "Neon Boardwalk - Arcade Renderer",
+        "Boardwalk Sudoku - Arcade Renderer",
         WIDTH,
         HEIGHT,
         WindowOptions {
@@ -468,7 +483,47 @@ fn pump_window_keys(window: &MinifbWindow, key_tx: &Sender<KeyEvent>) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SceneLayout {
+    card_x: i32,
+    card_y: i32,
+    card_w: i32,
+    card_h: i32,
+    card_gap: i32,
+    board_x: i32,
+    board_y: i32,
+    board_cell: i32,
+    hud_x: i32,
+    hud_y: i32,
+    hud_w: i32,
+    hud_h: i32,
+}
+
+fn scene_layout(width: i32, _height: i32) -> SceneLayout {
+    let board_cell = if width >= 1400 { 58 } else { 54 };
+    let board_x = 72;
+    let board_y = 166;
+    let board_size = board_cell * 9;
+    let hud_x = board_x + board_size + 74;
+    let hud_w = (width - hud_x - 62).max(390);
+    SceneLayout {
+        card_x: 44,
+        card_y: 20,
+        card_w: 250,
+        card_h: 114,
+        card_gap: 18,
+        board_x,
+        board_y,
+        board_cell,
+        hud_x,
+        hud_y: board_y + 10,
+        hud_w,
+        hud_h: board_size + 30,
+    }
+}
+
 fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket) {
+    let layout = scene_layout(width, height);
     draw_vertical_gradient(
         buffer,
         width,
@@ -497,17 +552,13 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
     draw_hills(buffer, width, height);
     draw_floor_tiles(buffer, width, height);
 
-    let board_x = 102;
-    let board_y = 168;
-    let cell = 56;
-    let board_size = cell * 9;
-
+    let board_size = layout.board_cell * 9;
     draw_shadow_panel(
         buffer,
         width,
         height,
-        board_x - 44,
-        board_y - 24,
+        layout.board_x - 44,
+        layout.board_y - 24,
         board_size + 84,
         board_size + 62,
     );
@@ -515,8 +566,8 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
         buffer,
         width,
         height,
-        board_x - 36,
-        board_y - 18,
+        layout.board_x - 36,
+        layout.board_y - 18,
         board_size + 72,
         board_size + 52,
     );
@@ -524,9 +575,9 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
         buffer,
         width,
         height,
-        board_x,
-        board_y,
-        cell,
+        layout.board_x,
+        layout.board_y,
+        layout.board_cell,
         &frame.cells,
         &frame.fixed,
         frame.cursor_row,
@@ -534,61 +585,8 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
         frame.vga,
     );
 
-    draw_hud_panel(buffer, width, height, frame);
-
-    draw_wood_panel(buffer, width, height, 56, 18, 250, 126);
-    draw_wood_panel(buffer, width, height, 328, 18, 250, 126);
-    draw_portrait_slot(buffer, width, height, 70, 60, true);
-    draw_portrait_slot(buffer, width, height, 478, 60, false);
-    draw_label_ornate(
-        buffer,
-        width,
-        height,
-        84,
-        38,
-        3,
-        rgb(255, 246, 201),
-        rgb(54, 30, 16),
-        rgb(255, 255, 240),
-        "PLAYER 1",
-    );
-    draw_label_ornate(
-        buffer,
-        width,
-        height,
-        368,
-        38,
-        3,
-        rgb(255, 246, 201),
-        rgb(54, 30, 16),
-        rgb(255, 255, 240),
-        "CPU",
-    );
-    draw_label_ornate(
-        buffer,
-        width,
-        height,
-        174,
-        84,
-        4,
-        rgb(255, 251, 227),
-        rgb(49, 30, 13),
-        rgb(255, 255, 245),
-        "34",
-    );
-    draw_label_ornate(
-        buffer,
-        width,
-        height,
-        400,
-        84,
-        4,
-        rgb(255, 251, 227),
-        rgb(49, 30, 13),
-        rgb(255, 255, 245),
-        "28",
-    );
-
+    draw_hud_panel(buffer, width, height, frame, layout);
+    draw_top_cards(buffer, width, height, frame, layout);
     draw_bottom_bar(buffer, width, height, frame);
     apply_retro_post_fx(buffer, width, height, frame.vga);
 
@@ -619,6 +617,117 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
             &fps_text,
         );
     }
+
+    if frame.quit_armed {
+        draw_bevel_box(
+            buffer,
+            width,
+            height,
+            width / 2 - 290,
+            height - 160,
+            580,
+            56,
+            rgb(255, 204, 110),
+            rgb(94, 41, 21),
+            rgb(36, 17, 10),
+        );
+        draw_label_ornate(
+            buffer,
+            width,
+            height,
+            width / 2 - 256,
+            height - 142,
+            2,
+            rgb(255, 242, 196),
+            rgb(40, 17, 7),
+            rgb(255, 255, 235),
+            "Press Q again to quit. Any other key cancels.",
+        );
+    }
+}
+
+fn draw_top_cards(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket, layout: SceneLayout) {
+    let score = count_filled_cells(&frame.cells).to_string();
+    draw_player_card(
+        buffer,
+        width,
+        height,
+        layout.card_x,
+        layout.card_y,
+        layout.card_w,
+        layout.card_h,
+        &frame.player_name,
+        &score,
+        true,
+    );
+
+    if frame.show_player_two {
+        draw_player_card(
+            buffer,
+            width,
+            height,
+            layout.card_x + layout.card_w + layout.card_gap,
+            layout.card_y,
+            layout.card_w,
+            layout.card_h,
+            "PLAYER 2",
+            "00",
+            false,
+        );
+    }
+}
+
+fn draw_player_card(
+    buffer: &mut [u32],
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    name: &str,
+    score: &str,
+    is_player: bool,
+) {
+    draw_wood_panel(buffer, width, height, x, y, w, h);
+    let portrait_slot = 72;
+    let portrait_x = x + w - portrait_slot - 18;
+    let portrait_y = y + 20;
+    draw_portrait_slot(buffer, width, height, portrait_x, portrait_y, is_player);
+    draw_label_ornate(
+        buffer,
+        width,
+        height,
+        x + 24,
+        y + 18,
+        3,
+        rgb(255, 246, 201),
+        rgb(54, 30, 16),
+        rgb(255, 255, 240),
+        name,
+    );
+    draw_label_ornate(
+        buffer,
+        width,
+        height,
+        x + 34,
+        y + 62,
+        4,
+        rgb(255, 251, 227),
+        rgb(49, 30, 13),
+        rgb(255, 255, 245),
+        score,
+    );
+}
+
+fn count_filled_cells(cells: &[i64]) -> i32 {
+    let mut filled = 0;
+    for value in cells {
+        if *value > 0 {
+            filled += 1;
+        }
+    }
+    filled
 }
 
 fn draw_parchment_grid(
@@ -778,23 +887,30 @@ fn draw_parchment_grid(
     );
 }
 
-fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket) {
-    let panel_x = 700;
-    let panel_y = 178;
-    let panel_w = 440;
-    let panel_h = 452;
+fn draw_hud_panel(
+    buffer: &mut [u32],
+    width: i32,
+    height: i32,
+    frame: &RenderPacket,
+    layout: SceneLayout,
+) {
+    let panel_x = layout.hud_x;
+    let panel_y = layout.hud_y;
+    let panel_w = layout.hud_w;
+    let panel_h = layout.hud_h;
 
     draw_shadow_panel(buffer, width, height, panel_x + 8, panel_y + 8, panel_w, panel_h);
     draw_wood_panel(buffer, width, height, panel_x, panel_y, panel_w, panel_h);
 
+    let card_w = panel_w - 56;
     draw_bevel_box(
         buffer,
         width,
         height,
         panel_x + 28,
-        panel_y + 28,
-        384,
-        102,
+        panel_y + 24,
+        card_w,
+        94,
         rgb(63, 40, 21),
         rgb(50, 35, 21),
         rgb(28, 18, 11),
@@ -803,8 +919,8 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         buffer,
         width,
         height,
-        panel_x + 54,
-        panel_y + 46,
+        panel_x + 50,
+        panel_y + 40,
         3,
         rgb(255, 246, 191),
         rgb(46, 31, 19),
@@ -815,13 +931,13 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         buffer,
         width,
         height,
-        panel_x + 54,
-        panel_y + 86,
+        panel_x + 50,
+        panel_y + 74,
         4,
         rgb(255, 250, 224),
         rgb(40, 26, 16),
         rgb(255, 255, 235),
-        "02:15",
+        &frame.timer_label,
     );
 
     draw_bevel_box(
@@ -829,9 +945,9 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         width,
         height,
         panel_x + 28,
-        panel_y + 146,
-        384,
-        102,
+        panel_y + 132,
+        card_w,
+        94,
         rgb(63, 40, 21),
         rgb(50, 35, 21),
         rgb(28, 18, 11),
@@ -840,8 +956,8 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         buffer,
         width,
         height,
-        panel_x + 54,
-        panel_y + 164,
+        panel_x + 50,
+        panel_y + 148,
         3,
         rgb(255, 246, 191),
         rgb(46, 31, 19),
@@ -852,31 +968,31 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         buffer,
         width,
         height,
-        panel_x + 54,
-        panel_y + 204,
+        panel_x + 50,
+        panel_y + 182,
         4,
         rgb(255, 250, 224),
         rgb(40, 26, 16),
         rgb(255, 255, 235),
-        "MEDIUM",
+        &frame.level_label,
     );
 
-    let button_w = 86;
-    let button_h = 62;
-    let keypad_x = panel_x + 54;
-    let keypad_y = panel_y + 264;
+    let button_w = 74;
+    let button_h = 48;
+    let keypad_x = panel_x + 46;
+    let keypad_y = panel_y + 248;
     for row in 0..3 {
         for col in 0..3 {
-            let bx = keypad_x + col * (button_w + 9);
-            let by = keypad_y + row * (button_h + 10);
+            let bx = keypad_x + col * (button_w + 12);
+            let by = keypad_y + row * (button_h + 12);
             draw_keypad_button(buffer, width, height, bx, by, button_w, button_h);
             let number = (row * 3 + col + 1).to_string();
             draw_label_ornate(
                 buffer,
                 width,
                 height,
-                bx + 27,
-                by + 17,
+                bx + 25,
+                by + 12,
                 3,
                 rgb(255, 229, 128),
                 rgb(24, 14, 8),
@@ -886,15 +1002,16 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         }
     }
 
+    let button_row_y = keypad_y + 3 * (button_h + 12) + 8;
     let erase_color = rgb(188, 48, 40);
     let hint_color = rgb(37, 150, 63);
     draw_bevel_box(
         buffer,
         width,
         height,
-        panel_x + 54,
-        panel_y + 392,
-        144,
+        panel_x + 46,
+        button_row_y,
+        134,
         52,
         rgb(255, 158, 143),
         erase_color,
@@ -904,9 +1021,9 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         buffer,
         width,
         height,
-        panel_x + 214,
-        panel_y + 392,
-        144,
+        panel_x + 196,
+        button_row_y,
+        134,
         52,
         rgb(168, 255, 176),
         hint_color,
@@ -916,8 +1033,8 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         buffer,
         width,
         height,
-        panel_x + 85,
-        panel_y + 410,
+        panel_x + 72,
+        button_row_y + 17,
         3,
         rgb(255, 248, 233),
         rgb(79, 20, 17),
@@ -928,8 +1045,8 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         buffer,
         width,
         height,
-        panel_x + 249,
-        panel_y + 410,
+        panel_x + 236,
+        button_row_y + 17,
         3,
         rgb(240, 255, 240),
         rgb(10, 64, 28),
@@ -942,8 +1059,8 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         buffer,
         width,
         height,
-        panel_x + 34,
-        panel_y + panel_h - 18,
+        panel_x + 32,
+        panel_y + panel_h - 22,
         2,
         rgb(255, 236, 170),
         mode_text,
@@ -986,25 +1103,26 @@ fn draw_keypad_button(
 }
 
 fn draw_bottom_bar(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket) {
+    let bar_y = height - 92;
     draw_bevel_box(
         buffer,
         width,
         height,
         34,
-        height - 112,
+        bar_y,
         width - 68,
-        78,
+        60,
         rgb(139, 102, 58),
         rgb(92, 61, 35),
         rgb(43, 28, 18),
     );
-    draw_label(buffer, width, height, 70, height - 84, 2, rgb(233, 235, 220), "Status:");
+    draw_label(buffer, width, height, 68, bar_y + 22, 2, rgb(233, 235, 220), "Status:");
     draw_label(
         buffer,
         width,
         height,
-        184,
-        height - 84,
+        172,
+        bar_y + 22,
         2,
         rgb(247, 247, 230),
         &frame.message,

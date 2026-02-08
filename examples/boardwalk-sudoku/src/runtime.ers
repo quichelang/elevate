@@ -222,7 +222,13 @@ pub fn runtime_render(
     mode: RenderMode,
     debug_enabled: bool,
     fps: i64,
+    player_name: String,
+    level_label: String,
+    elapsed_secs: i64,
+    quit_armed: bool,
+    show_player_two: bool,
 ) -> Board {
+    const time_label = format_elapsed_clock(elapsed_secs);
     const drawn = host::runtime_draw_scene(
         board.cells,
         board.fixed,
@@ -232,6 +238,11 @@ pub fn runtime_render(
         mode_is_vga(mode),
         debug_enabled,
         fps,
+        player_name,
+        level_label,
+        time_label,
+        quit_armed,
+        show_player_two,
     );
     if drawn {
         return board;
@@ -244,6 +255,11 @@ pub fn runtime_render(
         mode,
         debug_enabled,
         fps,
+        player_name,
+        level_label,
+        elapsed_secs,
+        quit_armed,
+        show_player_two,
     );
     host::runtime_draw(frame);
     rendered_board
@@ -340,6 +356,11 @@ fn render_frame(
     mode: RenderMode,
     debug_enabled: bool,
     fps: i64,
+    player_name: String,
+    level_label: String,
+    elapsed_secs: i64,
+    quit_armed: bool,
+    show_player_two: bool,
 ) -> (Board, String) {
     const width = 120;
     const height = 42;
@@ -379,10 +400,121 @@ fn render_frame(
         0,
     );
     const canvas4 = draw_debug_overlay(canvas3, mode, debug_enabled, fps);
-    const canvas5 = gamekit::draw_gameplay_hints(canvas4, vga);
-    const canvas6 = gamekit::draw_footer_status(canvas5, message, vga);
-    const frame = Canvas::to_ansi(canvas6);
+    const canvas5 = draw_terminal_hud(canvas4, mode, player_name, level_label, elapsed_secs, show_player_two);
+    const canvas6 = gamekit::draw_gameplay_hints(canvas5, vga);
+    const canvas7 = gamekit::draw_footer_status(canvas6, message, vga);
+    const canvas8 = draw_quit_prompt(canvas7, mode, quit_armed);
+    const frame = Canvas::to_ansi(canvas8);
     (next_board, frame)
+}
+
+fn draw_terminal_hud(
+    canvas: Canvas,
+    mode: RenderMode,
+    player_name: String,
+    level_label: String,
+    elapsed_secs: i64,
+    show_player_two: bool,
+) -> Canvas {
+    const timer_label = format_elapsed_clock(elapsed_secs);
+    const vga = mode_is_vga(mode);
+    const hud_x = 76;
+    let out = Canvas::text(
+        canvas,
+        hud_x,
+        6,
+        format!("PLAYER: {}", player_name),
+        gamekit::palette_hud_text(vga),
+        gamekit::palette_bg(vga),
+        true,
+    );
+    out = Canvas::text(
+        out,
+        hud_x,
+        8,
+        format!("TIME: {}", timer_label),
+        gamekit::palette_hud_text(vga),
+        gamekit::palette_bg(vga),
+        true,
+    );
+    out = Canvas::text(
+        out,
+        hud_x,
+        10,
+        format!("LEVEL: {}", level_label),
+        gamekit::palette_hud_text(vga),
+        gamekit::palette_bg(vga),
+        true,
+    );
+    if show_player_two {
+        out = Canvas::text(
+            out,
+            hud_x,
+            12,
+            "P2: ON",
+            gamekit::palette_hud_text(vga),
+            gamekit::palette_bg(vga),
+            false,
+        );
+    } else {
+        out = Canvas::text(
+            out,
+            hud_x,
+            12,
+            "P2: OFF",
+            gamekit::palette_dim_fg(vga),
+            gamekit::palette_bg(vga),
+            false,
+        );
+    }
+    out
+}
+
+fn draw_quit_prompt(canvas: Canvas, mode: RenderMode, quit_armed: bool) -> Canvas {
+    if not quit_armed {
+        return canvas;
+    }
+    const vga = mode_is_vga(mode);
+    const prompt_bg = gamekit::palette_footer_bg(vga);
+    const prompt_fg = gamekit::palette_status(vga);
+    const panel = Canvas::fill_rect(
+        canvas,
+        24,
+        34,
+        72,
+        3,
+        ' ',
+        prompt_fg,
+        prompt_bg,
+        false,
+    );
+    Canvas::text(
+        panel,
+        27,
+        35,
+        "Press q again to quit (any key cancels)",
+        prompt_fg,
+        prompt_bg,
+        true,
+    )
+}
+
+fn format_elapsed_clock(seconds: i64) -> String {
+    if seconds < 0 {
+        return String::from("00:00");
+    }
+    const mins = seconds / 60;
+    const secs = seconds % 60;
+    if mins < 10 {
+        if secs < 10 {
+            return format!("0{}:0{}", mins, secs);
+        }
+        return format!("0{}:{}", mins, secs);
+    }
+    if secs < 10 {
+        return format!("{}:0{}", mins, secs);
+    }
+    format!("{}:{}", mins, secs)
 }
 
 fn draw_debug_overlay(canvas: Canvas, mode: RenderMode, enabled: bool, fps: i64) -> Canvas {

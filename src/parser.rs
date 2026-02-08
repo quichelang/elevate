@@ -317,7 +317,18 @@ impl Parser {
     }
 
     fn parse_impl(&mut self) -> Option<ImplBlock> {
-        let target = self.expect_ident("Expected type name after `impl`")?;
+        let first = self.expect_ident("Expected type or trait name after `impl`")?;
+        let mut trait_target = None;
+        let target = if self.match_kind(TokenKind::For) {
+            trait_target = Some(Type {
+                path: vec![first],
+                args: Vec::new(),
+                trait_bounds: Vec::new(),
+            });
+            self.expect_ident("Expected type name after `for` in impl block")?
+        } else {
+            first
+        };
         self.expect(TokenKind::LBrace, "Expected '{' to start impl block")?;
         let mut methods = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -330,7 +341,11 @@ impl Parser {
             methods.push(self.parse_function(method_visibility, Some(&target))?);
         }
         self.expect(TokenKind::RBrace, "Expected '}' after impl block")?;
-        Some(ImplBlock { target, methods })
+        Some(ImplBlock {
+            target,
+            trait_target,
+            methods,
+        })
     }
 
     fn parse_const_item(&mut self, visibility: Visibility) -> Option<ConstDef> {
@@ -1650,6 +1665,24 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 2);
+    }
+
+    #[test]
+    fn parse_trait_impl_methods() {
+        let source = r#"
+            trait Printable {
+                fn render(self: Self) -> String;
+            }
+            struct Point { x: i64; }
+            impl Printable for Point {
+                pub fn render(self) -> String {
+                    format!("{}", self.x)
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 3);
     }
 
     #[test]

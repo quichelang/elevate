@@ -8,5 +8,5 @@
 
 ## Example Runtime Checks
 - When modifying Neon runtime/rendering, also run:
-  - `cargo run -q -- build /Volumes/Dev/code/jagtesh/elevate/examples/neon-boardwalk`
+  - `cargo run -q -- build /Volumes/Dev/code/jagtesh/elevate/examples/boardwalk-sudoku`
   - `cargo run -q -- build /Volumes/Dev/code/jagtesh/elevate/examples/boardgame-kit`

@@ -88,6 +88,7 @@ pub struct GenericParam {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImplBlock {
     pub target: String,
+    pub trait_target: Option<Type>,
     pub methods: Vec<FunctionDef>,
 }
 

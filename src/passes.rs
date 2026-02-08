@@ -1,5 +1,8 @@
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern,
@@ -64,6 +67,9 @@ pub struct TypecheckOptions {
 thread_local! {
     static NUMERIC_COERCION_ENABLED: Cell<bool> = Cell::new(false);
 }
+
+static RUSTDEX_BIN_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+static RUSTDEX_TRAIT_CHECKS: OnceLock<Mutex<HashMap<(String, String), bool>>> = OnceLock::new();
 
 fn with_numeric_coercion_scope<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
     NUMERIC_COERCION_ENABLED.with(|cell| {
@@ -191,6 +197,7 @@ pub fn lower_to_rust_with_hints(
             }),
             TypedItem::Impl(def) => RustItem::Impl(RustImpl {
                 target: def.target.clone(),
+                trait_target: def.trait_target.clone(),
                 methods: def
                     .methods
                     .iter()
@@ -1113,6 +1120,10 @@ fn lower_item(
             }
             Some(TypedItem::Impl(TypedImpl {
                 target: def.target.clone(),
+                trait_target: def
+                    .trait_target
+                    .as_ref()
+                    .map(|ty| rust_trait_bound_string(&type_from_ast_in_context(ty, context))),
                 methods,
             }))
         }
@@ -3169,11 +3180,210 @@ fn resolve_call_type(
             return resolved;
         }
 
+        if let Some(resolved) = resolve_trait_associated_call(path, args, diagnostics) {
+            return resolved;
+        }
+
         return SemType::Unknown;
     }
 
     diagnostics.push(Diagnostic::new("Unsupported call target", Span::new(0, 0)));
     SemType::Unknown
+}
+
+fn resolve_trait_associated_call(
+    path: &[String],
+    args: &[SemType],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<SemType> {
+    if path.len() < 2 {
+        return None;
+    }
+    let assoc_name = path.last()?.as_str();
+    let type_name = path[path.len() - 2].as_str();
+    if !rustdex_has_method(type_name, assoc_name) {
+        return None;
+    }
+
+    if assoc_name == "from_iter" {
+        return Some(resolve_from_iter_associated_type(type_name, args, diagnostics));
+    }
+    if assoc_name == "default" {
+        if !args.is_empty() {
+            diagnostics.push(Diagnostic::new(
+                format!("`{type_name}::default` expects 0 arg(s), got {}", args.len()),
+                Span::new(0, 0),
+            ));
+        }
+        return Some(SemType::Unknown);
+    }
+    if assoc_name == "from" {
+        if args.len() != 1 {
+            diagnostics.push(Diagnostic::new(
+                format!("`{type_name}::from` expects 1 arg(s), got {}", args.len()),
+                Span::new(0, 0),
+            ));
+        }
+        return Some(SemType::Unknown);
+    }
+    Some(SemType::Unknown)
+}
+
+fn resolve_from_iter_associated_type(
+    type_name: &str,
+    args: &[SemType],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> SemType {
+    if args.len() != 1 {
+        diagnostics.push(Diagnostic::new(
+            format!("`{type_name}::from_iter` expects 1 arg(s), got {}", args.len()),
+            Span::new(0, 0),
+        ));
+        return SemType::Unknown;
+    }
+
+    let Some(item_ty) = into_iterator_item_type(&args[0]) else {
+        return SemType::Unknown;
+    };
+
+    match type_name {
+        "Vec" => SemType::Path {
+            path: vec!["Vec".to_string()],
+            args: vec![item_ty],
+        },
+        "HashSet" => SemType::Path {
+            path: vec!["HashSet".to_string()],
+            args: vec![item_ty],
+        },
+        "BTreeSet" => SemType::Path {
+            path: vec!["BTreeSet".to_string()],
+            args: vec![item_ty],
+        },
+        "HashMap" => {
+            if let SemType::Tuple(items) = item_ty
+                && items.len() == 2
+            {
+                return SemType::Path {
+                    path: vec!["HashMap".to_string()],
+                    args: vec![items[0].clone(), items[1].clone()],
+                };
+            }
+            SemType::Unknown
+        }
+        "BTreeMap" => {
+            if let SemType::Tuple(items) = item_ty
+                && items.len() == 2
+            {
+                return SemType::Path {
+                    path: vec!["BTreeMap".to_string()],
+                    args: vec![items[0].clone(), items[1].clone()],
+                };
+            }
+            SemType::Unknown
+        }
+        "String" => named_type("String"),
+        _ => SemType::Unknown,
+    }
+}
+
+fn into_iterator_item_type(ty: &SemType) -> Option<SemType> {
+    match ty {
+        SemType::Iter(item) => Some(item.as_ref().clone()),
+        SemType::Path { path, args } => match path.last().map(|s| s.as_str()) {
+            Some("Vec") | Some("Option") if args.len() == 1 => Some(args[0].clone()),
+            Some("Result") if args.len() >= 1 => Some(args[0].clone()),
+            Some("HashSet") | Some("BTreeSet") if args.len() == 1 => Some(args[0].clone()),
+            Some("HashMap") | Some("BTreeMap") if args.len() == 2 => {
+                Some(SemType::Tuple(vec![args[0].clone(), args[1].clone()]))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn rustdex_has_method(type_name: &str, method: &str) -> bool {
+    match method {
+        "from_iter" => rustdex_type_implements(type_name, "FromIterator"),
+        "from" => rustdex_type_implements(type_name, "From"),
+        "default" => rustdex_type_implements(type_name, "Default"),
+        _ => false,
+    }
+}
+
+fn rustdex_type_implements(type_name: &str, trait_name: &str) -> bool {
+    let key = (type_name.to_string(), trait_name.to_string());
+    if let Some(cache) = RUSTDEX_TRAIT_CHECKS.get() {
+        let guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(value) = guard.get(&key) {
+            return *value;
+        }
+    }
+
+    let result = rustdex_check_type_trait(type_name, trait_name).unwrap_or(false);
+    let cache = RUSTDEX_TRAIT_CHECKS.get_or_init(|| Mutex::new(HashMap::new()));
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, result);
+    result
+}
+
+fn rustdex_check_type_trait(type_name: &str, trait_name: &str) -> Option<bool> {
+    let mut attempted_build = false;
+    loop {
+        let output = rustdex_command_output(&["check", type_name, trait_name])?;
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains(" does NOT implement ") {
+                return Some(false);
+            }
+            if stdout.contains(" implements ") {
+                return Some(true);
+            }
+            return None;
+        }
+        if attempted_build || !rustdex_build_index() {
+            return None;
+        }
+        attempted_build = true;
+    }
+}
+
+fn rustdex_build_index() -> bool {
+    rustdex_command_output(&["build"])
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn rustdex_command_output(args: &[&str]) -> Option<std::process::Output> {
+    let bin = rustdex_bin_path()?;
+    Command::new(bin).args(args).output().ok()
+}
+
+fn rustdex_bin_path() -> Option<&'static PathBuf> {
+    RUSTDEX_BIN_PATH
+        .get_or_init(|| {
+            if let Some(bin_override) = std::env::var_os("ELEVATE_RUSTDEX_BIN") {
+                let path = PathBuf::from(bin_override);
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+
+            let local = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../rustdex/target/debug/rustdex");
+            if local.is_file() {
+                return Some(local);
+            }
+
+            let output = Command::new("rustdex").arg("help").output().ok()?;
+            if output.status.success() {
+                return Some(PathBuf::from("rustdex"));
+            }
+            None
+        })
+        .as_ref()
 }
 
 fn resolve_named_function_call(
@@ -7586,5 +7796,49 @@ fn contains_unknown(ty: &SemType) -> bool {
         SemType::Fn { params, ret } => params.iter().any(contains_unknown) || contains_unknown(ret),
         SemType::Iter(item) => contains_unknown(item),
         SemType::Path { args, .. } => args.iter().any(contains_unknown),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_from_iter_associated_type_infers_vec_item() {
+        let mut diagnostics = Vec::new();
+        let out = resolve_from_iter_associated_type(
+            "Vec",
+            &[SemType::Iter(Box::new(named_type("i64")))],
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            out,
+            SemType::Path {
+                path: vec!["Vec".to_string()],
+                args: vec![named_type("i64")],
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_from_iter_associated_type_infers_hashmap_kv() {
+        let mut diagnostics = Vec::new();
+        let out = resolve_from_iter_associated_type(
+            "HashMap",
+            &[SemType::Iter(Box::new(SemType::Tuple(vec![
+                named_type("String"),
+                named_type("i64"),
+            ])))],
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            out,
+            SemType::Path {
+                path: vec!["HashMap".to_string()],
+                args: vec![named_type("String"), named_type("i64")],
+            }
+        );
     }
 }
