@@ -32,67 +32,12 @@ graph LR
 
 ---
 
-## Direct AST Ingest (In Progress)
+## Direct AST Ingest
 
-Elevate already exposes an in-process AST entry point:
-- `compile_ast(module: &ast::Module)`
-- `compile_ast_with_options(module: &ast::Module, options: &CompileOptions)`
+Elevate already exposes an in-process AST entry point (`compile_ast`). See the
+[Interop Design](#interop-design-frontend--elevate) section below for the full
+proposal on serialized AST transport, versioning, and multi-file project support.
 
-To make AST a first-class cross-language boundary (instead of requiring `.ers` text input),
-this doc now defines a transport and validation mechanism that frontends can target directly.
-
-### Goal
-
-Allow any frontend to produce Elevate AST and hand it directly to Elevate for:
-- type/lowering passes,
-- ownership planning,
-- Rust emission.
-
-No source-language parser dependency should be required for this path.
-
-### Proposed Mechanism
-
-1. **AST envelope format**
-- Add a versioned envelope for external AST payloads:
-  - `schema_version` (starts at `1`)
-  - `module` (`ast::Module`-compatible structure)
-  - `meta` (optional frontend metadata: language, compiler version, source map id)
-
-2. **AST transport entrypoint**
-- Add a compiler-facing API for serialized AST:
-  - `compile_ast_json(input: &str, options: &CompileOptions) -> Result<CompilerOutput, CompileError>`
-- CLI follow-up:
-  - `elevate build-ast <file.json>` (parallel to `build` for `.ers` crates)
-
-3. **Validation boundary**
-- Before type/lowering passes, run strict AST shape validation:
-  - required fields present,
-  - enum tags valid,
-  - path/type nodes structurally valid,
-  - no unknown schema version.
-
-4. **Normalization**
-- Normalize deserialized AST into canonical internal form before `passes::lower_to_typed`:
-  - normalize visibility defaults,
-  - normalize path segment formatting,
-  - normalize optional fields to compiler defaults.
-
-### Compatibility Contract
-
-- `schema_version` is required for all external AST payloads.
-- Version bumps are additive where possible; breaking changes require a new major schema version.
-- Elevate may support a small version window (`N` and `N-1`) to ease frontend upgrades.
-
-### Initial Rollout Plan
-
-1. Implement `ast::serde` module (derive `Serialize`/`Deserialize` on AST types as needed).
-2. Add `compile_ast_json(...)` that deserializes + validates + reuses `compile_ast_with_options(...)`.
-3. Add fixture tests with checked-in JSON AST samples from at least two frontends.
-4. Add CLI command for AST-file compile path.
-5. Add diagnostics that report AST node path (`items[2].body.statements[4]...`) on validation errors.
-
-This path makes Elevate AST the shared IR contract for other source languages while preserving
-the current `.ers` parser path as one frontend among many.
 
 ---
 
@@ -190,6 +135,12 @@ struct GenericParam {
 }
 ```
 
+> [!WARNING]
+> **`ImplBlock` does not support trait implementations.** There is no `trait_name`
+> field, so `impl Display for Point { ... }` cannot be represented directly.
+> Use `Item::RustBlock(String)` as an escape hatch for trait impls until this is
+> added to the AST.
+
 > [!IMPORTANT]
 > **Self parameter convention**: Methods that take `self` should have their first
 > param named `"self"` with type `Self` (or the concrete struct name). Elevate
@@ -274,6 +225,13 @@ struct ConstDef {
     ty: Option<Type>,           // None = let Elevate infer
     value: Expr,
     is_const: bool,             // true = `const`, false = `let`
+}
+
+struct StaticDef {
+    visibility: Visibility,
+    name: String,
+    ty: Type,                   // Required (unlike ConstDef where ty is optional)
+    value: Expr,
 }
 ```
 
@@ -519,11 +477,34 @@ Today, Elevate accepts input via two interfaces:
 The `compile_ast` path is what external frontends (like Quiche) use today.
 It requires sharing Rust types via `Cargo.toml` path dependency.
 
-### Proposed: Binary IR Exchange Format
+### Proposed: Serialized AST Exchange
 
 For decoupled frontend/backend workflows, Elevate should support a **serialized
 AST format** that can be written to disk and read back without requiring the
 frontend and backend to share Rust types at compile time.
+
+#### Versioned Envelope
+
+All serialized AST payloads use a versioned envelope:
+
+```rust
+struct AstEnvelope {
+    schema_version: u32,        // starts at 1
+    module: Module,             // the AST payload
+    meta: Option<FrontendMeta>, // optional source metadata
+}
+
+struct FrontendMeta {
+    language: String,           // "quiche", "ers", etc.
+    compiler_version: String,
+    source_map_id: Option<String>,
+}
+```
+
+**Compatibility contract:**
+- `schema_version` is required for all external AST payloads
+- Version bumps are additive where possible; breaking changes require a new major version
+- Elevate may support a small version window (`N` and `N-1`) to ease frontend upgrades
 
 #### Format Options
 
@@ -540,6 +521,16 @@ frontend and backend to share Rust types at compile time.
 > compact, Rust-native), JSON for debugging and cross-language interop. Both are
 > trivial to add since all AST types already derive `Clone, PartialEq, Eq` —
 > adding `Serialize, Deserialize` is mechanical.
+
+#### Validation and Normalization
+
+Before passing deserialized AST to `passes::lower_to_typed`, Elevate should:
+
+1. **Validate** — required fields present, enum tags valid, path/type nodes
+   structurally valid, schema version supported
+2. **Normalize** — canonicalize visibility defaults, path segment formatting,
+   and optional fields to compiler defaults
+3. **Report errors with AST paths** — e.g., `items[2].body.statements[4]...`
 
 #### Implementation
 
@@ -566,15 +557,33 @@ pub struct Module {
 }
 ```
 
-3. Add `compile_from_bytes` entry point:
+3. Add entry points:
 
 ```rust
+// Binary (bincode)
 pub fn compile_from_bytes(data: &[u8]) -> Result<CompilerOutput, CompileError> {
-    let module: Module = bincode::deserialize(data)
+    let envelope: AstEnvelope = bincode::deserialize(data)
         .map_err(|e| CompileError { diagnostics: vec![Diagnostic::new(e.to_string(), Span::new(0, 0))] })?;
-    compile_ast(&module)
+    validate_ast_envelope(&envelope)?;
+    compile_ast(&envelope.module)
+}
+
+// JSON (for debugging and cross-language frontends)
+pub fn compile_from_json(input: &str) -> Result<CompilerOutput, CompileError> {
+    let envelope: AstEnvelope = serde_json::from_str(input)
+        .map_err(|e| CompileError { diagnostics: vec![Diagnostic::new(e.to_string(), Span::new(0, 0))] })?;
+    validate_ast_envelope(&envelope)?;
+    compile_ast(&envelope.module)
 }
 ```
+
+#### Rollout Plan
+
+1. Implement `ast::serde` module (derive on AST types)
+2. Add `compile_from_bytes` / `compile_from_json` entry points
+3. Add fixture tests with checked-in JSON AST samples from at least two frontends
+4. Add CLI command for AST-file compile path
+5. Add diagnostics that report AST node paths on validation errors
 
 ### Proposed: Multi-File Project Manifest
 
