@@ -1023,6 +1023,9 @@ fn validate_expr_adapter_calls(
         Expr::Unary { expr, .. } | Expr::Try(expr) => {
             validate_expr_adapter_calls(expr, alias_arity, alias_param_types, diagnostics)
         }
+        Expr::Cast { expr, .. } => {
+            validate_expr_adapter_calls(expr, alias_arity, alias_param_types, diagnostics)
+        }
         Expr::Binary { left, right, .. } => {
             validate_expr_adapter_calls(left, alias_arity, alias_param_types, diagnostics);
             validate_expr_adapter_calls(right, alias_arity, alias_param_types, diagnostics);
@@ -1224,6 +1227,7 @@ fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) => rewrite_expr_adapter_calls(expr, adapter_map),
+        Expr::Cast { expr, .. } => rewrite_expr_adapter_calls(expr, adapter_map),
         Expr::Binary { left, right, .. } => {
             rewrite_expr_adapter_calls(left, adapter_map);
             rewrite_expr_adapter_calls(right, adapter_map);

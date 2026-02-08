@@ -23,6 +23,7 @@ pub struct ExperimentFlags {
     pub infer_local_bidi: bool,
     pub effect_rows_internal: bool,
     pub infer_principal_fallback: bool,
+    pub numeric_coercion: bool,
 }
 
 impl ExperimentFlags {
@@ -39,6 +40,9 @@ impl ExperimentFlags {
         }
         if self.infer_principal_fallback {
             out.push("exp_infer_principal_fallback");
+        }
+        if self.numeric_coercion {
+            out.push("exp_numeric_coercion");
         }
         out
     }
@@ -106,8 +110,13 @@ pub fn compile_ast_with_options(
     module: &Module,
     options: &CompileOptions,
 ) -> Result<CompilerOutput, CompileError> {
-    let typed =
-        passes::lower_to_typed(module).map_err(|diagnostics| CompileError { diagnostics })?;
+    let typed = passes::lower_to_typed_with_options(
+        module,
+        &passes::TypecheckOptions {
+            numeric_coercion: options.experiments.numeric_coercion,
+        },
+    )
+    .map_err(|diagnostics| CompileError { diagnostics })?;
     let mut lowered = passes::lower_to_rust_with_hints(
         &typed,
         &options.direct_borrow_hints,
@@ -179,7 +188,7 @@ mod tests {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{compile_source, compile_source_with_options, CompileOptions};
+    use super::{compile_ast, compile_source, compile_source_with_options, CompileOptions};
 
     #[test]
     fn compile_smoke_test() {
@@ -2726,6 +2735,270 @@ world"#;
         assert!(output.rust_code.contains("match ch"));
         assert!(output.rust_code.contains("'a' => 1"));
         assert!(output.rust_code.contains("'b' => 2"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_iter_map_collect_and_fold_chains() {
+        let source = r#"
+            fn doubled(values: Vec<i64>) -> Vec<i64> {
+                return values.into_iter().map(|x: i64| -> i64 { x * 2 }).collect();
+            }
+
+            fn total(values: Vec<i64>) -> i64 {
+                return values.into_iter().fold(0, |acc: i64, x: i64| -> i64 { acc + x });
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains(".into_iter().map("));
+        assert!(output.rust_code.contains(".collect()"));
+        assert!(output.rust_code.contains(".fold("));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_to_string_on_non_string_values() {
+        let source = r#"
+            fn render(v: i64) -> String {
+                return v.to_string();
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("v.to_string()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_numeric_coercion_flag_allows_cross_numeric_calls() {
+        let source = r#"
+            fn need_i32(v: i32) -> i32 {
+                return v;
+            }
+
+            fn call() -> i32 {
+                return need_i32(0);
+            }
+        "#;
+
+        let strict_error = compile_source(source).expect_err("strict typing should reject");
+        assert!(strict_error.to_string().contains("expected `i32`, got `i64`"));
+
+        let mut options = CompileOptions::default();
+        options.experiments.numeric_coercion = true;
+        let output =
+            compile_source_with_options(source, &options).expect("numeric coercion should compile");
+        assert!(output.rust_code.contains("need_i32(0)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_ast_supports_explicit_cast_variant() {
+        use crate::ast as ast;
+
+        let module = ast::Module {
+            items: vec![ast::Item::Function(ast::FunctionDef {
+                visibility: ast::Visibility::Private,
+                name: "cast_it".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Some(ast::Type {
+                    path: vec!["i32".to_string()],
+                    args: vec![],
+                    trait_bounds: vec![],
+                }),
+                body: ast::Block {
+                    statements: vec![ast::Stmt::Return(Some(ast::Expr::Cast {
+                        expr: Box::new(ast::Expr::Int(7)),
+                        target_type: ast::Type {
+                            path: vec!["i32".to_string()],
+                            args: vec![],
+                            trait_bounds: vec![],
+                        },
+                    }))],
+                },
+            })],
+        };
+
+        let output = compile_ast(&module).expect("cast AST should compile");
+        assert!(output.rust_code.contains("return (7 as i32);"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_ast_supports_legacy_quiche_cast_macro() {
+        use crate::ast as ast;
+
+        let module = ast::Module {
+            items: vec![ast::Item::Function(ast::FunctionDef {
+                visibility: ast::Visibility::Private,
+                name: "cast_macro".to_string(),
+                type_params: vec![],
+                params: vec![ast::Param {
+                    name: "v".to_string(),
+                    ty: ast::Type {
+                        path: vec!["i64".to_string()],
+                        args: vec![],
+                        trait_bounds: vec![],
+                    },
+                }],
+                return_type: Some(ast::Type {
+                    path: vec!["i32".to_string()],
+                    args: vec![],
+                    trait_bounds: vec![],
+                }),
+                body: ast::Block {
+                    statements: vec![ast::Stmt::Return(Some(ast::Expr::MacroCall {
+                        path: vec!["__quiche_as".to_string()],
+                        args: vec![
+                            ast::Expr::Path(vec!["v".to_string()]),
+                            ast::Expr::Path(vec!["i32".to_string()]),
+                        ],
+                    }))],
+                },
+            })],
+        };
+
+        let output = compile_ast(&module).expect("legacy quiche cast macro should compile");
+        assert!(output.rust_code.contains("return (v as i32);"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_ast_tolerates_duplicate_impl_self_param_from_bridge() {
+        use crate::ast as ast;
+
+        let self_ty = ast::Type {
+            path: vec!["Self".to_string()],
+            args: vec![],
+            trait_bounds: vec![],
+        };
+
+        let module = ast::Module {
+            items: vec![
+                ast::Item::Struct(ast::StructDef {
+                    visibility: ast::Visibility::Public,
+                    name: "Counter".to_string(),
+                    fields: vec![ast::Field {
+                        name: "value".to_string(),
+                        ty: ast::Type {
+                            path: vec!["i64".to_string()],
+                            args: vec![],
+                            trait_bounds: vec![],
+                        },
+                    }],
+                }),
+                ast::Item::Impl(ast::ImplBlock {
+                    target: "Counter".to_string(),
+                    methods: vec![ast::FunctionDef {
+                        visibility: ast::Visibility::Public,
+                        name: "get".to_string(),
+                        type_params: vec![],
+                        params: vec![
+                            ast::Param {
+                                name: "self".to_string(),
+                                ty: self_ty.clone(),
+                            },
+                            ast::Param {
+                                name: "self".to_string(),
+                                ty: self_ty,
+                            },
+                        ],
+                        return_type: Some(ast::Type {
+                            path: vec!["i64".to_string()],
+                            args: vec![],
+                            trait_bounds: vec![],
+                        }),
+                        body: ast::Block {
+                            statements: vec![ast::Stmt::Return(Some(ast::Expr::Field {
+                                base: Box::new(ast::Expr::Path(vec!["self".to_string()])),
+                                field: "value".to_string(),
+                            }))],
+                        },
+                    }],
+                }),
+                ast::Item::Function(ast::FunctionDef {
+                    visibility: ast::Visibility::Private,
+                    name: "run".to_string(),
+                    type_params: vec![],
+                    params: vec![ast::Param {
+                        name: "counter".to_string(),
+                        ty: ast::Type {
+                            path: vec!["Counter".to_string()],
+                            args: vec![],
+                            trait_bounds: vec![],
+                        },
+                    }],
+                    return_type: Some(ast::Type {
+                        path: vec!["i64".to_string()],
+                        args: vec![],
+                        trait_bounds: vec![],
+                    }),
+                    body: ast::Block {
+                        statements: vec![ast::Stmt::Return(Some(ast::Expr::Call {
+                            callee: Box::new(ast::Expr::Field {
+                                base: Box::new(ast::Expr::Path(vec!["counter".to_string()])),
+                                field: "get".to_string(),
+                            }),
+                            args: vec![],
+                        }))],
+                    },
+                }),
+            ],
+        };
+
+        let output = compile_ast(&module).expect("duplicate bridge self param should be tolerated");
+        assert!(output.rust_code.contains("fn get(self: Counter) -> i64"));
+        assert!(output.rust_code.contains("return counter.get();"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_ast_allows_vec_index_with_usize() {
+        use crate::ast as ast;
+
+        let module = ast::Module {
+            items: vec![ast::Item::Function(ast::FunctionDef {
+                visibility: ast::Visibility::Private,
+                name: "pick".to_string(),
+                type_params: vec![],
+                params: vec![ast::Param {
+                    name: "values".to_string(),
+                    ty: ast::Type {
+                        path: vec!["Vec".to_string()],
+                        args: vec![ast::Type {
+                            path: vec!["i64".to_string()],
+                            args: vec![],
+                            trait_bounds: vec![],
+                        }],
+                        trait_bounds: vec![],
+                    },
+                }],
+                return_type: Some(ast::Type {
+                    path: vec!["i64".to_string()],
+                    args: vec![],
+                    trait_bounds: vec![],
+                }),
+                body: ast::Block {
+                    statements: vec![ast::Stmt::Return(Some(ast::Expr::Index {
+                        base: Box::new(ast::Expr::Path(vec!["values".to_string()])),
+                        index: Box::new(ast::Expr::Cast {
+                            expr: Box::new(ast::Expr::Int(0)),
+                            target_type: ast::Type {
+                                path: vec!["usize".to_string()],
+                                args: vec![],
+                                trait_bounds: vec![],
+                            },
+                        }),
+                    }))],
+                },
+            })],
+        };
+
+        let output = compile_ast(&module).expect("usize indexing should compile");
+        assert!(output.rust_code.contains("(0 as usize)"));
+        assert!(output.rust_code.contains("values["));
         assert_rust_code_compiles(&output.rust_code);
     }
 

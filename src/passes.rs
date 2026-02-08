@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::ast::{
@@ -55,28 +56,59 @@ struct Context {
     globals: HashMap<String, SemType>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TypecheckOptions {
+    pub numeric_coercion: bool,
+}
+
+thread_local! {
+    static NUMERIC_COERCION_ENABLED: Cell<bool> = Cell::new(false);
+}
+
+fn with_numeric_coercion_scope<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+    NUMERIC_COERCION_ENABLED.with(|cell| {
+        let previous = cell.replace(enabled);
+        let out = f();
+        cell.set(previous);
+        out
+    })
+}
+
+fn numeric_coercion_enabled() -> bool {
+    NUMERIC_COERCION_ENABLED.with(|cell| cell.get())
+}
+
 pub fn lower_to_typed(module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
-    let mut diagnostics = Vec::new();
-    let mut context = Context {
-        functions: HashMap::new(),
-        structs: HashMap::new(),
-        enums: HashMap::new(),
-        traits: HashMap::new(),
-        globals: HashMap::new(),
-    };
+    lower_to_typed_with_options(module, &TypecheckOptions::default())
+}
 
-    collect_definitions(module, &mut context, &mut diagnostics);
-    let items = module
-        .items
-        .iter()
-        .filter_map(|item| lower_item(item, &mut context, &mut diagnostics))
-        .collect::<Vec<_>>();
+pub fn lower_to_typed_with_options(
+    module: &Module,
+    options: &TypecheckOptions,
+) -> Result<TypedModule, Vec<Diagnostic>> {
+    with_numeric_coercion_scope(options.numeric_coercion, || {
+        let mut diagnostics = Vec::new();
+        let mut context = Context {
+            functions: HashMap::new(),
+            structs: HashMap::new(),
+            enums: HashMap::new(),
+            traits: HashMap::new(),
+            globals: HashMap::new(),
+        };
 
-    if diagnostics.is_empty() {
-        Ok(TypedModule { items })
-    } else {
-        Err(diagnostics)
-    }
+        collect_definitions(module, &mut context, &mut diagnostics);
+        let items = module
+            .items
+            .iter()
+            .filter_map(|item| lower_item(item, &mut context, &mut diagnostics))
+            .collect::<Vec<_>>();
+
+        if diagnostics.is_empty() {
+            Ok(TypedModule { items })
+        } else {
+            Err(diagnostics)
+        }
+    })
 }
 
 pub fn lower_to_rust(module: &TypedModule) -> RustModule {
@@ -860,7 +892,9 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                         params: method
                             .params
                             .iter()
-                            .map(|param| {
+                            .enumerate()
+                            .filter(|(index, _)| !is_redundant_impl_self_param(&method.params, *index))
+                            .map(|(_, param)| {
                                 type_from_ast_with_impl_self_in_context(
                                     &param.ty,
                                     &def.target,
@@ -963,7 +997,10 @@ fn lower_item(
             for method in &def.methods {
                 let mut locals = HashMap::new();
                 let mut immutable_locals = HashSet::new();
-                for param in &method.params {
+                for (index, param) in method.params.iter().enumerate() {
+                    if is_redundant_impl_self_param(&method.params, index) {
+                        continue;
+                    }
                     locals.insert(
                         param.name.clone(),
                         type_from_ast_with_impl_self_in_context(&param.ty, &def.target, context),
@@ -1059,7 +1096,9 @@ fn lower_item(
                     params: method
                         .params
                         .iter()
-                        .map(|param| TypedParam {
+                        .enumerate()
+                        .filter(|(index, _)| !is_redundant_impl_self_param(&method.params, *index))
+                        .map(|(_, param)| TypedParam {
                             name: param.name.clone(),
                             ty: rust_param_type_string(&type_from_ast_with_impl_self_in_context(
                                 &param.ty,
@@ -1667,12 +1706,12 @@ fn infer_assign_target(
                 SemType::Path { path, args }
                     if path.len() == 1 && path[0] == "Vec" && args.len() == 1 =>
                 {
-                    if is_compatible(&index_ty, &named_type("i64")) {
+                    if is_vector_index_type(&index_ty) {
                         args[0].clone()
                     } else {
                         diagnostics.push(Diagnostic::new(
                             format!(
-                                "Vector index assignment expects `i64` index, got `{}`",
+                                "Vector index assignment expects `i64` or `usize` index, got `{}`",
                                 type_to_string(&index_ty)
                             ),
                             Span::new(0, 0),
@@ -1906,6 +1945,21 @@ fn infer_expr(
             )
         }
         Expr::MacroCall { path, args } => {
+            if path.len() == 1 && path[0] == "__quiche_as" && args.len() == 2 {
+                let (typed_expr, _expr_ty) =
+                    infer_expr(&args[0], context, locals, return_ty, diagnostics);
+                let target_ty = quiche_macro_target_type(&args[1], context);
+                return (
+                    TypedExpr {
+                        kind: TypedExprKind::Cast {
+                            expr: Box::new(typed_expr),
+                            target_type: rust_owned_type_string(&target_ty),
+                        },
+                        ty: type_to_string(&target_ty),
+                    },
+                    target_ty,
+                );
+            }
             let mut typed_args = Vec::new();
             for arg in args {
                 let (typed_arg, _) = infer_expr(arg, context, locals, return_ty, diagnostics);
@@ -1939,14 +1993,14 @@ fn infer_expr(
                             path: vec!["Vec".to_string()],
                             args: vec![args[0].clone()],
                         }
-                    } else if is_compatible(&index_ty, &named_type("i64")) {
+                    } else if is_vector_index_type(&index_ty) {
                         args[0].clone()
                     } else if index_ty == SemType::Unknown {
                         SemType::Unknown
                     } else {
                         diagnostics.push(Diagnostic::new(
                             format!(
-                                "Vector indexing expects `i64` index or range, got `{}`",
+                                "Vector indexing expects `i64` or `usize` index (or range), got `{}`",
                                 type_to_string(&index_ty)
                             ),
                             Span::new(0, 0),
@@ -2345,6 +2399,20 @@ fn infer_expr(
                 SemType::Unknown,
             )
         }
+        Expr::Cast { expr, target_type } => {
+            let (typed_expr, _expr_ty) = infer_expr(expr, context, locals, return_ty, diagnostics);
+            let target_sem = type_from_ast_in_context(target_type, context);
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Cast {
+                        expr: Box::new(typed_expr),
+                        target_type: rust_owned_type_string(&target_sem),
+                    },
+                    ty: type_to_string(&target_sem),
+                },
+                target_sem,
+            )
+        }
         Expr::Try(inner) => {
             let (typed_inner, inner_ty) =
                 infer_expr(inner, context, locals, return_ty, diagnostics);
@@ -2406,6 +2474,9 @@ fn diagnose_const_mutations_in_expr(
             }
         }
         TypedExprKind::Unary { expr, .. } => {
+            diagnose_const_mutations_in_expr(expr, immutable_locals, diagnostics);
+        }
+        TypedExprKind::Cast { expr, .. } => {
             diagnose_const_mutations_in_expr(expr, immutable_locals, diagnostics);
         }
         TypedExprKind::Binary { left, right, .. } => {
@@ -3281,6 +3352,10 @@ fn resolve_method_call_type(
                     expect_method_arity(type_name, method, args.len(), 0, diagnostics);
                     return SemType::Iter(Box::new(named_type("char")));
                 }
+                "to_string" => {
+                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
+                    return named_type("String");
+                }
                 _ => {}
             },
             "Vec" => match method {
@@ -3324,10 +3399,10 @@ fn resolve_method_call_type(
                 }
                 "get" => {
                     expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    if args.len() == 1 && !is_compatible(&args[0], &named_type("i64")) {
+                    if args.len() == 1 && !is_vector_index_type(&args[0]) {
                         diagnostics.push(Diagnostic::new(
                             format!(
-                                "Method `Vec::get` expects `i64` index, got `{}`",
+                                "Method `Vec::get` expects `i64` or `usize` index, got `{}`",
                                 type_to_string(&args[0])
                             ),
                             Span::new(0, 0),
@@ -3452,6 +3527,66 @@ fn resolve_method_call_type(
                 }
                 _ => {}
             },
+            _ => {}
+        }
+    }
+
+    if let SemType::Iter(item_ty) = base_ty {
+        match method {
+            "map" => {
+                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
+                if let Some(SemType::Fn { ret, .. }) = args.first() {
+                    return SemType::Iter(ret.clone());
+                }
+                return SemType::Iter(Box::new(SemType::Unknown));
+            }
+            "flat_map" => {
+                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
+                if let Some(SemType::Fn { ret, .. }) = args.first()
+                    && let SemType::Iter(inner) = ret.as_ref()
+                {
+                    return SemType::Iter(inner.clone());
+                }
+                return SemType::Iter(Box::new(SemType::Unknown));
+            }
+            "filter" => {
+                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
+                return SemType::Iter(item_ty.clone());
+            }
+            "collect" => {
+                expect_method_arity("Iter", method, args.len(), 0, diagnostics);
+                return SemType::Path {
+                    path: vec!["Vec".to_string()],
+                    args: vec![item_ty.as_ref().clone()],
+                };
+            }
+            "fold" => {
+                expect_method_arity("Iter", method, args.len(), 2, diagnostics);
+                return args.first().cloned().unwrap_or(SemType::Unknown);
+            }
+            "enumerate" => {
+                expect_method_arity("Iter", method, args.len(), 0, diagnostics);
+                return SemType::Iter(Box::new(SemType::Tuple(vec![
+                    named_type("usize"),
+                    item_ty.as_ref().clone(),
+                ])));
+            }
+            "count" => {
+                expect_method_arity("Iter", method, args.len(), 0, diagnostics);
+                return named_type("usize");
+            }
+            "sum" | "product" => {
+                expect_method_arity("Iter", method, args.len(), 0, diagnostics);
+                return item_ty.as_ref().clone();
+            }
+            "any" | "all" => {
+                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
+                return named_type("bool");
+            }
+            "for_each" => {
+                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
+                return SemType::Unit;
+            }
             _ => {}
         }
     }
@@ -3581,6 +3716,9 @@ fn infer_external_method_call_type(method: &str, args: &[SemType]) -> SemType {
     }
     if method == "len" {
         return named_type("usize");
+    }
+    if method == "to_string" {
+        return named_type("String");
     }
     if matches!(method, "first" | "last" | "get") {
         return option_type(SemType::Unknown);
@@ -4128,6 +4266,7 @@ fn count_exact_place_uses_in_expr_rec(
             count_exact_place_uses_in_expr_rec(right, target, count);
         }
         TypedExprKind::Unary { expr, .. } => count_exact_place_uses_in_expr_rec(expr, target, count),
+        TypedExprKind::Cast { expr, .. } => count_exact_place_uses_in_expr_rec(expr, target, count),
         TypedExprKind::Tuple(items) => {
             for item in items {
                 count_exact_place_uses_in_expr_rec(item, target, count);
@@ -4476,6 +4615,15 @@ fn lower_expr_with_context(
                 }
             }
         }
+        TypedExprKind::Cast { expr: inner, target_type } => RustExpr::Cast {
+            expr: Box::new(lower_expr_with_context(
+                inner,
+                context,
+                ExprPosition::Value,
+                state,
+            )),
+            ty: target_type.clone(),
+        },
         TypedExprKind::Binary { op, left, right } => {
             let operand_position = if matches!(
                 op,
@@ -5661,6 +5809,7 @@ fn collect_place_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<OwnershipPlac
             }
         }
         TypedExprKind::Unary { expr, .. } => collect_place_uses_in_expr(expr, uses),
+        TypedExprKind::Cast { expr, .. } => collect_place_uses_in_expr(expr, uses),
         TypedExprKind::Binary { left, right, .. } => {
             collect_place_uses_in_expr(left, uses);
             collect_place_uses_in_expr(right, uses);
@@ -5740,6 +5889,29 @@ fn promote_trait_shorthand(ty: SemType, context: &Context) -> SemType {
         SemType::Iter(item) => SemType::Iter(Box::new(promote_trait_shorthand(*item, context))),
         SemType::Unit | SemType::Unknown => ty,
     }
+}
+
+fn quiche_macro_target_type(expr: &Expr, context: &Context) -> SemType {
+    match expr {
+        Expr::Path(path) => promote_trait_shorthand(
+            SemType::Path {
+                path: path.clone(),
+                args: Vec::new(),
+            },
+            context,
+        ),
+        _ => SemType::Unknown,
+    }
+}
+
+fn is_redundant_impl_self_param(params: &[crate::ast::Param], index: usize) -> bool {
+    if index == 0 {
+        return false;
+    }
+    let Some(first) = params.first() else {
+        return false;
+    };
+    first.name == "self" && params[index].name == "self"
 }
 
 fn type_from_ast(ty: &Type) -> SemType {
@@ -6332,6 +6504,10 @@ fn substitute_generic_type(
     }
 }
 
+fn is_vector_index_type(ty: &SemType) -> bool {
+    is_compatible(ty, &named_type("i64")) || is_compatible(ty, &named_type("usize"))
+}
+
 fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
     match (actual, expected) {
         (_, SemType::Unknown) | (SemType::Unknown, _) => true,
@@ -6374,6 +6550,12 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
                 args: expected_args,
             },
         ) => {
+            if numeric_coercion_enabled()
+                && canonical_numeric_name(actual).is_some()
+                && canonical_numeric_name(expected).is_some()
+            {
+                return true;
+            }
             if actual_path != expected_path || actual_args.len() != expected_args.len() {
                 return false;
             }

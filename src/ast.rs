@@ -216,6 +216,10 @@ pub enum Expr {
         end: Option<Box<Expr>>,
         inclusive: bool,
     },
+    Cast {
+        expr: Box<Expr>,
+        target_type: Type,
+    },
     Try(Box<Expr>),
 }
 

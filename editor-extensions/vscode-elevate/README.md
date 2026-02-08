@@ -4,12 +4,15 @@ This extension adds syntax highlighting and editor configuration for Elevate sou
 
 ## Features
 
-- Elevate keyword highlighting (`rust`, `use`, `struct`, `enum`, `impl`, `fn`, `const`, `static`, `pub`)
-- Flow/control highlighting (`if`, `else`, `while`, `match`, `return`)
-- Logical operators (`and`, `or`, `not`) and symbolic operators (`+`, `+=`, `==`, `!=`, `..`, `..=`, `=>`, `->`, `?`, `!`, etc.)
-- Raw strings (`r"..."`, `r#"..."#`, `r##"..."##`, ...)
-- Line/block comments (`//`, `/* ... */`)
-- Function/type/constant naming scopes for better theming
+- Declaration keywords: `rust`, `use`, `struct`, `enum`, `trait`, `impl`, `fn`, `let`, `const`, `static`, `pub`
+- Control flow: `if`, `else`, `while`, `for`, `in`, `loop`, `break`, `continue`, `match`, `return`
+- Logical operators: `and`, `or`, `not`
+- Language constants: `true`, `false`, `Self`, `_`
+- Symbolic operators: `+`, `+=`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `..`, `..=`, `=>`, `->`, `?`, `!`, `|`, `@`
+- Strings: quoted strings, raw strings (`r#"..."#` style), char literals (`'x'`)
+- Numbers: decimal, hex (`0x`), binary (`0b`)
+- Comments: line (`//`) and block (`/* ... */`)
+- Function/type/constant/macro naming scopes for better theming
 
 ## Local development
 

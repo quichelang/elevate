@@ -38,6 +38,10 @@ Elevate already exposes an in-process AST entry point (`compile_ast`). See the
 [Interop Design](#interop-design-frontend--elevate) section below for the full
 proposal on serialized AST transport, versioning, and multi-file project support.
 
+For frontend bridges that need relaxed numeric matching (for example, `i64`
+literals passed to `i32` APIs), use `compile_ast_with_options` and enable the
+`numeric_coercion` experiment flag.
+
 
 ---
 
@@ -309,6 +313,11 @@ enum Expr {
         inclusive: bool,         // true = ..=, false = ..
     },
 
+    Cast {
+        expr: Box<Expr>,
+        target_type: Type,       // expr as target_type
+    },
+
     // Error propagation
     Try(Box<Expr>),             // expr?
 }
@@ -431,6 +440,10 @@ println!("{}", output.rust_code);
 
 // Or with options
 let options = CompileOptions {
+    experiments: ExperimentFlags {
+        numeric_coercion: true,
+        ..Default::default()
+    },
     direct_borrow_hints: vec![...],
     forced_clone_places: vec![...],
     ..Default::default()

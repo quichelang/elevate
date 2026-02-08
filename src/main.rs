@@ -652,6 +652,7 @@ fn usage() {
     eprintln!("  --exp-infer-local-bidi");
     eprintln!("  --exp-effect-rows-internal");
     eprintln!("  --exp-infer-principal-fallback");
+    eprintln!("  --exp-numeric-coercion");
     eprintln!("  --fail-on-hot-clone");
     eprintln!("  --allow-hot-clone-place <place>");
     eprintln!("  --force-clone-place <place>");
@@ -764,6 +765,10 @@ fn apply_experiment_flag(flag: &str, experiments: &mut ExperimentFlags) -> bool 
         }
         "--exp-infer-principal-fallback" => {
             experiments.infer_principal_fallback = true;
+            true
+        }
+        "--exp-numeric-coercion" => {
+            experiments.numeric_coercion = true;
             true
         }
         _ => false,
