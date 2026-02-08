@@ -147,6 +147,7 @@ fn discover_tests(module: &Module, path: &Path) -> Result<Vec<String>, String> {
             | Item::RustBlock(_)
             | Item::Struct(_)
             | Item::Enum(_)
+            | Item::Trait(_)
             | Item::Const(_)
             | Item::Static(_) => {}
         }

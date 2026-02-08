@@ -1,7 +1,7 @@
 use crate::ir::lowered::{
     RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
     RustExpr, RustFunction, RustImpl, RustItem, RustModule, RustPattern, RustPatternField,
-    RustStatic, RustStmt, RustStruct, RustStructLiteralField, RustUnaryOp, RustUse,
+    RustStatic, RustStmt, RustStruct, RustStructLiteralField, RustTrait, RustUnaryOp, RustUse,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -25,6 +25,7 @@ pub fn emit_rust_module(module: &RustModule) -> String {
             RustItem::Raw(code) => emit_raw_item(code, &mut out),
             RustItem::Struct(def) => emit_struct(def, &mut out),
             RustItem::Enum(def) => emit_enum(def, &mut out),
+            RustItem::Trait(def) => emit_trait(def, &mut out),
             RustItem::Impl(def) => emit_impl(def, &mut out),
             RustItem::Function(def) => emit_function(def, &mut out),
             RustItem::Const(def) => emit_const(def, &mut out),
@@ -68,6 +69,44 @@ fn emit_enum(def: &RustEnum, out: &mut String) {
                 variant.payload.join(", ")
             ));
         }
+    }
+    out.push_str("}\n");
+}
+
+fn emit_trait(def: &RustTrait, out: &mut String) {
+    let supers = if def.supertraits.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", def.supertraits.join(" + "))
+    };
+    out.push_str(&format!(
+        "{}trait {}{} {{\n",
+        vis(def.is_public),
+        def.name,
+        supers
+    ));
+    for method in &def.methods {
+        let params = method
+            .params
+            .iter()
+            .map(|p| format!("{}: {}", p.name, p.ty))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let generics = if method.type_params.is_empty() {
+            String::new()
+        } else {
+            let params = method
+                .type_params
+                .iter()
+                .map(emit_type_param)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("<{params}>")
+        };
+        out.push_str(&format!(
+            "    fn {}{}({}) -> {};\n",
+            method.name, generics, params, method.return_type
+        ));
     }
     out.push_str("}\n");
 }

@@ -2,22 +2,21 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern,
-    Stmt, StructLiteralField, Type, UnaryOp, Visibility,
+    Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp, Visibility,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
     RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
     RustExpr, RustField, RustFunction, RustImpl, RustItem, RustMatchArm, RustModule, RustParam,
     RustPattern, RustPatternField, RustStatic, RustStmt, RustStruct, RustStructLiteralField,
-    RustTypeParam, RustUnaryOp, RustUse,
-    RustVariant,
+    RustTrait, RustTraitMethod, RustTypeParam, RustUnaryOp, RustUse, RustVariant,
 };
 use crate::ir::typed::{
     TypedAssignOp, TypedAssignTarget, TypedBinaryOp, TypedConst, TypedDestructurePattern,
     TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedItem,
-    TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedRustUse, TypedStatic, TypedStmt,
-    TypedStruct, TypedStructLiteralField, TypedTypeParam, TypedUnaryOp, TypedVariant,
-    TypedPatternField,
+    TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedPatternField, TypedRustUse,
+    TypedStatic, TypedStmt, TypedStruct, TypedStructLiteralField, TypedTrait, TypedTraitMethod,
+    TypedTypeParam, TypedUnaryOp, TypedVariant,
 };
 use crate::ownership_planner::{decide_clone, CloneDecision, ClonePlannerInput};
 use crate::DirectBorrowHint;
@@ -28,6 +27,7 @@ enum SemType {
         path: Vec<String>,
         args: Vec<SemType>,
     },
+    TraitObject(Vec<SemType>),
     Tuple(Vec<SemType>),
     Fn {
         params: Vec<SemType>,
@@ -51,6 +51,7 @@ struct Context {
     functions: HashMap<String, FunctionSig>,
     structs: HashMap<String, HashMap<String, SemType>>,
     enums: HashMap<String, HashMap<String, Vec<SemType>>>,
+    traits: HashMap<String, Vec<SemType>>,
     globals: HashMap<String, SemType>,
 }
 
@@ -60,6 +61,7 @@ pub fn lower_to_typed(module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
         functions: HashMap::new(),
         structs: HashMap::new(),
         enums: HashMap::new(),
+        traits: HashMap::new(),
         globals: HashMap::new(),
     };
 
@@ -123,6 +125,35 @@ pub fn lower_to_rust_with_hints(
                     .map(|variant| RustVariant {
                         name: variant.name.clone(),
                         payload: variant.payload.clone(),
+                    })
+                    .collect(),
+            }),
+            TypedItem::Trait(def) => RustItem::Trait(RustTrait {
+                is_public: def.is_public,
+                name: def.name.clone(),
+                supertraits: def.supertraits.clone(),
+                methods: def
+                    .methods
+                    .iter()
+                    .map(|method| RustTraitMethod {
+                        name: method.name.clone(),
+                        type_params: method
+                            .type_params
+                            .iter()
+                            .map(|param| RustTypeParam {
+                                name: param.name.clone(),
+                                bounds: param.bounds.clone(),
+                            })
+                            .collect(),
+                        params: method
+                            .params
+                            .iter()
+                            .map(|param| RustParam {
+                                name: param.name.clone(),
+                                ty: param.ty.clone(),
+                            })
+                            .collect(),
+                        return_type: method.return_type.clone(),
                     })
                     .collect(),
             }),
@@ -282,6 +313,7 @@ struct LoweringState {
     used_shims: BTreeSet<String>,
     imported_rust_paths: HashMap<String, Vec<Vec<String>>>,
     known_functions: BTreeSet<String>,
+    known_function_borrowed_args: HashMap<String, Vec<usize>>,
     ownership_notes: Vec<String>,
     ownership_note_keys: BTreeSet<String>,
     registry: InteropPolicyRegistry,
@@ -361,12 +393,18 @@ impl LoweringState {
                 }
                 TypedItem::Function(def) => {
                     state.known_functions.insert(def.name.clone());
+                    state.known_function_borrowed_args.insert(
+                        def.name.clone(),
+                        borrowed_param_indexes(&def.params),
+                    );
                 }
                 TypedItem::Impl(def) => {
                     for method in &def.methods {
+                        let lookup = format!("{}::{}", def.target, method.name);
+                        state.known_functions.insert(lookup.clone());
                         state
-                            .known_functions
-                            .insert(format!("{}::{}", def.target, method.name));
+                            .known_function_borrowed_args
+                            .insert(lookup, borrowed_param_indexes(&method.params));
                     }
                 }
                 TypedItem::RustBlock(_) => {}
@@ -387,6 +425,31 @@ impl LoweringState {
             return candidates[0].clone();
         }
         callee_path.to_vec()
+    }
+
+    fn resolve_declared_borrow_modes(
+        &self,
+        path: &[String],
+        arg_count: usize,
+    ) -> Option<Vec<CallArgMode>> {
+        let mut candidates = Vec::new();
+        candidates.push(path.join("::"));
+        if let Some(name) = path.last() {
+            candidates.push(name.clone());
+        }
+        if path.len() >= 2 {
+            candidates.push(format!("{}::{}", path[path.len() - 2], path[path.len() - 1]));
+        }
+        for key in candidates {
+            if let Some(indexes) = self.known_function_borrowed_args.get(&key) {
+                let mut modes = vec![CallArgMode::Owned; arg_count];
+                for index in indexes {
+                    set_borrowed(&mut modes, *index);
+                }
+                return Some(modes);
+            }
+        }
+        None
     }
 
     fn push_ownership_note(&mut self, note: String) {
@@ -713,12 +776,18 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
 
 fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mut Vec<Diagnostic>) {
     for item in &module.items {
+        if let Item::Trait(def) = item {
+            context.traits.entry(def.name.clone()).or_default();
+        }
+    }
+
+    for item in &module.items {
         match item {
             Item::Struct(def) => {
                 let fields = def
                     .fields
                     .iter()
-                    .map(|field| (field.name.clone(), type_from_ast(&field.ty)))
+                    .map(|field| (field.name.clone(), type_from_ast_in_context(&field.ty, context)))
                     .collect::<HashMap<_, _>>();
                 context.structs.insert(def.name.clone(), fields);
             }
@@ -734,6 +803,12 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     })
                     .collect::<HashMap<_, _>>();
                 context.enums.insert(def.name.clone(), variants);
+            }
+            Item::Trait(def) => {
+                context.traits.insert(
+                    def.name.clone(),
+                    def.supertraits.iter().map(type_from_ast).collect(),
+                );
             }
             Item::Function(def) => {
                 let sig = FunctionSig {
@@ -751,12 +826,12 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     params: def
                         .params
                         .iter()
-                        .map(|param| type_from_ast(&param.ty))
+                        .map(|param| type_from_ast_in_context(&param.ty, context))
                         .collect(),
                     return_type: def
                         .return_type
                         .as_ref()
-                        .map(type_from_ast)
+                        .map(|ty| type_from_ast_in_context(ty, context))
                         .unwrap_or(SemType::Unit),
                 };
                 context.functions.insert(def.name.clone(), sig);
@@ -785,12 +860,24 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                         params: method
                             .params
                             .iter()
-                            .map(|param| type_from_ast_with_impl_self(&param.ty, &def.target))
+                            .map(|param| {
+                                type_from_ast_with_impl_self_in_context(
+                                    &param.ty,
+                                    &def.target,
+                                    context,
+                                )
+                            })
                             .collect(),
                         return_type: method
                             .return_type
                             .as_ref()
-                            .map(|ty| type_from_ast_with_impl_self(ty, &def.target))
+                            .map(|ty| {
+                                type_from_ast_with_impl_self_in_context(
+                                    ty,
+                                    &def.target,
+                                    context,
+                                )
+                            })
                             .unwrap_or(SemType::Unit),
                     };
                     context
@@ -809,7 +896,7 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
             Item::Static(def) => {
                 context
                     .globals
-                    .insert(def.name.clone(), type_from_ast(&def.ty));
+                    .insert(def.name.clone(), type_from_ast_in_context(&def.ty, context));
             }
             Item::RustUse(_) => {}
             Item::RustBlock(_) => {}
@@ -835,7 +922,7 @@ fn lower_item(
                 .iter()
                 .map(|field| TypedField {
                     name: field.name.clone(),
-                    ty: type_to_string(&type_from_ast(&field.ty)),
+                    ty: rust_owned_type_string(&type_from_ast_in_context(&field.ty, context)),
                 })
                 .collect(),
         })),
@@ -850,10 +937,25 @@ fn lower_item(
                     payload: variant
                         .payload
                         .iter()
-                        .map(type_from_ast)
-                        .map(|ty| type_to_string(&ty))
+                        .map(|ty| type_from_ast_in_context(ty, context))
+                        .map(|ty| rust_owned_type_string(&ty))
                         .collect(),
                 })
+                .collect(),
+        })),
+        Item::Trait(def) => Some(TypedItem::Trait(TypedTrait {
+            is_public: def.visibility == Visibility::Public,
+            name: def.name.clone(),
+            supertraits: def
+                .supertraits
+                .iter()
+                .map(|ty| type_from_ast_in_context(ty, context))
+                .map(|ty| rust_trait_bound_string(&ty))
+                .collect(),
+            methods: def
+                .methods
+                .iter()
+                .map(|method| lower_trait_method_sig(method, context))
                 .collect(),
         })),
         Item::Impl(def) => {
@@ -864,13 +966,13 @@ fn lower_item(
                 for param in &method.params {
                     locals.insert(
                         param.name.clone(),
-                        type_from_ast_with_impl_self(&param.ty, &def.target),
+                        type_from_ast_with_impl_self_in_context(&param.ty, &def.target, context),
                     );
                 }
                 let declared_return_ty = method
                     .return_type
                     .as_ref()
-                    .map(|ty| type_from_ast_with_impl_self(ty, &def.target));
+                    .map(|ty| type_from_ast_with_impl_self_in_context(ty, &def.target, context));
                 let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
                 let mut body = Vec::new();
                 let mut inferred_returns = Vec::new();
@@ -945,7 +1047,12 @@ fn lower_item(
                             bounds: param
                                 .bounds
                                 .iter()
-                                .map(|bound| type_to_string(&type_from_ast_with_impl_self(bound, &def.target)))
+                                .map(|bound| {
+                                    rust_trait_bound_string(&type_from_ast_with_impl_self(
+                                        bound,
+                                        &def.target,
+                                    ))
+                                })
                                 .collect(),
                         })
                         .collect(),
@@ -954,10 +1061,14 @@ fn lower_item(
                         .iter()
                         .map(|param| TypedParam {
                             name: param.name.clone(),
-                            ty: type_to_string(&type_from_ast_with_impl_self(&param.ty, &def.target)),
+                            ty: rust_param_type_string(&type_from_ast_with_impl_self_in_context(
+                                &param.ty,
+                                &def.target,
+                                context,
+                            )),
                         })
                         .collect(),
-                    return_type: type_to_string(&final_return_ty),
+                    return_type: rust_owned_type_string(&final_return_ty),
                     body,
                 });
             }
@@ -975,7 +1086,10 @@ fn lower_item(
                 &SemType::Unit,
                 diagnostics,
             );
-            let declared = def.ty.as_ref().map(type_from_ast);
+            let declared = def
+                .ty
+                .as_ref()
+                .map(|ty| type_from_ast_in_context(ty, context));
             let final_ty = if let Some(declared_ty) = declared {
                 if !is_compatible(&inferred, &declared_ty) {
                     diagnostics.push(Diagnostic::new(
@@ -1005,7 +1119,7 @@ fn lower_item(
                 is_public: def.visibility == Visibility::Public,
                 is_const: def.is_const,
                 name: def.name.clone(),
-                ty: type_to_string(&final_ty),
+                ty: rust_owned_type_string(&final_ty),
                 value: typed_value,
             }))
         }
@@ -1018,7 +1132,7 @@ fn lower_item(
                 &SemType::Unit,
                 diagnostics,
             );
-            let declared = type_from_ast(&def.ty);
+            let declared = type_from_ast_in_context(&def.ty, context);
             if !is_compatible(&inferred, &declared) {
                 diagnostics.push(Diagnostic::new(
                     format!(
@@ -1042,7 +1156,7 @@ fn lower_item(
             Some(TypedItem::Static(TypedStatic {
                 is_public: def.visibility == Visibility::Public,
                 name: def.name.clone(),
-                ty: type_to_string(&declared),
+                ty: rust_owned_type_string(&declared),
                 value: typed_value,
             }))
         }
@@ -1050,9 +1164,12 @@ fn lower_item(
             let mut locals = HashMap::new();
             let mut immutable_locals = HashSet::new();
             for param in &def.params {
-                locals.insert(param.name.clone(), type_from_ast(&param.ty));
+                locals.insert(param.name.clone(), type_from_ast_in_context(&param.ty, context));
             }
-            let declared_return_ty = def.return_type.as_ref().map(type_from_ast);
+            let declared_return_ty = def
+                .return_type
+                .as_ref()
+                .map(|ty| type_from_ast_in_context(ty, context));
             let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
             let mut body = Vec::new();
             let mut inferred_returns = Vec::new();
@@ -1128,7 +1245,7 @@ fn lower_item(
                             .bounds
                             .iter()
                             .map(type_from_ast)
-                            .map(|bound| type_to_string(&bound))
+                            .map(|bound| rust_trait_bound_string(&bound))
                             .collect(),
                     })
                     .collect(),
@@ -1137,13 +1254,46 @@ fn lower_item(
                     .iter()
                     .map(|param| TypedParam {
                         name: param.name.clone(),
-                        ty: type_to_string(&type_from_ast(&param.ty)),
+                        ty: rust_param_type_string(&type_from_ast_in_context(&param.ty, context)),
                     })
                     .collect(),
-                return_type: type_to_string(&final_return_ty),
+                return_type: rust_owned_type_string(&final_return_ty),
                 body,
             }))
         }
+    }
+}
+
+fn lower_trait_method_sig(method: &TraitMethodSig, context: &Context) -> TypedTraitMethod {
+    TypedTraitMethod {
+        name: method.name.clone(),
+        type_params: method
+            .type_params
+            .iter()
+            .map(|param| TypedTypeParam {
+                name: param.name.clone(),
+                bounds: param
+                    .bounds
+                    .iter()
+                    .map(type_from_ast)
+                    .map(|bound| rust_trait_bound_string(&bound))
+                    .collect(),
+            })
+            .collect(),
+        params: method
+            .params
+            .iter()
+            .map(|param| TypedParam {
+                name: param.name.clone(),
+                ty: rust_param_type_string(&type_from_ast_in_context(&param.ty, context)),
+            })
+            .collect(),
+        return_type: method
+            .return_type
+            .as_ref()
+            .map(|ty| type_from_ast_in_context(ty, context))
+            .map(|ty| rust_owned_type_string(&ty))
+            .unwrap_or_else(|| rust_owned_type_string(&SemType::Unit)),
     }
 }
 
@@ -1161,7 +1311,10 @@ fn lower_stmt_with_types(
             let (typed_value, inferred) =
                 infer_expr(&def.value, context, locals, return_ty, diagnostics);
             diagnose_const_mutations_in_expr(&typed_value, immutable_locals, diagnostics);
-            let declared = def.ty.as_ref().map(type_from_ast);
+            let declared = def
+                .ty
+                .as_ref()
+                .map(|ty| type_from_ast_in_context(ty, context));
             let final_ty = if let Some(declared_ty) = declared {
                 if !is_compatible(&inferred, &declared_ty) {
                     diagnostics.push(Diagnostic::new(
@@ -1196,7 +1349,7 @@ fn lower_stmt_with_types(
                 is_public: false,
                 is_const: def.is_const,
                 name: def.name.clone(),
-                ty: type_to_string(&final_ty),
+                ty: rust_owned_type_string(&final_ty),
                 value: typed_value,
             }))
         }
@@ -2084,13 +2237,15 @@ fn infer_expr(
             let mut closure_immutable_locals = HashSet::new();
             let param_types = params
                 .iter()
-                .map(|p| type_from_ast(&p.ty))
+                .map(|p| type_from_ast_in_context(&p.ty, context))
                 .collect::<Vec<_>>();
             for (param, ty) in params.iter().zip(param_types.iter()) {
                 closure_locals.insert(param.name.clone(), ty.clone());
             }
 
-            let declared_return_ty = return_type.as_ref().map(type_from_ast);
+            let declared_return_ty = return_type
+                .as_ref()
+                .map(|ty| type_from_ast_in_context(ty, context));
             let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
             let mut typed_body = Vec::new();
             let mut inferred_returns = Vec::new();
@@ -3377,17 +3532,20 @@ fn resolve_method_call_type(
 }
 
 fn is_external_method_candidate(base_ty: &SemType, context: &Context) -> bool {
-    let SemType::Path { path, .. } = base_ty else {
-        return false;
-    };
-    let Some(type_name) = path.last() else {
-        return false;
-    };
-    let type_name = type_name.as_str();
-    if is_builtin_method_carrier(type_name) {
-        return false;
+    match base_ty {
+        SemType::TraitObject(_) => true,
+        SemType::Path { path, .. } => {
+            let Some(type_name) = path.last() else {
+                return false;
+            };
+            let type_name = type_name.as_str();
+            if is_builtin_method_carrier(type_name) {
+                return false;
+            }
+            !context.structs.contains_key(type_name) && !context.enums.contains_key(type_name)
+        }
+        _ => false,
     }
-    !context.structs.contains_key(type_name) && !context.enums.contains_key(type_name)
 }
 
 fn is_builtin_method_carrier(type_name: &str) -> bool {
@@ -4148,7 +4306,17 @@ fn lower_expr_with_context(
                                 ExprPosition::CallArgBorrowed,
                                 state,
                             );
-                            borrow_expr(lowered)
+                            if is_boxed_trait_object_type(&arg.ty) {
+                                RustExpr::Call {
+                                    callee: Box::new(RustExpr::Field {
+                                        base: Box::new(lowered),
+                                        field: "as_ref".to_string(),
+                                    }),
+                                    args: Vec::new(),
+                                }
+                            } else {
+                                borrow_expr(lowered)
+                            }
                         } else {
                             lower_expr_with_context(arg, context, ExprPosition::CallArgOwned, state)
                         }
@@ -4635,6 +4803,12 @@ fn lower_call_callee(
             modes,
         );
     }
+    if let Some(modes) = resolve_declared_borrow_arg_modes(callee, state, arg_count) {
+        return (
+            lower_expr_with_context(callee, context, ExprPosition::Value, state),
+            modes,
+        );
+    }
     if let Some(modes) = resolve_heuristic_path_call_arg_modes(callee, args, context, state) {
         return (
             lower_expr_with_context(callee, context, ExprPosition::Value, state),
@@ -4687,6 +4861,25 @@ fn resolve_method_call_modes(
         return None;
     };
 
+    if let Some(type_name) = method_base_type_name(&base.ty) {
+        let lookup = format!("{type_name}::{field}");
+        if let Some(indexes) = state.known_function_borrowed_args.get(&lookup) {
+            let mut arg_modes = vec![CallArgMode::Owned; args.len()];
+            let mut receiver = CallArgMode::Owned;
+            for index in indexes {
+                if *index == 0 {
+                    receiver = CallArgMode::Borrowed;
+                } else {
+                    set_borrowed(&mut arg_modes, *index - 1);
+                }
+            }
+            return Some(MethodCallModes {
+                receiver,
+                args: arg_modes,
+            });
+        }
+    }
+
     let mut arg_modes = vec![CallArgMode::Owned; args.len()];
     let receiver = if method_receiver_is_borrowed(&base.ty, field) {
         if method_borrows_first_arg(&base.ty, field) {
@@ -4708,6 +4901,28 @@ fn resolve_method_call_modes(
         receiver,
         args: arg_modes,
     })
+}
+
+fn method_base_type_name(base_ty: &str) -> Option<&str> {
+    let (head, _) = split_type_head_and_args(base_ty.trim());
+    let name = last_path_segment(head);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+fn resolve_declared_borrow_arg_modes(
+    callee: &TypedExpr,
+    state: &LoweringState,
+    arg_count: usize,
+) -> Option<Vec<CallArgMode>> {
+    let TypedExprKind::Path(path) = &callee.kind else {
+        return None;
+    };
+    let resolved = state.resolve_callee_path(path);
+    state.resolve_declared_borrow_modes(&resolved, arg_count)
 }
 
 fn resolve_heuristic_path_call_arg_modes(
@@ -5183,6 +5398,20 @@ fn set_borrowed(modes: &mut [CallArgMode], index: usize) {
     }
 }
 
+fn borrowed_param_indexes(params: &[TypedParam]) -> Vec<usize> {
+    params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if param.ty.trim_start().starts_with('&') {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn last_path_segment(path: &str) -> &str {
     let segment = path.rsplit("::").next().unwrap_or(path);
     segment.split('<').next().unwrap_or(segment)
@@ -5247,6 +5476,11 @@ fn split_type_head_and_args(ty: &str) -> (&str, Vec<&str>) {
     let head = ty[..start].trim();
     let body = &ty[start + 1..ty.len() - 1];
     (head, split_top_level_commas(body))
+}
+
+fn is_boxed_trait_object_type(ty: &str) -> bool {
+    let trimmed = ty.trim();
+    trimmed.starts_with("Box<dyn ") || trimmed.starts_with("Box<(dyn ")
 }
 
 fn parse_tuple_items(ty: &str) -> Option<Vec<&str>> {
@@ -5459,7 +5693,65 @@ fn collect_place_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<OwnershipPlac
     }
 }
 
+fn type_from_ast_in_context(ty: &Type, context: &Context) -> SemType {
+    promote_trait_shorthand(type_from_ast(ty), context)
+}
+
+fn type_from_ast_with_impl_self_in_context(
+    ty: &Type,
+    impl_target: &str,
+    context: &Context,
+) -> SemType {
+    promote_trait_shorthand(type_from_ast_with_impl_self(ty, impl_target), context)
+}
+
+fn promote_trait_shorthand(ty: SemType, context: &Context) -> SemType {
+    match ty {
+        SemType::Path { path, args } => {
+            let args = args
+                .into_iter()
+                .map(|arg| promote_trait_shorthand(arg, context))
+                .collect::<Vec<_>>();
+            if path.len() == 1 && args.is_empty() && context.traits.contains_key(&path[0]) {
+                SemType::TraitObject(vec![SemType::Path { path, args: Vec::new() }])
+            } else {
+                SemType::Path { path, args }
+            }
+        }
+        SemType::TraitObject(bounds) => SemType::TraitObject(
+            bounds
+                .into_iter()
+                .map(|bound| promote_trait_shorthand(bound, context))
+                .collect(),
+        ),
+        SemType::Tuple(items) => SemType::Tuple(
+            items
+                .into_iter()
+                .map(|item| promote_trait_shorthand(item, context))
+                .collect(),
+        ),
+        SemType::Fn { params, ret } => SemType::Fn {
+            params: params
+                .into_iter()
+                .map(|param| promote_trait_shorthand(param, context))
+                .collect(),
+            ret: Box::new(promote_trait_shorthand(*ret, context)),
+        },
+        SemType::Iter(item) => SemType::Iter(Box::new(promote_trait_shorthand(*item, context))),
+        SemType::Unit | SemType::Unknown => ty,
+    }
+}
+
 fn type_from_ast(ty: &Type) -> SemType {
+    if !ty.trait_bounds.is_empty() {
+        let mut bounds = Vec::with_capacity(1 + ty.trait_bounds.len());
+        bounds.push(SemType::Path {
+            path: ty.path.clone(),
+            args: ty.args.iter().map(type_from_ast).collect(),
+        });
+        bounds.extend(ty.trait_bounds.iter().map(type_from_ast));
+        return SemType::TraitObject(bounds);
+    }
     if ty.path.len() == 1 && ty.path[0] == "Tuple" {
         return SemType::Tuple(ty.args.iter().map(type_from_ast).collect());
     }
@@ -5470,6 +5762,21 @@ fn type_from_ast(ty: &Type) -> SemType {
 }
 
 fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str) -> SemType {
+    if !ty.trait_bounds.is_empty() {
+        let mut bounds = Vec::with_capacity(1 + ty.trait_bounds.len());
+        let base = Type {
+            path: ty.path.clone(),
+            args: ty.args.clone(),
+            trait_bounds: Vec::new(),
+        };
+        bounds.push(type_from_ast_with_impl_self(&base, impl_target));
+        bounds.extend(
+            ty.trait_bounds
+                .iter()
+                .map(|arg| type_from_ast_with_impl_self(arg, impl_target)),
+        );
+        return SemType::TraitObject(bounds);
+    }
     if ty.path.len() == 1 && ty.path[0] == "Tuple" {
         return SemType::Tuple(
             ty.args
@@ -5499,6 +5806,11 @@ fn type_to_string(ty: &SemType) -> String {
     match ty {
         SemType::Unit => "()".to_string(),
         SemType::Unknown => "_".to_string(),
+        SemType::TraitObject(bounds) => bounds
+            .iter()
+            .map(type_to_string)
+            .collect::<Vec<_>>()
+            .join(" + "),
         SemType::Tuple(items) => {
             let text = items
                 .iter()
@@ -5532,6 +5844,93 @@ fn type_to_string(ty: &SemType) -> String {
     }
 }
 
+fn rust_owned_type_string(ty: &SemType) -> String {
+    rust_type_string(ty, RustTypeRenderMode::Owned)
+}
+
+fn rust_param_type_string(ty: &SemType) -> String {
+    rust_type_string(ty, RustTypeRenderMode::ParamTopLevel)
+}
+
+fn rust_trait_bound_string(ty: &SemType) -> String {
+    rust_type_string(ty, RustTypeRenderMode::TraitBound)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RustTypeRenderMode {
+    Owned,
+    ParamTopLevel,
+    TraitBound,
+}
+
+fn rust_type_string(ty: &SemType, mode: RustTypeRenderMode) -> String {
+    match ty {
+        SemType::Unit => "()".to_string(),
+        SemType::Unknown => "_".to_string(),
+        SemType::TraitObject(bounds) => render_rust_trait_object(bounds, mode),
+        SemType::Tuple(items) => {
+            let body = items
+                .iter()
+                .map(|item| rust_type_string(item, RustTypeRenderMode::Owned))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({body})")
+        }
+        SemType::Fn { params, ret } => {
+            let params = params
+                .iter()
+                .map(|param| rust_type_string(param, RustTypeRenderMode::Owned))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "fn({params}) -> {}",
+                rust_type_string(ret, RustTypeRenderMode::Owned)
+            )
+        }
+        SemType::Iter(item) => {
+            format!(
+                "Iter<{}>",
+                rust_type_string(item, RustTypeRenderMode::Owned)
+            )
+        }
+        SemType::Path { path, args } => {
+            let head = path.join("::");
+            if args.is_empty() {
+                head
+            } else {
+                let args = args
+                    .iter()
+                    .map(|arg| rust_type_string(arg, RustTypeRenderMode::Owned))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{head}<{args}>")
+            }
+        }
+    }
+}
+
+fn render_rust_trait_object(bounds: &[SemType], mode: RustTypeRenderMode) -> String {
+    let bounds = bounds
+        .iter()
+        .map(|bound| rust_type_string(bound, RustTypeRenderMode::TraitBound))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    if bounds.is_empty() {
+        return "_".to_string();
+    }
+    match mode {
+        RustTypeRenderMode::TraitBound => bounds,
+        RustTypeRenderMode::Owned => format!("Box<dyn {bounds}>"),
+        RustTypeRenderMode::ParamTopLevel => {
+            if bounds.contains('+') {
+                format!("&(dyn {bounds})")
+            } else {
+                format!("&dyn {bounds}")
+            }
+        }
+    }
+}
+
 fn type_satisfies_bound(actual: &SemType, bound: &SemType) -> bool {
     if *actual == SemType::Unknown {
         return true;
@@ -5539,6 +5938,9 @@ fn type_satisfies_bound(actual: &SemType, bound: &SemType) -> bool {
     let Some(bound_name) = bound_trait_name(bound) else {
         return true;
     };
+    if let SemType::TraitObject(bounds) = actual {
+        return trait_object_has_trait(bounds, bound_name);
+    }
     match bound_name {
         "Clone" => type_is_clone(actual),
         "Copy" => type_is_copy(actual),
@@ -5560,9 +5962,16 @@ fn bound_trait_name(bound: &SemType) -> Option<&str> {
     None
 }
 
+fn trait_object_has_trait(bounds: &[SemType], trait_name: &str) -> bool {
+    bounds
+        .iter()
+        .any(|bound| bound_trait_name(bound) == Some(trait_name))
+}
+
 fn type_is_clone(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Clone"),
         SemType::Tuple(items) => items.iter().all(type_is_clone),
         SemType::Iter(item) => type_is_clone(item),
         SemType::Fn { .. } => false,
@@ -5593,6 +6002,7 @@ fn type_is_clone(ty: &SemType) -> bool {
 fn type_is_copy(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::TraitObject(_) => false,
         SemType::Tuple(items) => items.iter().all(type_is_copy),
         SemType::Iter(_) | SemType::Fn { .. } => false,
         SemType::Path { path, args } => {
@@ -5607,6 +6017,7 @@ fn type_is_copy(ty: &SemType) -> bool {
 fn type_is_debug(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Debug"),
         SemType::Tuple(items) => items.iter().all(type_is_debug),
         SemType::Iter(item) => type_is_debug(item),
         SemType::Fn { .. } => false,
@@ -5637,6 +6048,7 @@ fn type_is_debug(ty: &SemType) -> bool {
 fn type_is_default(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Default"),
         SemType::Tuple(items) => items.iter().all(type_is_default),
         SemType::Iter(_) | SemType::Fn { .. } => false,
         SemType::Path { path, args } => {
@@ -5658,6 +6070,7 @@ fn type_is_default(ty: &SemType) -> bool {
 fn type_is_partial_eq(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "PartialEq"),
         SemType::Tuple(items) => items.iter().all(type_is_partial_eq),
         SemType::Iter(_) | SemType::Fn { .. } => false,
         SemType::Path { path, args } => {
@@ -5686,6 +6099,7 @@ fn type_is_partial_eq(ty: &SemType) -> bool {
 
 fn type_is_eq(ty: &SemType) -> bool {
     match ty {
+        SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Eq"),
         SemType::Path { path, args } => {
             let Some(head) = path.last().map(|part| part.as_str()) else {
                 return false;
@@ -5722,6 +6136,7 @@ fn type_is_eq(ty: &SemType) -> bool {
 fn type_is_partial_ord(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "PartialOrd"),
         SemType::Tuple(items) => items.iter().all(type_is_partial_ord),
         SemType::Iter(_) | SemType::Fn { .. } => false,
         SemType::Path { path, args } => {
@@ -5742,6 +6157,7 @@ fn type_is_partial_ord(ty: &SemType) -> bool {
 fn type_is_ord(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Ord"),
         SemType::Tuple(items) => items.iter().all(type_is_ord),
         SemType::Iter(_) | SemType::Fn { .. } => false,
         SemType::Path { path, args } => {
@@ -5768,6 +6184,7 @@ fn type_is_ord(ty: &SemType) -> bool {
 fn type_is_hash(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Hash"),
         SemType::Tuple(items) => items.iter().all(type_is_hash),
         SemType::Iter(_) | SemType::Fn { .. } => false,
         SemType::Path { path, args } => {
@@ -5862,6 +6279,7 @@ fn bind_generic_params(
         (SemType::Iter(expected_item), SemType::Iter(actual_item)) => {
             bind_generic_params(expected_item, actual_item, type_params, bindings)
         }
+        (SemType::TraitObject(_), _) => is_compatible(actual, expected),
         _ => false,
     }
 }
@@ -5901,6 +6319,12 @@ fn substitute_generic_type(
                 .collect(),
             ret: Box::new(substitute_generic_type(ret, type_params, bindings)),
         },
+        SemType::TraitObject(bounds) => SemType::TraitObject(
+            bounds
+                .iter()
+                .map(|bound| substitute_generic_type(bound, type_params, bindings))
+                .collect(),
+        ),
         SemType::Iter(item) => {
             SemType::Iter(Box::new(substitute_generic_type(item, type_params, bindings)))
         }
@@ -5938,6 +6362,7 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
             }
             lp.iter().zip(rp.iter()).all(|(a, b)| is_compatible(a, b)) && is_compatible(lr, rr)
         }
+        (_, SemType::TraitObject(bounds)) => bounds.iter().all(|bound| type_satisfies_bound(actual, bound)),
         (SemType::Iter(left), SemType::Iter(right)) => is_compatible(left, right),
         (
             SemType::Path {
@@ -6974,6 +7399,7 @@ fn contains_unknown(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown => true,
         SemType::Unit => false,
+        SemType::TraitObject(bounds) => bounds.iter().any(contains_unknown),
         SemType::Tuple(items) => items.iter().any(contains_unknown),
         SemType::Fn { params, ret } => params.iter().any(contains_unknown) || contains_unknown(ret),
         SemType::Iter(item) => contains_unknown(item),

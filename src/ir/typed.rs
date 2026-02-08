@@ -9,6 +9,7 @@ pub enum TypedItem {
     RustBlock(String),
     Struct(TypedStruct),
     Enum(TypedEnum),
+    Trait(TypedTrait),
     Impl(TypedImpl),
     Function(TypedFunction),
     Const(TypedConst),
@@ -60,6 +61,22 @@ pub struct TypedFunction {
 pub struct TypedTypeParam {
     pub name: String,
     pub bounds: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedTrait {
+    pub is_public: bool,
+    pub name: String,
+    pub supertraits: Vec<String>,
+    pub methods: Vec<TypedTraitMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedTraitMethod {
+    pub name: String,
+    pub type_params: Vec<TypedTypeParam>,
+    pub params: Vec<TypedParam>,
+    pub return_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

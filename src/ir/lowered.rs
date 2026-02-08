@@ -10,6 +10,7 @@ pub enum RustItem {
     Raw(String),
     Struct(RustStruct),
     Enum(RustEnum),
+    Trait(RustTrait),
     Impl(RustImpl),
     Function(RustFunction),
     Const(RustConst),
@@ -61,6 +62,22 @@ pub struct RustFunction {
 pub struct RustTypeParam {
     pub name: String,
     pub bounds: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustTrait {
+    pub is_public: bool,
+    pub name: String,
+    pub supertraits: Vec<String>,
+    pub methods: Vec<RustTraitMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustTraitMethod {
+    pub name: String,
+    pub type_params: Vec<RustTypeParam>,
+    pub params: Vec<RustParam>,
+    pub return_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -15,6 +15,7 @@ pub enum Item {
     RustBlock(String),
     Struct(StructDef),
     Enum(EnumDef),
+    Trait(TraitDef),
     Impl(ImplBlock),
     Function(FunctionDef),
     Const(ConstDef),
@@ -44,6 +45,22 @@ pub struct EnumDef {
 pub struct EnumVariant {
     pub name: String,
     pub payload: Vec<Type>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitDef {
+    pub visibility: Visibility,
+    pub name: String,
+    pub supertraits: Vec<Type>,
+    pub methods: Vec<TraitMethodSig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitMethodSig {
+    pub name: String,
+    pub type_params: Vec<GenericParam>,
+    pub params: Vec<Param>,
+    pub return_type: Option<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +161,7 @@ pub struct StaticDef {
 pub struct Type {
     pub path: Vec<String>,
     pub args: Vec<Type>,
+    pub trait_bounds: Vec<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
