@@ -129,7 +129,11 @@ pub fn runtime_poll_key(handle: i64) -> Option<KeyEvent> {
             RuntimeBackend::Window(state) => poll_key_channel(&mut state.key_rx),
             RuntimeBackend::SdlMain(state) => {
                 pump_sdl_events(state);
-                state.key_queue.pop_front()
+                let next = state.key_queue.pop_front();
+                if next.is_none() {
+                    thread::sleep(Duration::from_millis(8));
+                }
+                next
             }
             RuntimeBackend::Terminal(state) => poll_key_channel(&mut state.rx),
         }
@@ -362,7 +366,7 @@ fn render_sdl_frame(state: &mut SdlMainState, frame: &RenderPacket) -> bool {
 
     let mut texture = match state
         .texture_creator
-        .create_texture_streaming(PixelFormatEnum::RGBA8888, WIDTH, HEIGHT)
+        .create_texture_streaming(PixelFormatEnum::RGBA32, WIDTH, HEIGHT)
     {
         Ok(texture) => texture,
         Err(_) => return false,
@@ -881,16 +885,26 @@ fn apply_retro_post_fx(buffer: &mut [u32], width: i32, height: i32, vga_mode: bo
             let dx = x as f32 - center_x;
             let dy = y as f32 - center_y;
             let radial = (dx * dx) * inv_x + (dy * dy) * inv_y;
-            let vignette = (radial * if vga_mode { 26.0 } else { 34.0 }) as i16;
-            let scan = if y & 1 == 0 { -3 } else { 1 };
-            let grain = (hash_noise(x, y, 0x9137_u32) % 5) as i16 - 2;
+            let vignette = (radial * if vga_mode { 18.0 } else { 11.0 }) as i16;
+            let scan = if vga_mode {
+                if y & 1 == 0 { -2 } else { 0 }
+            } else if y & 1 == 0 {
+                -1
+            } else {
+                0
+            };
+            let grain = if vga_mode {
+                (hash_noise(x, y, 0x9137_u32) % 5) as i16 - 2
+            } else {
+                (hash_noise(x, y, 0x9137_u32) % 3) as i16 - 1
+            };
             color = tint(color, scan + grain - vignette);
-            if !vga_mode {
+            if vga_mode {
                 let (r, g, b) = unpack(color);
                 color = rgb(
-                    ((r as u16 / 8) * 8) as u8,
-                    ((g as u16 / 8) * 8) as u8,
-                    ((b as u16 / 8) * 8) as u8,
+                    ((r as u16 / 12) * 12) as u8,
+                    ((g as u16 / 12) * 12) as u8,
+                    ((b as u16 / 12) * 12) as u8,
                 );
             }
             buffer[idx] = color;
