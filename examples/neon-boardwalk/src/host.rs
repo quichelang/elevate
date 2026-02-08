@@ -537,11 +537,11 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
     draw_wood_panel(buffer, width, height, 58, 30, 250, 124);
     draw_wood_panel(buffer, width, height, 330, 30, 250, 124);
     draw_portrait_slot(buffer, width, height, 72, 70, true);
-    draw_portrait_slot(buffer, width, height, 458, 70, false);
+    draw_portrait_slot(buffer, width, height, 470, 70, false);
     draw_label(buffer, width, height, 84, 48, 3, rgb(255, 245, 206), "PLAYER 1");
     draw_label(buffer, width, height, 368, 48, 3, rgb(255, 245, 206), "CPU");
     draw_label(buffer, width, height, 176, 90, 4, rgb(255, 252, 232), "34");
-    draw_label(buffer, width, height, 452, 90, 4, rgb(255, 252, 232), "28");
+    draw_label(buffer, width, height, 402, 90, 4, rgb(255, 252, 232), "28");
 
     draw_bottom_bar(buffer, width, height, frame);
     apply_retro_post_fx(buffer, width, height, frame.vga);
@@ -760,28 +760,27 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
     draw_label(buffer, width, height, panel_x + 54, panel_y + 164, 3, rgb(255, 246, 191), "LEVEL:");
     draw_label(buffer, width, height, panel_x + 54, panel_y + 204, 4, rgb(255, 250, 224), "MEDIUM");
 
-    let button_w = 106;
-    let button_h = 76;
-    let keypad_x = panel_x + 28;
+    let button_w = 108;
+    let button_h = 78;
+    let keypad_x = panel_x + 30;
     let keypad_y = panel_y + 272;
     for row in 0..3 {
         for col in 0..3 {
             let bx = keypad_x + col * (button_w + 9);
             let by = keypad_y + row * (button_h + 10);
-            draw_bevel_box(
+            draw_keypad_button(buffer, width, height, bx, by, button_w, button_h);
+            let number = (row * 3 + col + 1).to_string();
+            draw_label(
                 buffer,
                 width,
                 height,
-                bx,
-                by,
-                button_w,
-                button_h,
-                rgb(156, 122, 71),
-                rgb(91, 62, 35),
-                rgb(45, 29, 16),
+                bx + 36 + 2,
+                by + 23 + 2,
+                4,
+                rgba_dim(rgb(19, 11, 5), 0.55),
+                &number,
             );
-            let number = (row * 3 + col + 1).to_string();
-            draw_label(buffer, width, height, bx + 36, by + 24, 4, rgb(255, 238, 138), &number);
+            draw_label(buffer, width, height, bx + 36, by + 23, 4, rgb(255, 229, 128), &number);
         }
     }
 
@@ -816,6 +815,41 @@ fn draw_hud_panel(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
 
     let mode_text = if frame.vga { "MODE: VGA" } else { "MODE: NEON" };
     draw_label(buffer, width, height, panel_x + 32, panel_y + 580, 2, rgb(255, 236, 170), mode_text);
+}
+
+fn draw_keypad_button(
+    buffer: &mut [u32],
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) {
+    draw_bevel_box(
+        buffer,
+        width,
+        height,
+        x,
+        y,
+        w,
+        h,
+        rgb(157, 124, 78),
+        rgb(93, 62, 36),
+        rgb(45, 27, 15),
+    );
+    draw_bevel_box(
+        buffer,
+        width,
+        height,
+        x + 8,
+        y + 8,
+        w - 16,
+        h - 16,
+        rgb(59, 39, 24),
+        rgb(30, 20, 12),
+        rgb(18, 12, 8),
+    );
 }
 
 fn draw_bottom_bar(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket) {
@@ -857,20 +891,34 @@ fn draw_portrait_slot(
     } else {
         &sprites().cpu
     };
+    let slot_w = 74;
+    let slot_h = 74;
+    let inner_pad = 6;
+    let avail_w = slot_w - inner_pad * 2;
+    let avail_h = slot_h - inner_pad * 2;
+    let mut scale = (avail_w / sprite.width).min(avail_h / sprite.height);
+    if scale < 1 {
+        scale = 1;
+    }
+    let sprite_w = sprite.width * scale;
+    let sprite_h = sprite.height * scale;
+    let sprite_x = x + (slot_w - sprite_w) / 2;
+    let sprite_y = y + (slot_h - sprite_h) / 2;
+
     draw_bevel_box(
         buffer,
         width,
         height,
         x - 6,
         y - 6,
-        86,
-        86,
+        slot_w + 12,
+        slot_h + 12,
         rgb(173, 136, 86),
         rgb(92, 61, 37),
         rgb(45, 27, 15),
     );
-    fill_rect(buffer, width, height, x, y, 74, 74, rgb(59, 35, 24));
-    draw_sprite(buffer, width, height, x + 5, y + 5, 2, sprite);
+    fill_rect(buffer, width, height, x, y, slot_w, slot_h, rgb(59, 35, 24));
+    draw_sprite(buffer, width, height, sprite_x, sprite_y, scale, sprite);
 }
 
 fn apply_retro_post_fx(buffer: &mut [u32], width: i32, height: i32, vga_mode: bool) {
