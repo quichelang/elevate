@@ -18,6 +18,19 @@ pub struct SceneLayout {
     footer_y: i64;
 }
 
+pub struct Sprite {
+    width: i64;
+    height: i64;
+    pixels: Vec<char>;
+}
+
+pub struct SpriteLayer {
+    z: i64;
+    x: i64;
+    y: i64;
+    sprite: Sprite;
+}
+
 pub fn make_rect(x: i64, y: i64, width: i64, height: i64) -> Rect {
     Rect {
         x: x;
@@ -25,6 +38,51 @@ pub fn make_rect(x: i64, y: i64, width: i64, height: i64) -> Rect {
         width: width;
         height: height;
     }
+}
+
+pub fn sprite_layer(z: i64, x: i64, y: i64, sprite: Sprite) -> SpriteLayer {
+    SpriteLayer {
+        z: z;
+        x: x;
+        y: y;
+        sprite: sprite;
+    }
+}
+
+pub fn sprite_from_rows(rows: Vec<String>) -> Sprite {
+    let width = 0;
+    let height = 0;
+    let pixels: Vec<char> = [];
+    for row_text in rows {
+        let row_width = 0;
+        for ch in row_text.chars() {
+            if height == 0 or row_width < width {
+                pixels.push(ch);
+                row_width += 1;
+            }
+        }
+        if height == 0 {
+            width = row_width;
+        }
+        for _ in row_width..width {
+            pixels.push(' ');
+        }
+        height += 1;
+    }
+    Sprite {
+        width: width;
+        height: height;
+        pixels: pixels;
+    }
+}
+
+pub fn render_sprite_layers(canvas: Canvas, layers: Vec<SpriteLayer>, vga: bool) -> Canvas {
+    let out = canvas;
+    for layer in layers {
+        std::mem::drop(layer.z);
+        out = blit_palette_sprite(out, layer.sprite, layer.x, layer.y, vga);
+    }
+    out
 }
 
 pub fn scene_layout() -> SceneLayout {
@@ -69,22 +127,36 @@ pub fn draw_scene_shell(
     vga: bool,
 ) -> Canvas {
     const layout = scene_layout();
-    const sky = fill_gradient(
+    const sky_base = fill_gradient(
         canvas,
         make_rect(0, 0, 120, 11),
         palette_text(vga),
         palette_sky_top(vga),
         palette_sky_bottom(vga),
     );
-    const hills = draw_hills_band(sky, make_rect(0, 4, 120, 9), vga);
-    const deck = fill_gradient(
+    let sprite_layers: Vec<SpriteLayer> = [];
+    sprite_layers.push(sprite_layer(0, 7, 1, sprite_cloud()));
+    sprite_layers.push(sprite_layer(0, 42, 2, sprite_cloud()));
+    sprite_layers.push(sprite_layer(0, 82, 1, sprite_cloud()));
+    sprite_layers.push(sprite_layer(1, 4, 1, sprite_score_plaque(true)));
+    sprite_layers.push(sprite_layer(1, 41, 1, sprite_score_plaque(false)));
+    const sky = render_sprite_layers(sky_base, sprite_layers, vga);
+    const sky_with_labels = Canvas::text(sky, 10, 2, "PLAYER 1", palette_title(vga), palette_panel_fill(vga), true);
+    const sky_with_score_left = Canvas::text(sky_with_labels, 14, 3, "34", palette_title(vga), palette_panel_fill(vga), true);
+    const sky_with_cpu = Canvas::text(sky_with_score_left, 47, 2, "CPU", palette_title(vga), palette_panel_fill(vga), true);
+    const sky_with_scores = Canvas::text(sky_with_cpu, 49, 3, "28", palette_title(vga), palette_panel_fill(vga), true);
+
+    const hills = draw_hills_band(sky_with_scores, make_rect(0, 4, 120, 9), vga);
+    const deck_base = fill_gradient(
         hills,
         make_rect(0, 10, 120, 4),
         palette_text(vga),
         palette_wood_mid(vga),
         palette_wood_dark(vga),
     );
-    const floor = draw_brick_floor(deck, make_rect(0, 34, 120, 8), vga);
+    const deck = render_sprite_layers(deck_base, deck_trim_layers(), vga);
+    const floor_base = draw_brick_floor(deck, make_rect(0, 34, 120, 8), vga);
+    const floor = render_sprite_layers(floor_base, floor_trim_layers(), vga);
 
     const top_bar = draw_bevel_panel(
         floor,
@@ -166,6 +238,90 @@ pub fn draw_gameplay_hints(canvas: Canvas, vga: bool) -> Canvas {
         palette_bg(vga),
         false,
     )
+}
+
+fn blit_palette_sprite(canvas: Canvas, sprite: Sprite, x: i64, y: i64, vga: bool) -> Canvas {
+    let out = canvas;
+    if sprite.width <= 0 or sprite.height <= 0 {
+        return out;
+    }
+    for row in 0..sprite.height {
+        for col in 0..sprite.width {
+            const idx = row * sprite.width + col;
+            const token = sprite.pixels[idx];
+            const (draw, glyph, fg, bg, bold) = sprite_style(token, vga);
+            if draw {
+                out = Canvas::put(out, x + col, y + row, glyph, fg, bg, bold);
+            }
+        }
+    }
+    out
+}
+
+fn sprite_style(token: char, vga: bool) -> (bool, char, i64, i64, bool) {
+    match token {
+        ' ' => (false, ' ', 0, 0, false);
+        '~' => (true, ' ', palette_text(vga), palette_sky_bottom(vga), false);
+        '.' => (true, ' ', palette_text(vga), palette_sky_top(vga), false);
+        '#' => (true, ' ', palette_text(vga), palette_wood_dark(vga), false);
+        '=' => (true, ' ', palette_text(vga), palette_wood_mid(vga), false);
+        '+' => (true, ' ', palette_text(vga), palette_wood_light(vga), false);
+        '*' => (true, '*', palette_title(vga), palette_panel_fill(vga), true);
+        '@' => (true, '@', palette_hud_text(vga), palette_panel_fill(vga), true);
+        _ => (true, token, palette_hud_text(vga), palette_panel_fill(vga), true);
+    }
+}
+
+fn deck_trim_layers() -> Vec<SpriteLayer> {
+    let layers: Vec<SpriteLayer> = [];
+    layers.push(sprite_layer(0, 0, 10, sprite_horizontal_trim(120, '#')));
+    layers.push(sprite_layer(1, 0, 11, sprite_horizontal_trim(120, '=')));
+    layers.push(sprite_layer(0, 0, 13, sprite_horizontal_trim(120, '#')));
+    layers
+}
+
+fn floor_trim_layers() -> Vec<SpriteLayer> {
+    let layers: Vec<SpriteLayer> = [];
+    layers.push(sprite_layer(0, 0, 33, sprite_horizontal_trim(120, '#')));
+    layers
+}
+
+fn sprite_horizontal_trim(width: i64, ch: char) -> Sprite {
+    let pixels: Vec<char> = [];
+    for _ in 0..width {
+        pixels.push(ch);
+    }
+    Sprite {
+        width: width;
+        height: 1;
+        pixels: pixels;
+    }
+}
+
+fn sprite_cloud() -> Sprite {
+    let rows: Vec<String> = [];
+    rows.push(String::from("   ..~~~~~~..   "));
+    rows.push(String::from(" ..~~~~~~~~~~.. "));
+    rows.push(String::from("..~~~~~~~~~~~~.."));
+    sprite_from_rows(rows)
+}
+
+fn sprite_score_plaque(player_one: bool) -> Sprite {
+    const top = String::from("+##########+");
+    const mid = String::from("#++++++++++#");
+    let rows: Vec<String> = [];
+    if player_one {
+        rows.push(top);
+        rows.push(String::from("#++@@@@@++++#"));
+        rows.push(mid);
+        rows.push(String::from("+##########+"));
+        return sprite_from_rows(rows);
+    }
+    rows.push(top);
+    rows.push(String::from("#++++@@@++++#"));
+    rows.push(mid);
+    rows.push(String::from("+##########+"));
+    sprite_from_rows(rows)
 }
 
 pub fn palette_bg(vga: bool) -> i64 {
