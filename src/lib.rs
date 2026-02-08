@@ -1027,6 +1027,142 @@ mod tests {
     }
 
     #[test]
+    fn benchmark_regression_ownership_profiles() {
+        struct Case {
+            name: &'static str,
+            source: &'static str,
+            max_clone_calls: usize,
+            max_hot_clone_notes: usize,
+            required_snippets: &'static [&'static str],
+            forbidden_snippets: &'static [&'static str],
+        }
+
+        let cases = vec![
+            Case {
+                name: "runtime_draw_scene borrow",
+                source: r#"
+                    rust {
+                        pub fn runtime_draw_scene(cells: &[i64], fixed: &[bool]) -> bool {
+                            !cells.is_empty() && !fixed.is_empty()
+                        }
+                    }
+
+                    fn demo(cells: Vec<i64>, fixed: Vec<bool>) -> bool {
+                        const drawn = runtime_draw_scene(cells, fixed);
+                        if drawn {
+                            std::mem::drop(runtime_draw_scene(cells, fixed));
+                        }
+                        runtime_draw_scene(cells, fixed)
+                    }
+                "#,
+                max_clone_calls: 0,
+                max_hot_clone_notes: 0,
+                required_snippets: &["runtime_draw_scene(&cells, &fixed)"],
+                forbidden_snippets: &["cells.clone()", "fixed.clone()"],
+            },
+            Case {
+                name: "draw prefixed string by-value",
+                source: r#"
+                    rust {
+                        pub fn draw_footer_status(message: String) -> bool { !message.is_empty() }
+                    }
+
+                    fn demo(message: String) -> bool {
+                        draw_footer_status(message)
+                    }
+                "#,
+                max_clone_calls: 0,
+                max_hot_clone_notes: 0,
+                required_snippets: &["draw_footer_status(message)"],
+                forbidden_snippets: &["draw_footer_status(&message)", "message.clone()"],
+            },
+            Case {
+                name: "nominal associated by-value",
+                source: r#"
+                    rust {
+                        pub struct Board;
+                        impl Board {
+                            pub fn is_complete(board: Board) -> bool {
+                                let _ = board;
+                                true
+                            }
+                        }
+                    }
+
+                    fn demo(board: Board) -> bool {
+                        Board::is_complete(board)
+                    }
+                "#,
+                max_clone_calls: 0,
+                max_hot_clone_notes: 0,
+                required_snippets: &["Board::is_complete(board)"],
+                forbidden_snippets: &["Board::is_complete(&board)", "board.clone()"],
+            },
+            Case {
+                name: "loop clone budget",
+                source: r#"
+                    rust { pub fn consume(values: Vec<i64>) { std::mem::drop(values.len()); } }
+
+                    fn demo(values: Vec<i64>) {
+                        for _ in 0..3 {
+                            consume(values);
+                        }
+                        return;
+                    }
+                "#,
+                max_clone_calls: 3,
+                max_hot_clone_notes: 1,
+                required_snippets: &["consume(values.clone())"],
+                forbidden_snippets: &[],
+            },
+        ];
+
+        let mut failures = Vec::new();
+        for case in cases {
+            let output = compile_source(case.source).expect("benchmark regression case should compile");
+            let clone_calls = output.rust_code.match_indices(".clone()").count()
+                + output.rust_code.match_indices(".clone(").count();
+            let hot_clone_notes = output
+                .ownership_notes
+                .iter()
+                .filter(|note| note.starts_with("hot-clone:auto "))
+                .count();
+
+            if clone_calls > case.max_clone_calls {
+                failures.push(format!(
+                    "{}: clone_calls={} exceeds budget {}",
+                    case.name, clone_calls, case.max_clone_calls
+                ));
+            }
+            if hot_clone_notes > case.max_hot_clone_notes {
+                failures.push(format!(
+                    "{}: hot_clone_notes={} exceeds budget {}",
+                    case.name, hot_clone_notes, case.max_hot_clone_notes
+                ));
+            }
+            for snippet in case.required_snippets {
+                if !output.rust_code.contains(snippet) {
+                    failures.push(format!("{}: missing snippet `{snippet}`", case.name));
+                }
+            }
+            for snippet in case.forbidden_snippets {
+                if output.rust_code.contains(snippet) {
+                    failures.push(format!("{}: unexpected snippet `{snippet}`", case.name));
+                }
+            }
+
+            assert_rust_code_compiles(&output.rust_code);
+        }
+
+        if !failures.is_empty() {
+            panic!(
+                "ownership benchmark regressions detected:\n{}",
+                failures.join("\n")
+            );
+        }
+    }
+
+    #[test]
     fn compile_keeps_borrowed_method_receiver_without_clone() {
         let source = r#"
             fn demo(text: String) {
