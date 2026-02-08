@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::OnceLock;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -61,6 +62,18 @@ struct SdlMainState {
     key_queue: VecDeque<KeyEvent>,
 }
 
+#[derive(Clone)]
+struct Sprite {
+    width: i32,
+    height: i32,
+    pixels: Vec<Option<u32>>,
+}
+
+struct SpritePack {
+    player: Sprite,
+    cpu: Sprite,
+}
+
 #[derive(Debug)]
 struct TerminalState {
     _raw: Option<RawModeGuard>,
@@ -83,6 +96,8 @@ struct RuntimeRegistry {
 thread_local! {
     static RUNTIMES: RefCell<RuntimeRegistry> = RefCell::new(RuntimeRegistry::default());
 }
+
+static SPRITES: OnceLock<SpritePack> = OnceLock::new();
 
 pub fn runtime_start() -> i64 {
     // Window mode is opt-in while runtime/thread-safety work is in progress.
@@ -515,14 +530,17 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
 
     draw_hud_panel(buffer, width, height, frame);
 
-    draw_wood_panel(buffer, width, height, 58, 30, 250, 96);
-    draw_wood_panel(buffer, width, height, 330, 30, 250, 96);
+    draw_wood_panel(buffer, width, height, 58, 30, 250, 124);
+    draw_wood_panel(buffer, width, height, 330, 30, 250, 124);
+    draw_portrait_slot(buffer, width, height, 72, 70, true);
+    draw_portrait_slot(buffer, width, height, 458, 70, false);
     draw_label(buffer, width, height, 84, 48, 3, rgb(255, 245, 206), "PLAYER 1");
     draw_label(buffer, width, height, 368, 48, 3, rgb(255, 245, 206), "CPU");
-    draw_label(buffer, width, height, 140, 84, 4, rgb(255, 252, 232), "34");
-    draw_label(buffer, width, height, 428, 84, 4, rgb(255, 252, 232), "28");
+    draw_label(buffer, width, height, 176, 90, 4, rgb(255, 252, 232), "34");
+    draw_label(buffer, width, height, 452, 90, 4, rgb(255, 252, 232), "28");
 
     draw_bottom_bar(buffer, width, height, frame);
+    apply_retro_post_fx(buffer, width, height, frame.vga);
 
     if frame.debug_enabled {
         let fps_text = format!("FPS {:>3}", frame.fps);
@@ -822,6 +840,64 @@ fn draw_bottom_bar(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPa
     );
 }
 
+fn draw_portrait_slot(
+    buffer: &mut [u32],
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    is_player: bool,
+) {
+    let sprite = if is_player {
+        &sprites().player
+    } else {
+        &sprites().cpu
+    };
+    draw_bevel_box(
+        buffer,
+        width,
+        height,
+        x - 6,
+        y - 6,
+        86,
+        86,
+        rgb(173, 136, 86),
+        rgb(92, 61, 37),
+        rgb(45, 27, 15),
+    );
+    fill_rect(buffer, width, height, x, y, 74, 74, rgb(59, 35, 24));
+    draw_sprite(buffer, width, height, x + 5, y + 5, 2, sprite);
+}
+
+fn apply_retro_post_fx(buffer: &mut [u32], width: i32, height: i32, vga_mode: bool) {
+    let center_x = width as f32 * 0.5;
+    let center_y = height as f32 * 0.52;
+    let inv_x = 1.0 / (center_x * center_x);
+    let inv_y = 1.0 / (center_y * center_y);
+    for y in 0..height {
+        for x in 0..width {
+            let idx = y as usize * width as usize + x as usize;
+            let mut color = buffer[idx];
+            let dx = x as f32 - center_x;
+            let dy = y as f32 - center_y;
+            let radial = (dx * dx) * inv_x + (dy * dy) * inv_y;
+            let vignette = (radial * if vga_mode { 26.0 } else { 34.0 }) as i16;
+            let scan = if y & 1 == 0 { -3 } else { 1 };
+            let grain = (hash_noise(x, y, 0x9137_u32) % 5) as i16 - 2;
+            color = tint(color, scan + grain - vignette);
+            if !vga_mode {
+                let (r, g, b) = unpack(color);
+                color = rgb(
+                    ((r as u16 / 8) * 8) as u8,
+                    ((g as u16 / 8) * 8) as u8,
+                    ((b as u16 / 8) * 8) as u8,
+                );
+            }
+            buffer[idx] = color;
+        }
+    }
+}
+
 fn draw_hills(buffer: &mut [u32], width: i32, height: i32) {
     let horizon = (height as f32 * 0.44) as i32;
     for layer in 0..3 {
@@ -1048,6 +1124,105 @@ fn blend(base: u32, top: u32, alpha: f32) -> u32 {
         (bg as f32 * (1.0 - a) + tg as f32 * a) as u8,
         (bb as f32 * (1.0 - a) + tb as f32 * a) as u8,
     )
+}
+
+fn draw_sprite(
+    buffer: &mut [u32],
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    scale: i32,
+    sprite: &Sprite,
+) {
+    for sy in 0..sprite.height {
+        for sx in 0..sprite.width {
+            let idx = sy as usize * sprite.width as usize + sx as usize;
+            if let Some(color) = sprite.pixels[idx] {
+                fill_rect(
+                    buffer,
+                    width,
+                    height,
+                    x + sx * scale,
+                    y + sy * scale,
+                    scale,
+                    scale,
+                    color,
+                );
+            }
+        }
+    }
+}
+
+fn sprites() -> &'static SpritePack {
+    SPRITES.get_or_init(|| SpritePack {
+        player: parse_sprite(
+            include_str!("assets/portrait_player.sprite"),
+            &sprite_palette(true),
+        ),
+        cpu: parse_sprite(
+            include_str!("assets/portrait_cpu.sprite"),
+            &sprite_palette(false),
+        ),
+    })
+}
+
+fn sprite_palette(is_player: bool) -> Vec<(char, u32)> {
+    let skin = if is_player {
+        rgb(242, 184, 140)
+    } else {
+        rgb(235, 188, 159)
+    };
+    let shirt = if is_player {
+        rgb(24, 86, 195)
+    } else {
+        rgb(127, 63, 162)
+    };
+    vec![
+        (' ', 0),
+        ('.', 0),
+        ('#', rgb(22, 18, 24)),
+        ('w', rgb(255, 255, 255)),
+        ('s', skin),
+        ('h', rgb(99, 54, 29)),
+        ('r', rgb(198, 53, 47)),
+        ('b', shirt),
+        ('e', rgb(37, 97, 170)),
+        ('g', rgb(54, 150, 82)),
+        ('y', rgb(248, 224, 109)),
+        ('k', rgb(13, 11, 16)),
+    ]
+}
+
+fn parse_sprite(source: &str, palette: &[(char, u32)]) -> Sprite {
+    let rows = source
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    let height = rows.len() as i32;
+    let width = rows
+        .iter()
+        .map(|line| line.chars().count() as i32)
+        .max()
+        .unwrap_or(0);
+    let mut pixels = vec![None; (width * height).max(0) as usize];
+    for (y, row) in rows.iter().enumerate() {
+        for (x, ch) in row.chars().enumerate() {
+            let mapped = palette
+                .iter()
+                .find(|(key, _)| *key == ch)
+                .map(|(_, color)| *color)
+                .unwrap_or_else(|| rgb(255, 0, 255));
+            if mapped != 0 {
+                pixels[y * width as usize + x] = Some(mapped);
+            }
+        }
+    }
+    Sprite {
+        width,
+        height,
+        pixels,
+    }
 }
 
 fn draw_label(buffer: &mut [u32], width: i32, height: i32, x: i32, y: i32, scale: i32, color: u32, text: &str) {
