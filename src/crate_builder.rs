@@ -147,6 +147,7 @@ pub fn transpile_ers_crate_with_options(
         copied_files: 0,
     };
 
+    let mut transpiled_ers = Vec::new();
     process_src_dir(
         &source_src,
         &source_src,
@@ -154,7 +155,9 @@ pub fn transpile_ers_crate_with_options(
         &mut summary,
         &interop_contract,
         options,
+        &mut transpiled_ers,
     )?;
+    inject_generated_module_declarations(&generated_root.join("src"), &transpiled_ers)?;
     emit_interop_adapter_module(&generated_root.join("src"), &interop_contract)?;
     Ok(summary)
 }
@@ -600,6 +603,7 @@ fn process_src_dir(
     summary: &mut BuildSummary,
     interop_contract: &InteropContract,
     options: &CompileOptions,
+    transpiled_ers: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
     let entries = fs::read_dir(current)
         .map_err(|error| format!("failed to read directory {}: {error}", current.display()))?;
@@ -624,7 +628,15 @@ fn process_src_dir(
                     target.display()
                 )
             })?;
-            process_src_dir(root_src, &path, generated_src, summary, interop_contract, options)?;
+            process_src_dir(
+                root_src,
+                &path,
+                generated_src,
+                summary,
+                interop_contract,
+                options,
+                transpiled_ers,
+            )?;
             continue;
         }
 
@@ -650,6 +662,7 @@ fn process_src_dir(
                 )
             })?;
             summary.transpiled_files += 1;
+            transpiled_ers.push(rel.to_path_buf());
             continue;
         }
 
@@ -674,6 +687,116 @@ fn process_src_dir(
     }
 
     Ok(())
+}
+
+fn inject_generated_module_declarations(
+    generated_src: &Path,
+    transpiled_ers: &[PathBuf],
+) -> Result<(), String> {
+    let mut children_by_dir: HashMap<PathBuf, BTreeSet<String>> = HashMap::new();
+    for rel in transpiled_ers {
+        if rel.extension() != Some(OsStr::new("ers")) {
+            continue;
+        }
+        let mut rel_no_ext = rel.clone();
+        rel_no_ext.set_extension("");
+        let parts = rel_no_ext
+            .iter()
+            .map(|part| part.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        if parts.is_empty() {
+            continue;
+        }
+        if parts.len() == 1 && matches!(parts[0].as_str(), "lib" | "main") {
+            continue;
+        }
+        let mut dir = PathBuf::new();
+        for part in parts {
+            children_by_dir
+                .entry(dir.clone())
+                .or_default()
+                .insert(part.clone());
+            dir.push(part);
+        }
+    }
+
+    if children_by_dir.is_empty() {
+        return Ok(());
+    }
+
+    let root_target = if generated_src.join("lib.rs").is_file() {
+        Some(generated_src.join("lib.rs"))
+    } else if generated_src.join("main.rs").is_file() {
+        Some(generated_src.join("main.rs"))
+    } else {
+        None
+    };
+    if let Some(root_target) = root_target
+        && let Some(root_children) = children_by_dir.get(&PathBuf::new())
+    {
+        inject_module_declarations_into_file(&root_target, root_children)?;
+    }
+
+    let mut dirs = children_by_dir.keys().cloned().collect::<Vec<_>>();
+    dirs.sort_by_key(|path| path.components().count());
+    for dir in dirs {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let Some(children) = children_by_dir.get(&dir) else {
+            continue;
+        };
+        let mut module_file = generated_src.join(&dir);
+        module_file.set_extension("rs");
+        let target = if module_file.is_file() {
+            module_file
+        } else {
+            generated_src.join(&dir).join("mod.rs")
+        };
+        inject_module_declarations_into_file(&target, children)?;
+    }
+
+    Ok(())
+}
+
+fn inject_module_declarations_into_file(path: &Path, modules: &BTreeSet<String>) -> Result<(), String> {
+    if modules.is_empty() {
+        return Ok(());
+    }
+    let existing = if path.is_file() {
+        fs::read_to_string(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?
+    } else {
+        String::new()
+    };
+    let missing = modules
+        .iter()
+        .filter(|name| !source_contains_module_decl(&existing, name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    let mut out = String::new();
+    out.push_str("// auto-generated module declarations for transpiled .ers files\n");
+    for name in &missing {
+        out.push_str(&format!("pub mod {name};\n"));
+    }
+    out.push('\n');
+    out.push_str(&existing);
+    fs::write(path, out.as_bytes())
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    Ok(())
+}
+
+fn source_contains_module_decl(source: &str, module_name: &str) -> bool {
+    source.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == format!("mod {module_name};") || trimmed == format!("pub mod {module_name};")
+    })
 }
 
 fn should_skip_source_copy_because_ers_twin(path: &Path) -> bool {
@@ -766,7 +889,7 @@ fn validate_item_adapter_calls(
         Item::Static(def) => {
             validate_expr_adapter_calls(&def.value, alias_arity, alias_param_types, diagnostics)
         }
-        Item::Struct(_) | Item::Enum(_) | Item::RustUse(_) | Item::RustBlock(_) => {}
+        Item::Struct(_) | Item::Enum(_) | Item::Trait(_) | Item::RustUse(_) | Item::RustBlock(_) => {}
     }
 }
 
@@ -1023,7 +1146,7 @@ fn rewrite_item_adapter_calls(item: &mut Item, adapter_map: &HashMap<String, Vec
         }
         Item::Const(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
         Item::Static(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
-        Item::Struct(_) | Item::Enum(_) | Item::RustUse(_) | Item::RustBlock(_) => {}
+        Item::Struct(_) | Item::Enum(_) | Item::Trait(_) | Item::RustUse(_) | Item::RustBlock(_) => {}
     }
 }
 
@@ -1418,7 +1541,7 @@ fn validate_interop_contract_for_source(
 
     let mut violations = Vec::new();
     for (line_idx, line) in source.lines().enumerate() {
-        let Some((path, col)) = parse_rust_use_line(line) else {
+        let Some((path, col)) = parse_use_import_line(line) else {
             continue;
         };
         if !path_allowed_by_contract(&path, &contract.allowed_paths) {
@@ -1438,7 +1561,7 @@ fn validate_interop_contract_for_source(
     for (line, col, path) in violations {
         let _ = write!(
             &mut message,
-            "\n  - `rust use {}` is not allowed (line {}, col {}). add `allow {}` to {}",
+            "\n  - `use {}` is not allowed (line {}, col {}). add `allow {}` to {}",
             path,
             line,
             col,
@@ -1449,15 +1572,15 @@ fn validate_interop_contract_for_source(
     Err(message)
 }
 
-fn parse_rust_use_line(line: &str) -> Option<(String, usize)> {
+fn parse_use_import_line(line: &str) -> Option<(String, usize)> {
     let indent = line.len() - line.trim_start().len();
     let trimmed = line.trim_start();
-    let rest = trimmed.strip_prefix("rust use ")?;
+    let (rest, prefix_len) = (trimmed.strip_prefix("use ")?, "use ".len());
     let path = rest.strip_suffix(';')?.trim();
     if !is_valid_rust_path(path) {
         return None;
     }
-    Some((path.to_string(), indent + "rust use ".len() + 1))
+    Some((path.to_string(), indent + prefix_len + 1))
 }
 
 fn path_allowed_by_contract(path: &str, allowed: &BTreeSet<String>) -> bool {
@@ -1742,6 +1865,51 @@ mod tests {
     }
 
     #[test]
+    fn transpile_auto_injects_root_module_decls_for_ers_siblings() {
+        let root = create_temp_dir("elevate-crate-auto-mods-root");
+        fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(root.join("src/lib.ers"), "pub fn ping() -> i64 { 1 }\n")
+            .expect("write lib.ers should succeed");
+        fs::write(root.join("src/app.ers"), "pub fn run() -> i64 { 7 }\n")
+            .expect("write app.ers should succeed");
+
+        let summary = transpile_ers_crate(&root).expect("transpile should succeed");
+        let generated_lib = fs::read_to_string(summary.generated_root.join("src/lib.rs"))
+            .expect("generated lib should exist");
+        assert!(generated_lib.contains("pub mod app;"));
+        assert!(summary.generated_root.join("src/app.rs").is_file());
+    }
+
+    #[test]
+    fn transpile_auto_injects_nested_module_tree_for_ers_files() {
+        let root = create_temp_dir("elevate-crate-auto-mods-nested");
+        fs::create_dir_all(root.join("src/net")).expect("create nested src tree should succeed");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write manifest should succeed");
+        fs::write(root.join("src/lib.ers"), "pub fn ping() -> i64 { 1 }\n")
+            .expect("write lib.ers should succeed");
+        fs::write(root.join("src/net/http.ers"), "pub fn code() -> i64 { 200 }\n")
+            .expect("write nested http.ers should succeed");
+
+        let summary = transpile_ers_crate(&root).expect("transpile should succeed");
+        let generated_lib = fs::read_to_string(summary.generated_root.join("src/lib.rs"))
+            .expect("generated lib should exist");
+        let generated_net_mod = fs::read_to_string(summary.generated_root.join("src/net/mod.rs"))
+            .expect("generated net/mod.rs should exist");
+        assert!(generated_lib.contains("pub mod net;"));
+        assert!(generated_net_mod.contains("pub mod http;"));
+        assert!(summary.generated_root.join("src/net/http.rs").is_file());
+    }
+
+    #[test]
     fn transpile_prefers_ers_source_over_rs_twin() {
         let root = create_temp_dir("elevate-crate-ers-precedence");
         fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
@@ -1770,7 +1938,7 @@ mod tests {
     }
 
     #[test]
-    fn transpile_rejects_rust_use_not_allowed_by_interop_contract() {
+    fn transpile_rejects_use_not_allowed_by_interop_contract() {
         let root = create_temp_dir("elevate-interop-contract");
         fs::create_dir_all(root.join("src")).expect("create src tree should succeed");
         fs::write(
@@ -1780,7 +1948,7 @@ mod tests {
         .expect("write manifest should succeed");
         fs::write(
             root.join("src/lib.ers"),
-            "rust use std::mem::drop;\nfn cleanup(v: String) {\n    std::mem::drop(v);\n}\n",
+            "use std::mem::drop;\nfn cleanup(v: String) {\n    std::mem::drop(v);\n}\n",
         )
         .expect("write lib.ers should succeed");
         fs::write(root.join("elevate.interop"), "allow std::collections::*\n")
@@ -1788,7 +1956,7 @@ mod tests {
 
         let error = transpile_ers_crate(&root).expect_err("expected contract validation failure");
         assert!(error.contains("interop contract violation"));
-        assert!(error.contains("rust use std::mem::drop"));
+        assert!(error.contains("use std::mem::drop"));
         assert!(error.contains("line 1"));
         assert!(error.contains("allow std::mem::drop"));
     }

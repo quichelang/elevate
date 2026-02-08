@@ -1,8 +1,8 @@
 # Language Design (Single Source of Truth)
 
-Status: Draft v0.7  
+Status: Draft v0.8  
 Owner: Language team  
-Last updated: 2026-02-06
+Last updated: 2026-02-08
 
 ## How To Read This Document
 
@@ -35,9 +35,9 @@ Process note:
 - Note: Option C is preferred for concise single-use shape constraints.
 
 2. **Rust interop trait strategy**
-- No traits in Elevate source language.
-- MVP mechanism: external wrapper `.rs` files for Rust trait integration.
-- MVP+1 mechanism: inline `rust { ... }` escape blocks.
+- Traits are fully supported in Elevate source language (trait declarations, supertraits, and trait unions using `+`).
+- Source-level `dyn` syntax is intentionally not exposed.
+- The compiler infers trait-object lowering (`dyn` plus required pointer operators) during type/lowering passes.
 
 3. **Source extension**
 - `.ers` is canonical.
@@ -59,16 +59,18 @@ Guiding principles:
 
 ### Locked MVP Constraints
 
-1. No traits in user language.
-2. No references in user language (`&`, `&mut` not exposed).
-3. No user-provided mutability hints.
-4. Explicit immutability supported via `const` and `static`.
-5. `struct` and `enum` are first-class and Rust-aligned in naming.
-6. Static typing with local type inference.
-7. Compiler makes automatic ownership/memory decisions in lowered Rust.
-8. Generics compile by monomorphization with explicit safety limits.
-9. Closures are MVP+1 scope and currently available in compiler preview form.
-10. To support substantial real-world verification and validation, MVP must include:
+1. Traits are supported in user language, including trait declarations and trait unions (`A + B`).
+2. Source-level `dyn` prefix/operator is not supported; trait-object form is inferred by compiler type/lowering.
+3. No references in user language (`&`, `&mut` not exposed).
+4. No user-provided mutability hints.
+5. `const` provides explicit immutable bindings.
+6. `static` provides static-lifetime/storage-duration declarations (not a mutability feature).
+7. `struct` and `enum` are first-class and Rust-aligned in naming.
+8. Static typing with local type inference.
+9. Compiler makes automatic ownership/memory decisions in lowered Rust.
+10. Generics compile by monomorphization with explicit safety limits.
+11. Closures are MVP+1 scope and currently available in compiler preview form.
+12. To support substantial real-world verification and validation, MVP must include:
 - Conditional blocks (`if` / `else`).
 - Loop constructs.
 - Struct functions (associated functions/methods).
@@ -77,7 +79,7 @@ Guiding principles:
 ### Non-Goals (MVP)
 
 - Reproducing Rust semantics exactly.
-- Full trait system.
+- Explicit source-level trait-object syntax (`dyn`, `&dyn`, `Box<dyn>`) as user-authored syntax.
 - Full source-level borrow checker model.
 - Macro system.
 - Async runtime design.
@@ -86,7 +88,8 @@ Guiding principles:
 ### Language Contract (Current)
 
 Declarations:
-- `const`, `static`, `struct`, `enum`, `fn`, `rust use`.
+- `const`, `static`, `struct`, `enum`, `fn`, `use`.
+- `static` is source-level static-lifetime storage; mutable statics (`static mut`) are not exposed in Elevate syntax.
 
 Expressions/statements:
 - Literals, path refs/calls, field access, `match`, postfix `?`, local `const`, `return`.
@@ -174,6 +177,8 @@ Implemented:
 - Heterogeneous tuple support with Rust-like semantics (tuple literals, tuple type annotations, and tuple destructuring bindings in const/assignment/`for` contexts).
 - Slice destructuring bindings for `Vec` values in `const`/`for` patterns (`[head, ..tail]`, `[left, right]`).
 - Generic function definitions with callsite type inference and trait-style bound syntax (for example `fn id<T>(x: T) -> T`, `fn keep<T: Clone + Copy>(x: T) -> T`).
+- Trait declarations with supertraits (`trait A: B + C { ... }`).
+- Trait-object shorthand types in source (`Trait`, `A + B`) with compiler-inferred lowering to Rust trait objects (`dyn` with inferred pointer/operator context).
 - Array/vector literals (`[a, b, c]`) with inferred element type and `Vec` lowering.
 - Expanded `match` patterns: tuple patterns, literal patterns, binding patterns, and nested variant payload patterns.
 - Struct rest match patterns (`Type { field, .. }`) with diagnostics for missing required fields when rest is omitted.
@@ -188,7 +193,7 @@ Implemented:
 - Closure expressions and closure calls with typed parameters.
 - Comment support (`//` and `/* ... */`) and raw multiline string literals.
 - Character literals (`'a'`, escaped forms like `'\n'`).
-- `rust use` imports and external Rust path calls.
+- `use` imports and external Rust path calls.
 - Inline `rust { ... }` escape blocks (top-level and statement position) that pass raw Rust through without Elevate parsing.
 - Centralized interop policy registry for clone/borrow/shim behavior.
 - Auto-borrow coverage for selected associated Rust calls (String/Option/Result/Vec/HashMap/BTreeMap/HashSet/BTreeSet cases).
@@ -201,7 +206,7 @@ Implemented:
 - Crate build diagnostics now include line/column output (plus symbol declaration hints when span data is coarse).
 - Crate build loop now includes adaptive borrow/clone feedback from Rust diagnostics (retrying transpile/build with inferred interop borrow hints and forced-clone places).
 - Interop contract preview via crate-level `elevate.interop` file:
-- allow-list validation for `rust use` imports.
+- allow-list validation for `use` imports.
 - deterministic generated adapter module (`elevate_interop.rs`) from declared adapter entries.
 - adapter module auto-injection into generated crate root (`lib.rs`/`main.rs`) when present.
 - contract-declared adapter aliases are automatically rewritten at crate transpile time to generated adapter calls.
@@ -247,6 +252,7 @@ Quality status:
 Behavior:
 - Input crate is expected to have `Cargo.toml` and `src/`.
 - All `.ers` files under `src/` are transpiled to `.rs` under `target/elevate-gen/src/` with identical relative paths.
+- Generated crate output auto-injects missing `mod`/`pub mod` declarations for transpiled `.ers` modules (including nested module trees), so source crates do not need empty `.rs` sibling stubs.
 - Non-`.ers` files under `src/` are copied through unchanged.
 - `Cargo.toml` is copied to `target/elevate-gen/Cargo.toml`.
 - Build step runs `cargo build --manifest-path <crate>/target/elevate-gen/Cargo.toml`.
@@ -255,7 +261,7 @@ Behavior:
 - `<crate>/target/release`
 - Compilation failures in `.ers` crate builds are reported with source-relative line/column context.
 - Optional interop contract file: `<crate-root>/elevate.interop`.
-- `allow` directives gate which `rust use` imports are permitted.
+- `allow` directives gate which `use` imports are permitted.
 - `adapter` directives generate deterministic Rust adapter functions in `target/elevate-gen/src/elevate_interop.rs`.
 - adapter alias path calls in Elevate source are rewritten to `elevate_interop` generated functions during transpile.
 

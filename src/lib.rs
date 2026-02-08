@@ -197,9 +197,9 @@ mod tests {
     }
 
     #[test]
-    fn compile_supports_result_try_and_rust_use_imports() {
+    fn compile_supports_result_try_and_use_imports() {
         let source = r#"
-            rust use std::num::ParseIntError;
+            use std::num::ParseIntError;
 
             fn parse_i64(input: String) -> Result<i64, ParseIntError> {
                 return Result::Ok(1);
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn compile_allows_external_rust_path_calls() {
         let source = r#"
-            rust use std::mem::drop;
+            use std::mem::drop;
 
             fn cleanup(value: String) {
                 std::mem::drop(value);
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn compile_auto_clones_reused_imported_nominal_types() {
         let source = r#"
-            rust use external::Token;
+            use external::Token;
 
             fn consume(token: Token) {
                 std::mem::drop(token);
@@ -1407,8 +1407,8 @@ mod tests {
     #[test]
     fn compile_auto_borrows_hashmap_btreemap_associated_calls() {
         let source = r#"
-            rust use std::collections::HashMap;
-            rust use std::collections::BTreeMap;
+            use std::collections::HashMap;
+            use std::collections::BTreeMap;
 
             fn demo(h: HashMap<String, i64>, b: BTreeMap<String, i64>, key: String) -> bool {
                 std::mem::drop(HashMap::len(h));
@@ -1433,8 +1433,8 @@ mod tests {
     #[test]
     fn compile_auto_borrows_hashset_btreeset_contains_calls() {
         let source = r#"
-            rust use std::collections::HashSet;
-            rust use std::collections::BTreeSet;
+            use std::collections::HashSet;
+            use std::collections::BTreeSet;
 
             fn demo(hs: HashSet<String>, bs: BTreeSet<String>, key: String) -> bool {
                 std::mem::drop(HashSet::contains(hs, key));
@@ -1468,7 +1468,7 @@ mod tests {
     #[test]
     fn generated_rust_compiles_for_result_try_flow() {
         let source = r#"
-            rust use std::num::ParseIntError;
+            use std::num::ParseIntError;
 
             fn parse_i64(input: String) -> Result<i64, ParseIntError> {
                 return Result::Ok(1);
@@ -1949,7 +1949,7 @@ mod tests {
     #[test]
     fn compile_emits_multi_value_variant_payload_patterns() {
         let source = r#"
-            rust use crate::Pair;
+            use crate::Pair;
 
             fn classify(value: Pair) -> i64 {
                 return match value {
@@ -2030,7 +2030,7 @@ mod tests {
     #[test]
     fn compile_supports_for_tuple_destructure_bindings() {
         let source = r#"
-            rust use crate::PairIter;
+            use crate::PairIter;
 
             fn sum_pairs(pairs: PairIter) -> i64 {
                 for (left, right) in pairs {
@@ -2158,7 +2158,7 @@ mod tests {
     #[test]
     fn compile_supports_for_loop_hashmap_keys() {
         let source = r#"
-            rust use std::collections::HashMap;
+            use std::collections::HashMap;
 
             fn walk_keys(map: HashMap<String, i64>) -> i64 {
                 for key in map.keys() {
@@ -2176,7 +2176,7 @@ mod tests {
     #[test]
     fn compile_supports_for_loop_hashmap_into_iter_tuple() {
         let source = r#"
-            rust use std::collections::HashMap;
+            use std::collections::HashMap;
 
             fn walk_pairs(map: HashMap<String, i64>) -> i64 {
                 for (key, value) in map.into_iter() {
@@ -2317,6 +2317,60 @@ mod tests {
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("pub fn new(x: i64) -> Point"));
         assert!(output.rust_code.contains("Point::new(7)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_trait_declarations_with_supertraits() {
+        let source = r#"
+            use std::fmt::Debug;
+            use std::fmt::Display;
+
+            pub trait Renderable: Debug + Display {
+                fn render(self: Self) -> String;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("pub trait Renderable: Debug + Display"));
+        assert!(output.rust_code.contains("fn render(self: Self) -> String;"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_infers_dyn_for_trait_object_shorthand_types() {
+        let source = r#"
+            pub trait Printable {}
+
+            rust {
+                impl Printable for String {
+                }
+
+                pub fn boxed_printable(v: String) -> Box<dyn Printable> {
+                    Box::new(v)
+                }
+            }
+
+            fn read(value: Printable) -> i64 {
+                std::mem::drop(value);
+                0
+            }
+
+            fn wrap(input: String) -> Printable {
+                boxed_printable(input)
+            }
+
+            fn run(input: String) -> i64 {
+                read(input)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("fn read(value: &dyn Printable) -> i64"));
+        assert!(output
+            .rust_code
+            .contains("fn wrap(input: String) -> Box<dyn Printable>"));
+        assert!(output.rust_code.contains("return read(&input);"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -2585,7 +2639,7 @@ mod tests {
     #[test]
     fn compile_supports_matching_imported_rust_enums() {
         let source = r#"
-            rust use std::cmp::Ordering;
+            use std::cmp::Ordering;
 
             fn classify(v: Ordering) -> i64 {
                 return match v {

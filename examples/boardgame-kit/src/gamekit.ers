@@ -1,4 +1,4 @@
-rust use crate::gfx::Canvas;
+use crate::gfx::Canvas;
 
 pub struct Rect {
     x: i64;

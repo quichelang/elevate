@@ -1,4 +1,4 @@
-rust use neon_boardwalk::app::Game;
+use neon_boardwalk::app::Game;
 
 fn main() {
     const game = Game::new();

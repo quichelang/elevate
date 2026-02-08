@@ -1,7 +1,7 @@
-rust use crate::host;
-rust use crate::host::KeyEvent;
-rust use crate::gfx::Canvas;
-rust use crate::gamekit;
+use crate::host;
+use crate::host::KeyEvent;
+use crate::gfx::Canvas;
+use crate::gamekit;
 
 pub enum RenderMode {
     Neon;

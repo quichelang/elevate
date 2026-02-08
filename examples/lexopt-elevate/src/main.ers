@@ -1,6 +1,6 @@
-rust use lexopt_elevate::model::Arg;
-rust use lexopt_elevate::model::ParseError;
-rust use lexopt_elevate::parser::Parser;
+use lexopt_elevate::model::Arg;
+use lexopt_elevate::model::ParseError;
+use lexopt_elevate::parser::Parser;
 
 fn main() {
     const parser = Parser::from_env();

@@ -1,4 +1,4 @@
-rust use std::num::ParseIntError;
+use std::num::ParseIntError;
 
 fn parse_i64(input: String) -> Result<i64, ParseIntError> {
   return Result::Ok(1);

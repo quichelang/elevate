@@ -13,6 +13,7 @@ pub enum TokenKind {
     Use,
     Struct,
     Enum,
+    Trait,
     Impl,
     Fn,
     Let,
@@ -547,6 +548,7 @@ impl<'a> Lexer<'a> {
             "use" => TokenKind::Use,
             "struct" => TokenKind::Struct,
             "enum" => TokenKind::Enum,
+            "trait" => TokenKind::Trait,
             "impl" => TokenKind::Impl,
             "fn" => TokenKind::Fn,
             "let" => TokenKind::Let,
@@ -754,9 +756,8 @@ mod tests {
 
     #[test]
     fn lex_path_and_try_tokens() {
-        let source = "rust use std::io; value?;";
+        let source = "use std::io; value?;";
         let tokens = lex(source).expect("expected lex success");
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Rust)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Use)));
         assert!(
             tokens
@@ -898,7 +899,7 @@ mod tests {
 
     #[test]
     fn lex_leading_underscore_identifiers() {
-        let source = "rust use crate::__elevate_interop;";
+        let source = "use crate::__elevate_interop;";
         let tokens = lex(source).expect("expected lex success");
         assert!(
             tokens

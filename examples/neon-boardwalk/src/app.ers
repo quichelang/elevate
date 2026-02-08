@@ -1,7 +1,7 @@
-rust use crate::runtime;
-rust use crate::runtime::Board;
-rust use crate::runtime::RenderMode;
-rust use crate::host::KeyEvent;
+use crate::runtime;
+use crate::runtime::Board;
+use crate::runtime::RenderMode;
+use crate::host::KeyEvent;
 
 pub struct Game {
     runtime: i64;

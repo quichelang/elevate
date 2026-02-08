@@ -1,6 +1,6 @@
-rust use crate::elevate_interop;
-rust use crate::model::Arg;
-rust use crate::model::ParseError;
+use crate::elevate_interop;
+use crate::model::Arg;
+use crate::model::ParseError;
 
 pub struct LongWithValue {
     name: String;

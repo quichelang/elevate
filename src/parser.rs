@@ -1,8 +1,8 @@
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, ConstDef, DestructurePattern, EnumDef, EnumVariant,
     Expr, Field, FunctionDef, GenericParam, ImplBlock, Item, MatchArm, Module, Param, Pattern,
-    PatternField, RustUse, StaticDef, Stmt, StructLiteralField, StructDef, Type, UnaryOp,
-    Visibility,
+    PatternField, RustUse, StaticDef, Stmt, StructLiteralField, StructDef, TraitDef,
+    TraitMethodSig, Type, UnaryOp, Visibility,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -61,16 +61,23 @@ impl Parser {
                 self.error_current("`pub rust ...` is not supported; use `rust ...`");
             }
             if self.at(TokenKind::Use) {
-                return self.parse_rust_use().map(Item::RustUse);
+                self.error_current("`rust` prefix on imports is no longer supported; write `use ...;`");
+                return None;
             }
-            self.error_current("Expected `use` after `rust`");
+            self.error_current("Expected inline `rust { ... }` block");
             return None;
+        }
+        if self.match_kind(TokenKind::Use) {
+            return self.parse_use_item().map(Item::RustUse);
         }
         if self.match_kind(TokenKind::Struct) {
             return self.parse_struct(visibility).map(Item::Struct);
         }
         if self.match_kind(TokenKind::Enum) {
             return self.parse_enum(visibility).map(Item::Enum);
+        }
+        if self.match_kind(TokenKind::Trait) {
+            return self.parse_trait(visibility).map(Item::Trait);
         }
         if self.match_kind(TokenKind::Impl) {
             if visibility == Visibility::Public {
@@ -93,15 +100,14 @@ impl Parser {
         }
 
         self.error_current(
-            "Expected top-level item (`rust use`, `rust { ... }`, `struct`, `enum`, `impl`, `fn`, `const`, `static`)",
+            "Expected top-level item (`use`, `rust { ... }`, `struct`, `enum`, `trait`, `impl`, `fn`, `const`, `static`)",
         );
         None
     }
 
-    fn parse_rust_use(&mut self) -> Option<RustUse> {
-        self.expect(TokenKind::Use, "Expected `use` after `rust`")?;
-        let path = self.parse_path("Expected import path after `rust use`")?;
-        self.expect(TokenKind::Semicolon, "Expected ';' after rust use import")?;
+    fn parse_use_item(&mut self) -> Option<RustUse> {
+        let path = self.parse_path("Expected import path after `use`")?;
+        self.expect(TokenKind::Semicolon, "Expected ';' after use import")?;
         Some(RustUse { path })
     }
 
@@ -160,6 +166,30 @@ impl Parser {
         })
     }
 
+    fn parse_trait(&mut self, visibility: Visibility) -> Option<TraitDef> {
+        let name = self.expect_ident("Expected trait name")?;
+        let mut supertraits = Vec::new();
+        if self.match_kind(TokenKind::Colon) {
+            supertraits.push(self.parse_type_bound()?);
+            while self.match_kind(TokenKind::Plus) {
+                supertraits.push(self.parse_type_bound()?);
+            }
+        }
+        self.expect(TokenKind::LBrace, "Expected '{' after trait name")?;
+        let mut methods = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            self.expect(TokenKind::Fn, "Expected `fn` in trait body")?;
+            methods.push(self.parse_trait_method_signature()?);
+        }
+        self.expect(TokenKind::RBrace, "Expected '}' after trait body")?;
+        Some(TraitDef {
+            visibility,
+            name,
+            supertraits,
+            methods,
+        })
+    }
+
     fn parse_function(
         &mut self,
         visibility: Visibility,
@@ -172,9 +202,9 @@ impl Parser {
                 let param_name = self.expect_ident("Expected generic type parameter name")?;
                 let mut bounds = Vec::new();
                 if self.match_kind(TokenKind::Colon) {
-                    bounds.push(self.parse_type()?);
+                    bounds.push(self.parse_type_bound()?);
                     while self.match_kind(TokenKind::Plus) {
-                        bounds.push(self.parse_type()?);
+                        bounds.push(self.parse_type_bound()?);
                     }
                 }
                 type_params.push(GenericParam {
@@ -189,17 +219,18 @@ impl Parser {
         }
         self.expect(TokenKind::LParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
-        while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
-            let param_name = self.expect_ident("Expected parameter name")?;
-            let param_ty = if param_name == "self" && impl_target.is_some() && !self.at(TokenKind::Colon) {
-                Type {
-                    path: vec![impl_target.expect("impl target checked above").to_string()],
-                    args: Vec::new(),
-                }
-            } else {
-                self.expect(TokenKind::Colon, "Expected ':' after parameter name")?;
-                self.parse_type()?
-            };
+            while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                let param_name = self.expect_ident("Expected parameter name")?;
+                let param_ty = if param_name == "self" && impl_target.is_some() && !self.at(TokenKind::Colon) {
+                    Type {
+                        path: vec![impl_target.expect("impl target checked above").to_string()],
+                        args: Vec::new(),
+                        trait_bounds: Vec::new(),
+                    }
+                } else {
+                    self.expect(TokenKind::Colon, "Expected ':' after parameter name")?;
+                    self.parse_type()?
+                };
             params.push(Param {
                 name: param_name,
                 ty: param_ty,
@@ -222,6 +253,66 @@ impl Parser {
             params,
             return_type,
             body,
+        })
+    }
+
+    fn parse_trait_method_signature(&mut self) -> Option<TraitMethodSig> {
+        let name = self.expect_ident("Expected trait method name")?;
+        let mut type_params = Vec::new();
+        if self.match_kind(TokenKind::Lt) {
+            while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
+                let param_name = self.expect_ident("Expected generic type parameter name")?;
+                let mut bounds = Vec::new();
+                if self.match_kind(TokenKind::Colon) {
+                    bounds.push(self.parse_type_bound()?);
+                    while self.match_kind(TokenKind::Plus) {
+                        bounds.push(self.parse_type_bound()?);
+                    }
+                }
+                type_params.push(GenericParam {
+                    name: param_name,
+                    bounds,
+                });
+                if !self.match_kind(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt, "Expected '>' after generic type parameters")?;
+        }
+        self.expect(TokenKind::LParen, "Expected '(' after trait method name")?;
+        let mut params = Vec::new();
+        while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+            let param_name = self.expect_ident("Expected parameter name")?;
+            let param_ty = if param_name == "self" && !self.at(TokenKind::Colon) {
+                Type {
+                    path: vec!["Self".to_string()],
+                    args: Vec::new(),
+                    trait_bounds: Vec::new(),
+                }
+            } else {
+                self.expect(TokenKind::Colon, "Expected ':' after parameter name")?;
+                self.parse_type()?
+            };
+            params.push(Param {
+                name: param_name,
+                ty: param_ty,
+            });
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "Expected ')' after parameter list")?;
+        let return_type = if self.match_kind(TokenKind::Arrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.expect(TokenKind::Semicolon, "Expected ';' after trait method signature")?;
+        Some(TraitMethodSig {
+            name,
+            type_params,
+            params,
+            return_type,
         })
     }
 
@@ -967,11 +1058,24 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Option<Type> {
+        let mut ty = self.parse_type_atom()?;
+        while self.match_kind(TokenKind::Plus) {
+            ty.trait_bounds.push(self.parse_type_atom()?);
+        }
+        Some(ty)
+    }
+
+    fn parse_type_bound(&mut self) -> Option<Type> {
+        self.parse_type_atom()
+    }
+
+    fn parse_type_atom(&mut self) -> Option<Type> {
         if self.match_kind(TokenKind::LParen) {
             if self.match_kind(TokenKind::RParen) {
                 return Some(Type {
                     path: vec!["Tuple".to_string()],
                     args: Vec::new(),
+                    trait_bounds: Vec::new(),
                 });
             }
             let first = self.parse_type()?;
@@ -987,6 +1091,7 @@ impl Parser {
                 return Some(Type {
                     path: vec!["Tuple".to_string()],
                     args: items,
+                    trait_bounds: Vec::new(),
                 });
             }
             self.expect(TokenKind::RParen, "Expected ')' after parenthesized type")?;
@@ -1004,7 +1109,11 @@ impl Parser {
             }
             self.expect(TokenKind::Gt, "Expected '>' to close generic arguments")?;
         }
-        Some(Type { path, args })
+        Some(Type {
+            path,
+            args,
+            trait_bounds: Vec::new(),
+        })
     }
 
     fn parse_struct_literal_expr(&mut self, path: Vec<String>) -> Option<Expr> {
@@ -1244,8 +1353,10 @@ impl Parser {
             if self.at(TokenKind::Rust)
                 || matches!(self.peek().kind, TokenKind::RustBlock(_))
                 || self.at(TokenKind::Pub)
+                || self.at(TokenKind::Use)
                 || self.at(TokenKind::Struct)
                 || self.at(TokenKind::Enum)
+                || self.at(TokenKind::Trait)
                 || self.at(TokenKind::Impl)
                 || self.at(TokenKind::Fn)
                 || self.at(TokenKind::Const)
@@ -1273,6 +1384,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Use, Use)
             | (Struct, Struct)
             | (Enum, Enum)
+            | (Trait, Trait)
             | (Impl, Impl)
             | (Fn, Fn)
             | (Let, Let)
@@ -1342,9 +1454,27 @@ mod tests {
     use super::parse_module;
 
     #[test]
-    fn parse_rust_use_and_function() {
+    fn parser_rejects_rust_use_alias() {
         let source = r#"
-            rust use std::fmt;
+            rust
+            use std::fmt;
+            fn read_value() -> Result<i64, Error> {
+                return get_value()?;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let diagnostics = parse_module(tokens).expect_err("expected parse error");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("`rust` prefix on imports is no longer supported"))
+        );
+    }
+
+    #[test]
+    fn parse_plain_use_and_function() {
+        let source = r#"
+            use std::fmt;
             fn read_value() -> Result<i64, Error> {
                 return get_value()?;
             }
@@ -1563,6 +1693,23 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_traits_and_trait_object_type_unions() {
+        let source = r#"
+            pub trait Renderable: Debug + Display {
+                fn render(self: Self) -> String;
+                fn merge<T: Clone + Debug>(self: Self, other: T) -> String;
+            }
+
+            fn take(value: Renderable + Send) -> i64 {
+                1
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
     }
 
     #[test]
