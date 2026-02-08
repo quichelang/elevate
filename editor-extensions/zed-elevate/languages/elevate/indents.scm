@@ -6,6 +6,7 @@
     (let_declaration)
     (let_chain)
     (await_expression)
+    (for_expression)
 ] @indent
 
 (_ "[" "]" @end) @indent

@@ -2,7 +2,7 @@
   "name": "elevate-language",
   "displayName": "Elevate Language",
   "description": "Syntax highlighting and language configuration for Elevate (.ers).",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "elevate-lang",
   "license": "MIT",
   "engines": {

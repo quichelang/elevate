@@ -17,10 +17,11 @@ The Zed plugin uses Rust tree-sitter parsing with Elevate-specific highlight que
 
 ## Supported Elevate tokens covered
 
-- Keywords: `rust`, `use`, `struct`, `enum`, `impl`, `fn`, `const`, `static`, `pub`
-- Control flow: `if`, `else`, `while`, `match`, `return`
+- Declaration keywords: `rust`, `use`, `struct`, `enum`, `trait`, `impl`, `fn`, `let`, `const`, `static`, `pub`
+- Control flow: `if`, `else`, `while`, `for`, `in`, `loop`, `break`, `continue`, `match`, `return`
 - Logical operators: `and`, `or`, `not`
-- Booleans: `true`, `false`
-- Symbols: `+`, `+=`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `=`, `=>`, `->`, `..`, `..=`, `?`, `!`, `|`, `::`
+- Language constants: `true`, `false`, `Self`, `_`
+- Symbols: `+`, `+=`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `=`, `=>`, `->`, `..`, `..=`, `?`, `!`, `|`, `@`, `::`
 - Comments: `//`, `/* ... */`
-- Strings: quoted strings and raw strings (`r#"..."#` style)
+- Strings: quoted strings, raw strings (`r#"..."#` style), char literals (`'x'`)
+- Numbers: decimal, hex (`0x`), binary (`0b`)

@@ -5,7 +5,8 @@ This extension adds syntax highlighting and language configuration for Elevate s
 ## Design
 
 - Uses the Rust tree-sitter grammar as the parsing backend.
-- Adds Elevate-specific keyword highlighting on top (`rust`, `and`, `or`, `not`).
+- Adds Elevate-specific keyword highlighting via identifier predicates (`rust`, `trait`, `let`, `for`, `in`, `loop`, `break`, `continue`, `and`, `or`, `not`, `Self`).
+- Covers all Elevate operators including `-`, `*`, `/`, `%`, `@`, `->`, `=>`, `..`, `..=`, `?`.
 - Uses `.ers` as the language file suffix.
 
 This approach keeps the extension lightweight and usable immediately while a dedicated `tree-sitter-elevate` grammar is still pending.

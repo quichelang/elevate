@@ -47,6 +47,10 @@
 
 (enum_variant name: (identifier) @type)
 
+; Self as a type keyword
+((identifier) @type.builtin
+ (#eq? @type.builtin "Self"))
+
 [
   "("
   ")"
@@ -79,8 +83,15 @@
   "use"
 ] @keyword
 
+; Elevate-specific keywords recognized as identifiers by tree-sitter-rust
 ((identifier) @keyword
  (#eq? @keyword "rust"))
+
+((identifier) @keyword
+ (#eq? @keyword "trait"))
+
+((identifier) @keyword
+ (#eq? @keyword "let"))
 
 [
   "else"
@@ -89,6 +100,9 @@
   "return"
   "while"
 ] @keyword.control
+
+((identifier) @keyword.control
+ (#match? @keyword.control "^(for|in|loop|break|continue)$"))
 
 ((identifier) @keyword.operator
  (#match? @keyword.operator "^(and|or|not)$"))
@@ -113,7 +127,11 @@
   "!="
   "+"
   "+="
+  "-"
   "->"
+  "*"
+  "/"
+  "%"
   ".."
   "..="
   ":"
@@ -126,6 +144,7 @@
   ">="
   "|"
   "?"
+  "@"
 ] @operator
 
 (unary_expression "!" @operator)
