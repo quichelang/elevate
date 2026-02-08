@@ -12,13 +12,13 @@
 
 ## Summary of Gaps
 
-| # | Gap | Errors | Impact | Difficulty |
-|---|-----|--------|--------|------------|
-| 1 | [Iterator method chain support](#1-iterator-method-chains) | 6 | High | Medium |
-| 2 | [Numeric type coercion](#2-numeric-type-coercion) | 10 | High | Low |
-| 3 | [Missing `.to_string()` method](#3-missing-tostring-method) | 1 | Low | Trivial |
-| 4 | [Self parameter in method resolution](#4-self-parameter-handling) | 2 | Medium | Low |
-| 5 | [`as` cast expression](#5-as-cast-expression) | 3 | Medium | Medium |
+| #   | Gap                                                               | Errors | Impact | Difficulty |
+| --- | ----------------------------------------------------------------- | ------ | ------ | ---------- |
+| 1   | [Iterator method chain support](#1-iterator-method-chains)        | 6      | High   | Medium     |
+| 2   | [Numeric type coercion](#2-numeric-type-coercion)                 | 10     | High   | Low        |
+| 3   | [Missing `.to_string()` method](#3-missing-tostring-method)       | 1      | Low    | Trivial    |
+| 4   | [Self parameter in method resolution](#4-self-parameter-handling) | 2      | Medium | Low        |
+| 5   | [`as` cast expression](#5-as-cast-expression)                     | 3      | Medium | Medium     |
 
 **Total: ~22 errors across both test files.** Fixing gaps #1 and #2 alone would resolve ~16 of them.
 
@@ -123,7 +123,7 @@ def get_board() -> Vec[Vec[i32]]:
 
 ### Proposed Fix
 
-Add a `is_numeric_compatible` helper and use it in `is_compatible`:
+Add a `is_numeric_compatible` helper and use it in `is_compatible`. This could be enabled with a permanent "numeric coercion" mode flag to be more conservative - that can be passed to the compile_ast function to be enabled for the bridge:
 
 ```rust
 fn is_numeric_type(ty: &SemType) -> bool {
@@ -143,12 +143,12 @@ fn is_numeric_type(ty: &SemType) -> bool {
 }
 
 // In is_compatible, before the final `_ => false`:
-fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
+fn is_compatible(actual: &SemType, expected: &SemType, flags: &Vec<(String, bool)>) -> bool {
     match (actual, expected) {
         // ... existing cases ...
 
         // NEW: Numeric types are compatible (Rust will narrow/widen with `as`)
-        (a, b) if is_numeric_type(a) && is_numeric_type(b) => true,
+        (a, b) if is_flag_enabled!(flags, "numeric_coercion") && is_numeric_type(a) && is_numeric_type(b) => true, // flags should be verifiable at compile time, so this check is effectively a constant condition
 
         _ => false,
     }
@@ -210,6 +210,8 @@ fn infer_external_method_call_type(method: &str, args: &[SemType]) -> SemType {
 }
 ```
 
+Now that Traits support is first class, perhaps these hard-coded checks can be replaced with a more robust trait-based solution — e.g. if we had a `Display` trait in Elevate, we could say "any type that implements `Display` has a `.to_string() -> String` method". We may already have some support for row-based polymorphism in the langauge, that could be what this all simplies to. Alternatively, But the above quick fix would unblock the immediate issue with minimal code changes.
+
 ### Impact
 
 Resolves **1 error** in sudoku.q.
@@ -231,6 +233,8 @@ line 3352-3360 doesn't distinguish between "method needs self + N args" and "sta
 N args". It falls through to the error because the match at line 3309 (`sig.params.len() == args.len() + 1`)
 expects `is_compatible(base_ty, &sig.params[0])` to pass — which it does for `Self` types, but the
 issue is that `Self` isn't being replaced with the concrete struct type during impl lowering.
+
+Question: Should this be considered a bug in desugar or a feature that Elevate should support for any langauge integration targetting Elevate IR?
 
 ### Where It Hits
 
@@ -299,7 +303,7 @@ total / self.students.len() as f32
 
 ### Proposed Fix
 
-Add a `Cast` variant to the Elevate AST and handle it in the type checker:
+Add a `Cast` variant to the Elevate AST (like Rust) and handle it in the type checker:
 
 ```rust
 // ast.rs
@@ -342,13 +346,13 @@ type flow through cast expressions.
 
 For maximum impact with minimum effort:
 
-| Priority | Gap | Effort | Errors Fixed |
-|----------|-----|--------|-------------|
-| **P0** | #2 Numeric coercion | ~10 lines | 10 |
-| **P0** | #1 Iterator methods | ~40 lines | 6 |
-| **P1** | #3 `.to_string()` | ~5 lines | 1 |
-| **P1** | #4 Self param | ~10 lines | 2 |
-| **P2** | #5 `as` cast | ~30 lines (ast+passes+codegen) | 3 |
+| Priority | Gap                 | Effort                         | Errors Fixed |
+| -------- | ------------------- | ------------------------------ | ------------ |
+| **P0**   | #2 Numeric coercion | ~10 lines                      | 10           |
+| **P0**   | #1 Iterator methods | ~40 lines                      | 6            |
+| **P1**   | #3 `.to_string()`   | ~5 lines                       | 1            |
+| **P1**   | #4 Self param       | ~10 lines                      | 2            |
+| **P2**   | #5 `as` cast        | ~30 lines (ast+passes+codegen) | 3            |
 
 Fixing just **P0** items (two small changes) would resolve **16 of 22 errors** across both test files
 and likely unblock full end-to-end compilation of `sudoku.q`.
