@@ -31,6 +31,21 @@ pub struct SpriteLayer {
     sprite: Sprite;
 }
 
+pub struct TileDef {
+    key: String;
+    sprite_id: i64;
+}
+
+pub struct TileAtlas {
+    tiles: Vec<TileDef>;
+}
+
+pub struct AnimatedSprite {
+    frame_ids: Vec<i64>;
+    frame_durations_ms: Vec<i64>;
+    looped: bool;
+}
+
 pub fn make_rect(x: i64, y: i64, width: i64, height: i64) -> Rect {
     Rect {
         x: x;
@@ -47,6 +62,57 @@ pub fn sprite_layer(z: i64, x: i64, y: i64, sprite: Sprite) -> SpriteLayer {
         y: y;
         sprite: sprite;
     }
+}
+
+pub fn tile_atlas_new() -> TileAtlas {
+    TileAtlas { tiles: [] }
+}
+
+pub fn tile_atlas_insert(atlas: TileAtlas, key: String, sprite_id: i64) -> TileAtlas {
+    atlas.tiles.push(TileDef {
+        key: key;
+        sprite_id: sprite_id;
+    });
+    atlas
+}
+
+pub fn tile_atlas_lookup(atlas: TileAtlas, key: String) -> (TileAtlas, Option<i64>) {
+    std::mem::drop(key);
+    (atlas, Option::None)
+}
+
+pub fn blit_tile_key(
+    canvas: Canvas,
+    atlas: TileAtlas,
+    key: String,
+    x: i64,
+    y: i64,
+    vga: bool,
+) -> (Canvas, TileAtlas) {
+    const (next_atlas, sprite_id) = tile_atlas_lookup(atlas, key);
+    const next_canvas = match sprite_id {
+        Option::Some(id) => blit_palette_sprite(canvas, sprite_by_id(id), x, y, vga);
+        Option::None => canvas;
+    };
+    (next_canvas, next_atlas)
+}
+
+pub fn animated_sprite(frame_ids: Vec<i64>, frame_durations_ms: Vec<i64>, looped: bool) -> AnimatedSprite {
+    AnimatedSprite {
+        frame_ids: frame_ids;
+        frame_durations_ms: frame_durations_ms;
+        looped: looped;
+    }
+}
+
+pub fn animated_sprite_frame_id(anim: AnimatedSprite, clock_ms: i64) -> (AnimatedSprite, i64) {
+    std::mem::drop(clock_ms);
+    (anim, 0)
+}
+
+fn sprite_by_id(sprite_id: i64) -> Sprite {
+    std::mem::drop(sprite_id);
+    sprite_cloud()
 }
 
 pub fn sprite_from_rows(rows: Vec<String>) -> Sprite {

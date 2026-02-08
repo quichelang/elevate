@@ -2157,6 +2157,18 @@ mod tests {
     }
 
     #[test]
+    fn infer_borrow_indexes_detects_ampersands_on_cloned_args() {
+        let original =
+            "let drawn = host::runtime_draw_scene(board.cells.clone(), board.fixed.clone(), row);";
+        let suggested =
+            "let drawn = host::runtime_draw_scene(&board.cells.clone(), &board.fixed.clone(), row);";
+        let (callee, indexes) = infer_borrow_indexes_from_suggestion(original, suggested)
+            .expect("borrow suggestion should be inferred");
+        assert_eq!(callee, "host::runtime_draw_scene");
+        assert_eq!(indexes, vec![0, 1]);
+    }
+
+    #[test]
     fn merge_borrow_hints_unions_indexes_per_path() {
         let mut options = CompileOptions {
             direct_borrow_hints: vec![DirectBorrowHint {

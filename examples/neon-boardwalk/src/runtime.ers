@@ -223,7 +223,20 @@ pub fn runtime_render(
     debug_enabled: bool,
     fps: i64,
 ) -> Board {
-    const (next_board, frame) = render_frame(
+    const drawn = host::runtime_draw_scene(
+        board.cells,
+        board.fixed,
+        cursor_row,
+        cursor_col,
+        format!("{}", message),
+        mode_is_vga(mode),
+        debug_enabled,
+        fps,
+    );
+    if drawn {
+        return board;
+    }
+    const (rendered_board, frame) = render_frame(
         board,
         cursor_row,
         cursor_col,
@@ -233,7 +246,7 @@ pub fn runtime_render(
         fps,
     );
     host::runtime_draw(frame);
-    next_board
+    rendered_board
 }
 
 pub fn puzzle_count() -> i64 {

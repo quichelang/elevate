@@ -934,6 +934,72 @@ mod tests {
     }
 
     #[test]
+    fn compile_heuristically_borrows_draw_like_external_path_calls() {
+        let source = r#"
+            rust {
+                pub fn runtime_draw_scene(cells: &[i64], fixed: &[bool]) -> bool {
+                    !cells.is_empty() && !fixed.is_empty()
+                }
+            }
+
+            fn demo(cells: Vec<i64>, fixed: Vec<bool>) -> bool {
+                const drawn = runtime_draw_scene(cells, fixed);
+                if drawn {
+                    return runtime_draw_scene(cells, fixed);
+                }
+                runtime_draw_scene(cells, fixed)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output
+            .rust_code
+            .contains("runtime_draw_scene(&cells, &fixed)"));
+        assert!(!output.rust_code.contains("cells.clone()"));
+        assert!(!output.rust_code.contains("fixed.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_borrowed_external_call_arg_preserves_followup_move() {
+        let source = r#"
+            rust {
+                pub fn has_values(values: &[i64]) -> bool { !values.is_empty() }
+                pub fn consume(values: Vec<i64>) -> i64 { values.len() as i64 }
+            }
+
+            fn demo(values: Vec<i64>) -> i64 {
+                std::mem::drop(has_values(values));
+                consume(values)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("has_values(&values)"));
+        assert!(output.rust_code.contains("consume(values)"));
+        assert!(!output.rust_code.contains("consume(values.clone())"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_does_not_auto_borrow_owned_string_for_draw_prefixed_calls() {
+        let source = r#"
+            rust {
+                pub fn draw_footer_status(message: String) -> bool { !message.is_empty() }
+            }
+
+            fn demo(message: String) -> bool {
+                draw_footer_status(message)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("draw_footer_status(message)"));
+        assert!(!output.rust_code.contains("draw_footer_status(&message)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_keeps_borrowed_method_receiver_without_clone() {
         let source = r#"
             fn demo(text: String) {

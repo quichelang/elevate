@@ -292,6 +292,7 @@ struct LoweringState {
 enum ExprPosition {
     Value,
     CallArgOwned,
+    CallArgBorrowed,
     OwnedOperand,
     ProjectionBase,
 }
@@ -4141,8 +4142,12 @@ fn lower_expr_with_context(
                     .enumerate()
                     .map(|(index, arg)| {
                         if arg_modes.get(index) == Some(&CallArgMode::Borrowed) {
-                            let lowered =
-                                lower_expr_with_context(arg, context, ExprPosition::Value, state);
+                            let lowered = lower_expr_with_context(
+                                arg,
+                                context,
+                                ExprPosition::CallArgBorrowed,
+                                state,
+                            );
                             borrow_expr(lowered)
                         } else {
                             lower_expr_with_context(arg, context, ExprPosition::CallArgOwned, state)
@@ -4159,7 +4164,13 @@ fn lower_expr_with_context(
                 .collect(),
         },
         TypedExprKind::Field { base, field } => {
-            let remaining_conflicting_before = if position == ExprPosition::ProjectionBase {
+            let remaining_conflicting_before = if matches!(
+                position,
+                ExprPosition::ProjectionBase | ExprPosition::CallArgBorrowed
+            ) {
+                if position == ExprPosition::CallArgBorrowed {
+                    context.ownership_plan.consume_expr(expr);
+                }
                 0
             } else {
                 let remaining = context.ownership_plan.remaining_conflicting_for_expr(expr);
@@ -4197,7 +4208,13 @@ fn lower_expr_with_context(
             }
         }
         TypedExprKind::Index { base, index } => {
-            let remaining_conflicting_before = if position == ExprPosition::ProjectionBase {
+            let remaining_conflicting_before = if matches!(
+                position,
+                ExprPosition::ProjectionBase | ExprPosition::CallArgBorrowed
+            ) {
+                if position == ExprPosition::CallArgBorrowed {
+                    context.ownership_plan.consume_expr(expr);
+                }
                 0
             } else {
                 let remaining = context.ownership_plan.remaining_conflicting_for_expr(expr);
@@ -4461,6 +4478,12 @@ fn lower_path_expr(
     if position == ExprPosition::ProjectionBase {
         return RustExpr::Path(path.to_vec());
     }
+    if position == ExprPosition::CallArgBorrowed {
+        if path.len() == 1 {
+            context.ownership_plan.consume_expr(expr);
+        }
+        return RustExpr::Path(path.to_vec());
+    }
     if path.len() != 1 {
         return RustExpr::Path(path.to_vec());
     }
@@ -4703,13 +4726,13 @@ fn resolve_heuristic_path_call_arg_modes(
     let Some(name) = path.last() else {
         return None;
     };
-    if !call_name_suggests_read_only(name) {
+    if !call_name_suggests_read_only(name) && !call_name_prefers_borrow_heuristic(name) {
         return None;
     }
     let mut modes = vec![CallArgMode::Owned; args.len()];
     let mut borrowed_any = false;
     for (index, arg) in args.iter().enumerate() {
-        if method_arg_should_borrow_heuristic(name, arg, context, state, false) {
+        if path_arg_should_borrow_heuristic(name, arg, context, state, true) {
             set_borrowed(&mut modes, index);
             borrowed_any = true;
         }
@@ -4848,6 +4871,66 @@ fn method_arg_should_borrow_heuristic(
     type_should_prefer_borrow(&arg.ty, state)
 }
 
+fn path_arg_should_borrow_heuristic(
+    callee_name: &str,
+    arg: &TypedExpr,
+    context: &LoweringContext,
+    state: &LoweringState,
+    allow_nominal: bool,
+) -> bool {
+    let remaining_conflicting = context.ownership_plan.remaining_conflicting_for_expr(arg);
+    let optimistic_borrow_call = call_name_prefers_borrow_heuristic(callee_name);
+    let read_only_call = call_name_suggests_read_only(callee_name);
+    if !read_only_call && !optimistic_borrow_call {
+        return false;
+    }
+
+    if read_only_call && type_is_string_like(&arg.ty) {
+        return true;
+    }
+
+    if optimistic_borrow_call && !read_only_call {
+        if !expr_is_borrowable_place(arg) {
+            return false;
+        }
+        if !is_known_borrow_container_type(&arg.ty) {
+            return false;
+        }
+        return true;
+    }
+
+    if remaining_conflicting <= 1 {
+        return false;
+    }
+
+    if optimistic_borrow_call && !expr_is_borrowable_place(arg) {
+        return false;
+    }
+
+    if is_known_borrow_container_type(&arg.ty) {
+        return type_should_prefer_borrow(&arg.ty, state);
+    }
+
+    let ty = arg.ty.trim();
+    let head = last_path_segment(ty);
+    if allow_nominal && is_probably_nominal_type(head) && !is_copy_primitive_type(head) {
+        return false;
+    }
+
+    if !allow_nominal {
+        return false;
+    }
+
+    false
+}
+
+fn expr_is_borrowable_place(expr: &TypedExpr) -> bool {
+    matches!(
+        expr.kind,
+        TypedExprKind::Path(_) | TypedExprKind::Field { .. } | TypedExprKind::Index { .. }
+    )
+}
+
 fn type_should_prefer_borrow(ty: &str, state: &LoweringState) -> bool {
     let ty = ty.trim();
     let (head, args) = split_type_head_and_args(ty);
@@ -4947,6 +5030,23 @@ fn call_name_suggests_read_only(name: &str) -> bool {
     ) || name.starts_with("is_")
         || name.starts_with("has_")
         || name.starts_with("as_")
+}
+
+fn call_name_prefers_borrow_heuristic(name: &str) -> bool {
+    if name.starts_with("draw_")
+        || name.starts_with("render_")
+        || name.starts_with("display_")
+        || name.starts_with("show_")
+        || name.starts_with("print_")
+        || name.starts_with("log_")
+        || name.starts_with("trace_")
+        || name.starts_with("debug_")
+        || name.starts_with("inspect_")
+        || name.ends_with("_scene")
+    {
+        return true;
+    }
+    false
 }
 
 fn method_name_suggests_consuming(name: &str) -> bool {

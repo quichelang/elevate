@@ -3,6 +3,10 @@ name = "neon-boardwalk"
 version = "0.1.0"
 edition = "2024"
 
+[dependencies]
+font8x8 = "0.3"
+minifb = "0.27"
+
 [lib]
 name = "neon_boardwalk"
 path = "src/lib.rs"
