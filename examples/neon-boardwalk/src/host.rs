@@ -8,6 +8,7 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ab_glyph::{point, Font, FontArc, PxScale, ScaleFont};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 use minifb::{Key as MinifbKey, KeyRepeat, Window as MinifbWindow, WindowOptions};
 use sdl2::event::Event;
@@ -98,6 +99,7 @@ thread_local! {
 }
 
 static SPRITES: OnceLock<SpritePack> = OnceLock::new();
+static UI_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
 
 pub fn runtime_start() -> i64 {
     // Window mode is opt-in while runtime/thread-safety work is in progress.
@@ -1443,6 +1445,59 @@ fn draw_label(buffer: &mut [u32], width: i32, height: i32, x: i32, y: i32, scale
     }
 }
 
+fn ui_font() -> Option<&'static FontArc> {
+    UI_FONT
+        .get_or_init(|| {
+            FontArc::try_from_slice(include_bytes!("assets/fonts/Bungee-Regular.ttf")).ok()
+        })
+        .as_ref()
+}
+
+fn draw_label_ttf(
+    buffer: &mut [u32],
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    scale: i32,
+    color: u32,
+    text: &str,
+) -> bool {
+    let Some(font) = ui_font() else {
+        return false;
+    };
+
+    let px = (scale.max(1) as f32) * 11.5;
+    let glyph_scale = PxScale::from(px);
+    let scaled_font = font.as_scaled(glyph_scale);
+    let mut caret = point(x as f32, y as f32 + scaled_font.ascent());
+
+    for ch in text.chars() {
+        if ch == '\n' {
+            caret.x = x as f32;
+            caret.y += scaled_font.height() * 1.1;
+            continue;
+        }
+
+        let glyph_id = scaled_font.glyph_id(ch);
+        let glyph = glyph_id.with_scale_and_position(glyph_scale, caret);
+        if let Some(outlined) = font.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            outlined.draw(|gx, gy, coverage| {
+                let px = bounds.min.x as i32 + gx as i32;
+                let py = bounds.min.y as i32 + gy as i32;
+                if px < 0 || py < 0 || px >= width || py >= height {
+                    return;
+                }
+                let idx = py as usize * width as usize + px as usize;
+                buffer[idx] = blend(buffer[idx], color, coverage);
+            });
+        }
+        caret.x += scaled_font.h_advance(glyph_id);
+    }
+    true
+}
+
 fn draw_label_ornate(
     buffer: &mut [u32],
     width: i32,
@@ -1455,7 +1510,40 @@ fn draw_label_ornate(
     highlight: u32,
     text: &str,
 ) {
-    draw_label(buffer, width, height, x + scale / 2 + 1, y + scale / 2 + 1, scale, shadow, text);
+    if draw_label_ttf(
+        buffer,
+        width,
+        height,
+        x + scale / 2 + 1,
+        y + scale / 2 + 1,
+        scale,
+        shadow,
+        text,
+    ) {
+        let _ = draw_label_ttf(
+            buffer,
+            width,
+            height,
+            x - 1,
+            y - 1,
+            scale,
+            highlight,
+            text,
+        );
+        let _ = draw_label_ttf(buffer, width, height, x, y, scale, color, text);
+        return;
+    }
+
+    draw_label(
+        buffer,
+        width,
+        height,
+        x + scale / 2 + 1,
+        y + scale / 2 + 1,
+        scale,
+        shadow,
+        text,
+    );
     draw_label(buffer, width, height, x - 1, y - 1, scale, highlight, text);
     draw_label(buffer, width, height, x, y, scale, color, text);
 }
