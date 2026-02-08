@@ -1,0 +1,2 @@
+allow crate::gfx
+allow crate::gfx::Canvas

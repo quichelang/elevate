@@ -1,0 +1,129 @@
+pub struct Pixel {
+    ch: char;
+    fg: i64;
+    bg: i64;
+    bold: bool;
+}
+
+pub struct Canvas {
+    width: i64;
+    height: i64;
+    cells: Vec<Pixel>;
+}
+
+impl Canvas {
+    pub fn new(width: i64, height: i64, fg: i64, bg: i64) -> Self {
+        let cells: Vec<Pixel> = [];
+        for row in 0..height {
+            for col in 0..width {
+                std::mem::drop(row);
+                std::mem::drop(col);
+                cells.push(make_pixel(' ', fg, bg, false));
+            }
+        }
+        Canvas {
+            width: width;
+            height: height;
+            cells: cells;
+        }
+    }
+
+    pub fn put(self: Self, x: i64, y: i64, ch: char, fg: i64, bg: i64, bold: bool) -> Self {
+        if x < 0 or x >= self.width {
+            return self;
+        }
+        if y < 0 or y >= self.height {
+            return self;
+        }
+        const idx = canvas_index(self.width, x, y);
+        self.cells[idx] = make_pixel(ch, fg, bg, bold);
+        self
+    }
+
+    pub fn text(self: Self, x: i64, y: i64, text: String, fg: i64, bg: i64, bold: bool) -> Self {
+        for ch in text.chars() {
+            self = Canvas::put(self, x, y, ch, fg, bg, bold);
+            x += 1;
+        }
+        self
+    }
+
+    pub fn text_top_right(self: Self, y: i64, text: String, fg: i64, bg: i64, bold: bool) -> Self {
+        let width = Canvas::text_width(text);
+        let x = self.width - width;
+        let clamped_x = x;
+        if clamped_x < 0 {
+            clamped_x = 0;
+        }
+        Canvas::text(self, clamped_x, y, text, fg, bg, bold)
+    }
+
+    pub fn hline(self: Self, x: i64, y: i64, len: i64, ch: char, fg: i64, bg: i64, bold: bool) -> Self {
+        for offset in 0..len {
+            self = Canvas::put(self, x + offset, y, ch, fg, bg, bold);
+        }
+        self
+    }
+
+    pub fn vline(self: Self, x: i64, y: i64, len: i64, ch: char, fg: i64, bg: i64, bold: bool) -> Self {
+        for offset in 0..len {
+            self = Canvas::put(self, x, y + offset, ch, fg, bg, bold);
+        }
+        self
+    }
+
+    pub fn fill_rect(self: Self, x: i64, y: i64, width: i64, height: i64, ch: char, fg: i64, bg: i64, bold: bool) -> Self {
+        for row in 0..height {
+            self = Canvas::hline(self, x, y + row, width, ch, fg, bg, bold);
+        }
+        self
+    }
+
+    pub fn to_ansi(self: Self) -> String {
+        let out: String = String::from("\x1b[H");
+        for row in 0..self.height {
+            out.push_str(format!("\x1b[{};1H", row + 1));
+            for col in 0..self.width {
+                const idx = canvas_index(self.width, col, row);
+                out.push_str(style_escape(
+                    self.cells[idx].fg,
+                    self.cells[idx].bg,
+                    self.cells[idx].bold
+                ));
+                out.push_str(format!("{}", self.cells[idx].ch));
+            }
+            out.push_str("\x1b[0m\x1b[K");
+        }
+        out
+    }
+}
+
+fn make_pixel(ch: char, fg: i64, bg: i64, bold: bool) -> Pixel {
+    Pixel {
+        ch: ch;
+        fg: fg;
+        bg: bg;
+        bold: bold;
+    }
+}
+
+fn canvas_index(width: i64, x: i64, y: i64) -> i64 {
+    y * width + x
+}
+
+fn style_escape(fg: i64, bg: i64, bold: bool) -> String {
+    if bold {
+        return format!("\x1b[1;38;5;{};48;5;{}m", fg, bg);
+    }
+    format!("\x1b[22;38;5;{};48;5;{}m", fg, bg)
+}
+
+impl Canvas {
+    fn text_width(text: String) -> i64 {
+        let width = 0;
+        for _ in text.chars() {
+            width += 1;
+        }
+        width
+    }
+}
