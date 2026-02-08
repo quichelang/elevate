@@ -8,7 +8,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use font8x8::{BASIC_FONTS, UnicodeFonts};
-use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use minifb::{Key as MinifbKey, KeyRepeat, Window as MinifbWindow, WindowOptions};
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+use sdl2::pixels::PixelFormatEnum;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyEvent {
@@ -51,9 +54,9 @@ struct WindowState {
 
 #[derive(Debug)]
 struct TerminalState {
-    _raw: RawModeGuard,
+    _raw: Option<RawModeGuard>,
     rx: Receiver<KeyEvent>,
-    _reader_handle: JoinHandle<()>,
+    _reader_handle: Option<JoinHandle<()>>,
 }
 
 #[derive(Debug)]
@@ -71,9 +74,20 @@ struct RuntimeRegistry {
 static RUNTIMES: OnceLock<Mutex<RuntimeRegistry>> = OnceLock::new();
 
 pub fn runtime_start() -> i64 {
-    let backend = start_window_runtime()
-        .map(RuntimeBackend::Window)
-        .unwrap_or_else(|| RuntimeBackend::Terminal(start_terminal_runtime()));
+    // Window mode is opt-in while runtime/thread-safety work is in progress.
+    // If window init fails, we transparently fall back to terminal mode.
+    let window_opt_in = std::env::var("ELEVATE_NEON_WINDOW")
+        .ok()
+        .map(|value| value == "1")
+        .unwrap_or(false);
+    let enable_window_backend = window_opt_in;
+    let backend = if enable_window_backend {
+        start_window_runtime()
+            .map(RuntimeBackend::Window)
+            .unwrap_or_else(|| RuntimeBackend::Terminal(start_terminal_runtime()))
+    } else {
+        RuntimeBackend::Terminal(start_terminal_runtime())
+    };
 
     let mut registry = runtimes().lock().expect("runtime registry mutex poisoned");
     registry.next_id += 1;
@@ -165,13 +179,26 @@ pub fn runtime_now_millis() -> i64 {
 }
 
 fn start_window_runtime() -> Option<WindowState> {
+    let preferred = std::env::var("ELEVATE_NEON_BACKEND")
+        .ok()
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| "sdl".to_string());
+
+    if preferred == "minifb" {
+        start_minifb_window_runtime().or_else(start_sdl_window_runtime)
+    } else {
+        start_sdl_window_runtime().or_else(start_minifb_window_runtime)
+    }
+}
+
+fn start_minifb_window_runtime() -> Option<WindowState> {
     let (key_tx, key_rx) = mpsc::channel::<KeyEvent>();
     let (render_tx, render_rx) = mpsc::channel::<RenderPacket>();
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     let (init_tx, init_rx) = mpsc::channel::<bool>();
 
     let handle = thread::spawn(move || {
-        run_window_loop(key_tx, render_rx, shutdown_rx, init_tx);
+        run_minifb_window_loop(key_tx, render_rx, shutdown_rx, init_tx);
     });
 
     match init_rx.recv_timeout(Duration::from_secs(2)) {
@@ -189,7 +216,32 @@ fn start_window_runtime() -> Option<WindowState> {
     }
 }
 
-fn run_window_loop(
+fn start_sdl_window_runtime() -> Option<WindowState> {
+    let (key_tx, key_rx) = mpsc::channel::<KeyEvent>();
+    let (render_tx, render_rx) = mpsc::channel::<RenderPacket>();
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    let (init_tx, init_rx) = mpsc::channel::<bool>();
+
+    let handle = thread::spawn(move || {
+        run_sdl_window_loop(key_tx, render_rx, shutdown_rx, init_tx);
+    });
+
+    match init_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(true) => Some(WindowState {
+            key_rx,
+            render_tx,
+            shutdown_tx,
+            thread_handle: handle,
+        }),
+        _ => {
+            let _ = shutdown_tx.send(());
+            let _ = handle.join();
+            None
+        }
+    }
+}
+
+fn run_minifb_window_loop(
     key_tx: Sender<KeyEvent>,
     render_rx: Receiver<RenderPacket>,
     shutdown_rx: Receiver<()>,
@@ -198,7 +250,7 @@ fn run_window_loop(
     const WIDTH: usize = 1280;
     const HEIGHT: usize = 840;
 
-    let mut window = match Window::new(
+    let mut window = match MinifbWindow::new(
         "Neon Boardwalk - Arcade Renderer",
         WIDTH,
         HEIGHT,
@@ -240,32 +292,184 @@ fn run_window_loop(
     let _ = key_tx.send(KeyEvent::Quit);
 }
 
-fn pump_window_keys(window: &Window, key_tx: &Sender<KeyEvent>) {
+fn run_sdl_window_loop(
+    key_tx: Sender<KeyEvent>,
+    render_rx: Receiver<RenderPacket>,
+    shutdown_rx: Receiver<()>,
+    init_tx: Sender<bool>,
+) {
+    const WIDTH: u32 = 1280;
+    const HEIGHT: u32 = 840;
+
+    let sdl = match sdl2::init() {
+        Ok(ctx) => ctx,
+        Err(_) => {
+            let _ = init_tx.send(false);
+            return;
+        }
+    };
+    let video = match sdl.video() {
+        Ok(video) => video,
+        Err(_) => {
+            let _ = init_tx.send(false);
+            return;
+        }
+    };
+    let window = match video
+        .window("Neon Boardwalk - SDL/OpenGL Renderer", WIDTH, HEIGHT)
+        .position_centered()
+        .allow_highdpi()
+        .opengl()
+        .build()
+    {
+        Ok(window) => window,
+        Err(_) => {
+            let _ = init_tx.send(false);
+            return;
+        }
+    };
+    let mut canvas = match window.into_canvas().accelerated().present_vsync().build() {
+        Ok(canvas) => canvas,
+        Err(_) => {
+            let _ = init_tx.send(false);
+            return;
+        }
+    };
+    let texture_creator = canvas.texture_creator();
+    let mut texture =
+        match texture_creator.create_texture_streaming(PixelFormatEnum::RGBA8888, WIDTH, HEIGHT) {
+            Ok(texture) => texture,
+            Err(_) => {
+                let _ = init_tx.send(false);
+                return;
+            }
+        };
+    let mut event_pump = match sdl.event_pump() {
+        Ok(pump) => pump,
+        Err(_) => {
+            let _ = init_tx.send(false);
+            return;
+        }
+    };
+
+    let _ = init_tx.send(true);
+    let mut frame = RenderPacket::default();
+    let mut buffer = vec![0u32; WIDTH as usize * HEIGHT as usize];
+
+    'running: loop {
+        if shutdown_rx.try_recv().is_ok() {
+            break;
+        }
+
+        while let Ok(next) = render_rx.try_recv() {
+            frame = next;
+        }
+
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. } => break 'running,
+                Event::KeyDown {
+                    keycode: Some(keycode),
+                    ..
+                } => {
+                    if let Some(mapped) = map_sdl_key(keycode) {
+                        let _ = key_tx.send(mapped);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        draw_scene(&mut buffer, WIDTH as i32, HEIGHT as i32, &frame);
+        if texture
+            .with_lock(None, |pixels: &mut [u8], pitch: usize| {
+                for y in 0..HEIGHT as usize {
+                    let src = y * WIDTH as usize;
+                    let dst = y * pitch;
+                    for x in 0..WIDTH as usize {
+                        let color = buffer[src + x];
+                        let offset = dst + x * 4;
+                        pixels[offset] = ((color >> 16) & 0xFF) as u8;
+                        pixels[offset + 1] = ((color >> 8) & 0xFF) as u8;
+                        pixels[offset + 2] = (color & 0xFF) as u8;
+                        pixels[offset + 3] = 0xFF;
+                    }
+                }
+            })
+            .is_err()
+        {
+            break;
+        }
+
+        canvas.clear();
+        if canvas.copy(&texture, None, None).is_err() {
+            break;
+        }
+        canvas.present();
+    }
+
+    let _ = key_tx.send(KeyEvent::Quit);
+}
+
+fn map_sdl_key(key: Keycode) -> Option<KeyEvent> {
+    match key {
+        Keycode::Up | Keycode::W => Some(KeyEvent::Up),
+        Keycode::Down | Keycode::S => Some(KeyEvent::Down),
+        Keycode::Left | Keycode::A => Some(KeyEvent::Left),
+        Keycode::Right | Keycode::D => Some(KeyEvent::Right),
+        Keycode::C => Some(KeyEvent::Check),
+        Keycode::N => Some(KeyEvent::Next),
+        Keycode::R => Some(KeyEvent::Reset),
+        Keycode::V => Some(KeyEvent::ToggleRenderer),
+        Keycode::G => Some(KeyEvent::ToggleDebug),
+        Keycode::H => Some(KeyEvent::Hint),
+        Keycode::P => Some(KeyEvent::Save),
+        Keycode::O => Some(KeyEvent::Load),
+        Keycode::Space | Keycode::Backspace | Keycode::Delete | Keycode::Num0 => {
+            Some(KeyEvent::Clear)
+        }
+        Keycode::Num1 | Keycode::Kp1 => Some(KeyEvent::Digit(1)),
+        Keycode::Num2 | Keycode::Kp2 => Some(KeyEvent::Digit(2)),
+        Keycode::Num3 | Keycode::Kp3 => Some(KeyEvent::Digit(3)),
+        Keycode::Num4 | Keycode::Kp4 => Some(KeyEvent::Digit(4)),
+        Keycode::Num5 | Keycode::Kp5 => Some(KeyEvent::Digit(5)),
+        Keycode::Num6 | Keycode::Kp6 => Some(KeyEvent::Digit(6)),
+        Keycode::Num7 | Keycode::Kp7 => Some(KeyEvent::Digit(7)),
+        Keycode::Num8 | Keycode::Kp8 => Some(KeyEvent::Digit(8)),
+        Keycode::Num9 | Keycode::Kp9 => Some(KeyEvent::Digit(9)),
+        Keycode::Escape | Keycode::Q => Some(KeyEvent::Quit),
+        _ => None,
+    }
+}
+
+fn pump_window_keys(window: &MinifbWindow, key_tx: &Sender<KeyEvent>) {
     for key in window.get_keys_pressed(KeyRepeat::Yes) {
         let mapped = match key {
-            Key::Up | Key::W => Some(KeyEvent::Up),
-            Key::Down | Key::S => Some(KeyEvent::Down),
-            Key::Left | Key::A => Some(KeyEvent::Left),
-            Key::Right | Key::D => Some(KeyEvent::Right),
-            Key::C => Some(KeyEvent::Check),
-            Key::N => Some(KeyEvent::Next),
-            Key::R => Some(KeyEvent::Reset),
-            Key::V => Some(KeyEvent::ToggleRenderer),
-            Key::G => Some(KeyEvent::ToggleDebug),
-            Key::H => Some(KeyEvent::Hint),
-            Key::P => Some(KeyEvent::Save),
-            Key::O => Some(KeyEvent::Load),
-            Key::Space | Key::Backspace | Key::Delete | Key::Key0 => Some(KeyEvent::Clear),
-            Key::Key1 => Some(KeyEvent::Digit(1)),
-            Key::Key2 => Some(KeyEvent::Digit(2)),
-            Key::Key3 => Some(KeyEvent::Digit(3)),
-            Key::Key4 => Some(KeyEvent::Digit(4)),
-            Key::Key5 => Some(KeyEvent::Digit(5)),
-            Key::Key6 => Some(KeyEvent::Digit(6)),
-            Key::Key7 => Some(KeyEvent::Digit(7)),
-            Key::Key8 => Some(KeyEvent::Digit(8)),
-            Key::Key9 => Some(KeyEvent::Digit(9)),
-            Key::Escape | Key::Q => Some(KeyEvent::Quit),
+            MinifbKey::Up | MinifbKey::W => Some(KeyEvent::Up),
+            MinifbKey::Down | MinifbKey::S => Some(KeyEvent::Down),
+            MinifbKey::Left | MinifbKey::A => Some(KeyEvent::Left),
+            MinifbKey::Right | MinifbKey::D => Some(KeyEvent::Right),
+            MinifbKey::C => Some(KeyEvent::Check),
+            MinifbKey::N => Some(KeyEvent::Next),
+            MinifbKey::R => Some(KeyEvent::Reset),
+            MinifbKey::V => Some(KeyEvent::ToggleRenderer),
+            MinifbKey::G => Some(KeyEvent::ToggleDebug),
+            MinifbKey::H => Some(KeyEvent::Hint),
+            MinifbKey::P => Some(KeyEvent::Save),
+            MinifbKey::O => Some(KeyEvent::Load),
+            MinifbKey::Space | MinifbKey::Backspace | MinifbKey::Delete | MinifbKey::Key0 => {
+                Some(KeyEvent::Clear)
+            }
+            MinifbKey::Key1 => Some(KeyEvent::Digit(1)),
+            MinifbKey::Key2 => Some(KeyEvent::Digit(2)),
+            MinifbKey::Key3 => Some(KeyEvent::Digit(3)),
+            MinifbKey::Key4 => Some(KeyEvent::Digit(4)),
+            MinifbKey::Key5 => Some(KeyEvent::Digit(5)),
+            MinifbKey::Key6 => Some(KeyEvent::Digit(6)),
+            MinifbKey::Key7 => Some(KeyEvent::Digit(7)),
+            MinifbKey::Key8 => Some(KeyEvent::Digit(8)),
+            MinifbKey::Key9 => Some(KeyEvent::Digit(9)),
+            MinifbKey::Escape | MinifbKey::Q => Some(KeyEvent::Quit),
             _ => None,
         };
         if let Some(event) = mapped {
@@ -652,7 +856,7 @@ fn start_terminal_runtime() -> TerminalState {
     let _ = write!(out, "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l");
     let _ = out.flush();
 
-    let raw = RawModeGuard::new().expect("failed to enter raw mode");
+    let raw = RawModeGuard::new().ok();
     let (tx, rx) = mpsc::channel::<KeyEvent>();
 
     let handle = thread::spawn(move || {
@@ -662,7 +866,10 @@ fn start_terminal_runtime() -> TerminalState {
 
         loop {
             match lock.read(&mut byte) {
-                Ok(0) => continue,
+                Ok(0) => {
+                    thread::sleep(Duration::from_millis(8));
+                    continue;
+                }
                 Ok(_) => {
                     if let Some(key) = decode_key(byte[0], &mut lock)
                         && tx.send(key).is_err()
@@ -679,7 +886,7 @@ fn start_terminal_runtime() -> TerminalState {
     TerminalState {
         _raw: raw,
         rx,
-        _reader_handle: handle,
+        _reader_handle: Some(handle),
     }
 }
 
