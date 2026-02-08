@@ -441,7 +441,11 @@ fn emit_pattern(pattern: &RustPattern) -> String {
             items.extend(suffix.iter().map(emit_pattern));
             format!("[{}]", items.join(", "))
         }
-        RustPattern::Or(items) => items.iter().map(emit_pattern).collect::<Vec<_>>().join(" | "),
+        RustPattern::Or(items) => items
+            .iter()
+            .map(emit_pattern)
+            .collect::<Vec<_>>()
+            .join(" | "),
         RustPattern::BindingAt { name, pattern } => {
             format!("{name} @ {}", emit_pattern(pattern))
         }
@@ -478,7 +482,11 @@ fn emit_pattern(pattern: &RustPattern) -> String {
         RustPattern::Variant { path, payload } => {
             if let Some(payload) = payload {
                 if let RustPattern::Tuple(items) = payload.as_ref() {
-                    let inner = items.iter().map(emit_pattern).collect::<Vec<_>>().join(", ");
+                    let inner = items
+                        .iter()
+                        .map(emit_pattern)
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     format!("{}({inner})", path.join("::"))
                 } else {
                     format!("{}({})", path.join("::"), emit_pattern(payload))
@@ -633,7 +641,10 @@ fn emit_stmt_with_indent(
             out.push('\n');
         }
         RustStmt::While { condition, body } => {
-            out.push_str(&format!("{pad}while {} {{\n", emit_condition_expr(condition)));
+            out.push_str(&format!(
+                "{pad}while {} {{\n",
+                emit_condition_expr(condition)
+            ));
             for nested in body {
                 emit_stmt_with_indent(nested, out, indent + 1, mutated);
             }
@@ -731,7 +742,9 @@ fn emit_condition_expr(expr: &RustExpr) -> String {
 
 fn condition_clause_count(expr: &RustExpr) -> usize {
     match expr {
-        RustExpr::Binary { op, left, right } if matches!(op, RustBinaryOp::And | RustBinaryOp::Or) => {
+        RustExpr::Binary { op, left, right }
+            if matches!(op, RustBinaryOp::And | RustBinaryOp::Or) =>
+        {
             condition_clause_count(left) + condition_clause_count(right)
         }
         _ => 1,
@@ -772,10 +785,7 @@ fn collect_mutated_paths_in_stmts(stmts: &[RustStmt]) -> std::collections::HashS
     out
 }
 
-fn collect_mutated_paths_in_stmt(
-    stmt: &RustStmt,
-    out: &mut std::collections::HashSet<String>,
-) {
+fn collect_mutated_paths_in_stmt(stmt: &RustStmt, out: &mut std::collections::HashSet<String>) {
     match stmt {
         RustStmt::Assign { target, value, .. } => {
             collect_mutated_paths_in_target(target, out);
@@ -817,11 +827,7 @@ fn collect_mutated_paths_in_stmt(
         RustStmt::Const(def) => collect_mutated_paths_in_expr(&def.value, out),
         RustStmt::DestructureConst { value, .. } => collect_mutated_paths_in_expr(value, out),
         RustStmt::Return(Some(expr)) => collect_mutated_paths_in_expr(expr, out),
-        RustStmt::Return(None)
-        | RustStmt::Break
-        | RustStmt::Continue
-        | RustStmt::Raw(_)
-         => {}
+        RustStmt::Return(None) | RustStmt::Break | RustStmt::Continue | RustStmt::Raw(_) => {}
         RustStmt::Expr(expr) => collect_mutated_paths_in_expr(expr, out),
     }
 }

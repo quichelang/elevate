@@ -1,11 +1,11 @@
+use crate::CompileOptions;
+use crate::ast::{Block, Expr, Item, Module, Stmt, StructLiteralField};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{collections::BTreeSet, fmt::Write as _};
-use crate::ast::{Block, Expr, Item, Module, Stmt, StructLiteralField};
-use crate::CompileOptions;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildSummary {
@@ -213,7 +213,10 @@ fn merge_direct_borrow_hints(
         .map(|hint| {
             (
                 hint.path.clone(),
-                hint.borrowed_arg_indexes.iter().copied().collect::<BTreeSet<_>>(),
+                hint.borrowed_arg_indexes
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -274,9 +277,12 @@ fn infer_direct_borrow_hints_from_cargo_error(
                 let candidate = strip_ansi(lines[probe]);
                 if let Some((snippet_line, suggested_code)) = parse_snippet_line(&candidate) {
                     if let Some((path, fallback_line)) = &current_location {
-                        let line_no = if snippet_line > 0 { snippet_line } else { *fallback_line };
-                        if let Some(original) =
-                            source_line(path, line_no, &mut source_cache)
+                        let line_no = if snippet_line > 0 {
+                            snippet_line
+                        } else {
+                            *fallback_line
+                        };
+                        if let Some(original) = source_line(path, line_no, &mut source_cache)
                             && let Some((callee, borrowed_indexes)) =
                                 infer_borrow_indexes_from_suggestion(&original, &suggested_code)
                         {
@@ -338,9 +344,14 @@ fn infer_forced_clone_places_from_cargo_error(stderr: &str, generated_root: &Pat
                 let candidate = strip_ansi(lines[probe]);
                 if let Some((snippet_line, suggested_code)) = parse_snippet_line(&candidate) {
                     if let Some((path, fallback_line)) = &current_location {
-                        let line_no = if snippet_line > 0 { snippet_line } else { *fallback_line };
+                        let line_no = if snippet_line > 0 {
+                            snippet_line
+                        } else {
+                            *fallback_line
+                        };
                         if let Some(original) = source_line(path, line_no, &mut source_cache) {
-                            for place in infer_clone_places_from_suggestion(&original, &suggested_code)
+                            for place in
+                                infer_clone_places_from_suggestion(&original, &suggested_code)
                             {
                                 hinted.insert(place);
                             }
@@ -434,7 +445,10 @@ fn source_line(
     }
     if !cache.contains_key(path) {
         let content = fs::read_to_string(path).ok()?;
-        let lines = content.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+        let lines = content
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
         cache.insert(path.to_path_buf(), lines);
     }
     cache
@@ -454,7 +468,8 @@ fn infer_borrow_indexes_from_suggestion(
     }
 
     let mut borrowed_indexes = Vec::new();
-    for (index, (orig_arg, suggested_arg)) in orig_args.iter().zip(suggested_args.iter()).enumerate()
+    for (index, (orig_arg, suggested_arg)) in
+        orig_args.iter().zip(suggested_args.iter()).enumerate()
     {
         let orig_trimmed = orig_arg.trim();
         let suggested_trimmed = suggested_arg.trim();
@@ -521,7 +536,12 @@ fn parse_first_call(line: &str) -> Option<(String, Vec<String>)> {
             continue;
         }
         let mut end = offset;
-        while end > 0 && line[..end].chars().last().is_some_and(|c| c.is_ascii_whitespace()) {
+        while end > 0
+            && line[..end]
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_whitespace())
+        {
             end -= line[..end].chars().last()?.len_utf8();
         }
         let mut start = end;
@@ -582,7 +602,11 @@ fn split_top_level_call_args(input: &str) -> Vec<&str> {
             '}' => brace_depth = brace_depth.saturating_sub(1),
             '<' => angle_depth += 1,
             '>' => angle_depth = angle_depth.saturating_sub(1),
-            ',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 && angle_depth == 0 => {
+            ',' if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
+                && angle_depth == 0 =>
+            {
                 args.push(input[start..idx].trim());
                 start = idx + 1;
             }
@@ -644,9 +668,9 @@ fn process_src_dir(
             let source = fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
             validate_interop_contract_for_source(&source, &path, interop_contract)?;
-            let output = compile_source_with_interop_contract(&source, interop_contract, options).map_err(|error| {
-                format_compile_error_with_context(&path, &source, &error)
-            })?;
+            let output =
+                compile_source_with_interop_contract(&source, interop_contract, options)
+                    .map_err(|error| format_compile_error_with_context(&path, &source, &error))?;
             let mut out_path = target.clone();
             out_path.set_extension("rs");
             if out_path.exists() {
@@ -759,12 +783,16 @@ fn inject_generated_module_declarations(
     Ok(())
 }
 
-fn inject_module_declarations_into_file(path: &Path, modules: &BTreeSet<String>) -> Result<(), String> {
+fn inject_module_declarations_into_file(
+    path: &Path,
+    modules: &BTreeSet<String>,
+) -> Result<(), String> {
     if modules.is_empty() {
         return Ok(());
     }
     let existing = if path.is_file() {
-        fs::read_to_string(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?
+        fs::read_to_string(path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?
     } else {
         String::new()
     };
@@ -817,7 +845,8 @@ fn compile_source_with_interop_contract(
         return crate::compile_source_with_options(source, options);
     }
 
-    let tokens = crate::lexer::lex(source).map_err(|diagnostics| crate::CompileError { diagnostics })?;
+    let tokens =
+        crate::lexer::lex(source).map_err(|diagnostics| crate::CompileError { diagnostics })?;
     let mut module = crate::parser::parse_module(tokens)
         .map_err(|diagnostics| crate::CompileError { diagnostics })?;
     let validation = validate_adapter_callsites(&module, contract);
@@ -889,7 +918,11 @@ fn validate_item_adapter_calls(
         Item::Static(def) => {
             validate_expr_adapter_calls(&def.value, alias_arity, alias_param_types, diagnostics)
         }
-        Item::Struct(_) | Item::Enum(_) | Item::Trait(_) | Item::RustUse(_) | Item::RustBlock(_) => {}
+        Item::Struct(_)
+        | Item::Enum(_)
+        | Item::Trait(_)
+        | Item::RustUse(_)
+        | Item::RustBlock(_) => {}
     }
 }
 
@@ -918,7 +951,12 @@ fn validate_stmt_adapter_calls(
             validate_expr_adapter_calls(value, alias_arity, alias_param_types, diagnostics)
         }
         Stmt::Assign { target, value, .. } => {
-            validate_assign_target_adapter_calls(target, alias_arity, alias_param_types, diagnostics);
+            validate_assign_target_adapter_calls(
+                target,
+                alias_arity,
+                alias_param_types,
+                diagnostics,
+            );
             validate_expr_adapter_calls(value, alias_arity, alias_param_types, diagnostics);
         }
         Stmt::Return(Some(expr)) => {
@@ -1017,7 +1055,12 @@ fn validate_expr_adapter_calls(
         Expr::Match { scrutinee, arms } => {
             validate_expr_adapter_calls(scrutinee, alias_arity, alias_param_types, diagnostics);
             for arm in arms {
-                validate_expr_adapter_calls(&arm.value, alias_arity, alias_param_types, diagnostics);
+                validate_expr_adapter_calls(
+                    &arm.value,
+                    alias_arity,
+                    alias_param_types,
+                    diagnostics,
+                );
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) => {
@@ -1129,7 +1172,10 @@ fn rewrite_module_adapter_calls(module: &mut Module, contract: &InteropContract)
         .map(|adapter| {
             (
                 adapter.alias.clone(),
-                vec!["elevate_interop".to_string(), adapter_fn_name(&adapter.alias)],
+                vec![
+                    "elevate_interop".to_string(),
+                    adapter_fn_name(&adapter.alias),
+                ],
             )
         })
         .collect::<HashMap<_, _>>();
@@ -1149,7 +1195,11 @@ fn rewrite_item_adapter_calls(item: &mut Item, adapter_map: &HashMap<String, Vec
         }
         Item::Const(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
         Item::Static(def) => rewrite_expr_adapter_calls(&mut def.value, adapter_map),
-        Item::Struct(_) | Item::Enum(_) | Item::Trait(_) | Item::RustUse(_) | Item::RustBlock(_) => {}
+        Item::Struct(_)
+        | Item::Enum(_)
+        | Item::Trait(_)
+        | Item::RustUse(_)
+        | Item::RustBlock(_) => {}
     }
 }
 
@@ -1261,7 +1311,9 @@ fn rewrite_assign_target_adapter_calls(
 ) {
     match target {
         crate::ast::AssignTarget::Path(_) => {}
-        crate::ast::AssignTarget::Field { base, .. } => rewrite_expr_adapter_calls(base, adapter_map),
+        crate::ast::AssignTarget::Field { base, .. } => {
+            rewrite_expr_adapter_calls(base, adapter_map)
+        }
         crate::ast::AssignTarget::Index { base, index } => {
             rewrite_expr_adapter_calls(base, adapter_map);
             rewrite_expr_adapter_calls(index, adapter_map);
@@ -1566,11 +1618,7 @@ fn validate_interop_contract_for_source(
         let _ = write!(
             &mut message,
             "\n  - `use {}` is not allowed (line {}, col {}). add `allow {}` to {}",
-            path,
-            line,
-            col,
-            path,
-            INTEROP_CONTRACT_FILE
+            path, line, col, path, INTEROP_CONTRACT_FILE
         );
     }
     Err(message)
@@ -1630,8 +1678,14 @@ fn is_valid_allow_pattern(pattern: &str) -> bool {
     is_valid_rust_path(pattern)
 }
 
-fn emit_interop_adapter_module(generated_src: &Path, contract: &InteropContract) -> Result<(), String> {
-    if contract.adapters.is_empty() && contract.runtime_lines.is_empty() && contract.runtime_presets.is_empty() {
+fn emit_interop_adapter_module(
+    generated_src: &Path,
+    contract: &InteropContract,
+) -> Result<(), String> {
+    if contract.adapters.is_empty()
+        && contract.runtime_lines.is_empty()
+        && contract.runtime_presets.is_empty()
+    {
         return Ok(());
     }
 
@@ -1707,10 +1761,7 @@ fn emit_adapter_fn(adapter: &InteropAdapter, out: &mut String) {
                 "    let (__left, __right) = {}({args}).expect(\"interop adapter unwrap failed\");",
                 adapter.target
             );
-            let _ = writeln!(
-                out,
-                "    return (__left.to_string(), __right.to_string());"
-            );
+            let _ = writeln!(out, "    return (__left.to_string(), __right.to_string());");
         }
     }
     out.push_str("}\n");
@@ -1748,8 +1799,8 @@ fn inject_interop_module_decl(generated_src: &Path) -> Result<(), String> {
         if !file.is_file() {
             continue;
         }
-        let content =
-            fs::read_to_string(&file).map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+        let content = fs::read_to_string(&file)
+            .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
         if content.contains("mod elevate_interop;") {
             continue;
         }
@@ -1767,7 +1818,11 @@ fn runtime_preset_source(name: &str) -> &'static str {
     }
 }
 
-fn format_compile_error_with_context(path: &Path, source: &str, error: &crate::CompileError) -> String {
+fn format_compile_error_with_context(
+    path: &Path,
+    source: &str,
+    error: &crate::CompileError,
+) -> String {
     let mut out = format!("failed to compile {}:", path.display());
     for diagnostic in &error.diagnostics {
         let (line, col) = byte_to_line_col(source, diagnostic.span.start);
@@ -1900,8 +1955,11 @@ mod tests {
         .expect("write manifest should succeed");
         fs::write(root.join("src/lib.ers"), "pub fn ping() -> i64 { 1 }\n")
             .expect("write lib.ers should succeed");
-        fs::write(root.join("src/net/http.ers"), "pub fn code() -> i64 { 200 }\n")
-            .expect("write nested http.ers should succeed");
+        fs::write(
+            root.join("src/net/http.ers"),
+            "pub fn code() -> i64 { 200 }\n",
+        )
+        .expect("write nested http.ers should succeed");
 
         let summary = transpile_ers_crate(&root).expect("transpile should succeed");
         let generated_lib = fs::read_to_string(summary.generated_root.join("src/lib.rs"))
@@ -1922,16 +1980,10 @@ mod tests {
             "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .expect("write manifest should succeed");
-        fs::write(
-            root.join("src/lib.ers"),
-            "pub fn source() -> i64 { 7 }\n",
-        )
-        .expect("write lib.ers should succeed");
-        fs::write(
-            root.join("src/lib.rs"),
-            "pub fn source() -> i64 { 999 }\n",
-        )
-        .expect("write lib.rs twin should succeed");
+        fs::write(root.join("src/lib.ers"), "pub fn source() -> i64 { 7 }\n")
+            .expect("write lib.ers should succeed");
+        fs::write(root.join("src/lib.rs"), "pub fn source() -> i64 { 999 }\n")
+            .expect("write lib.rs twin should succeed");
 
         let summary = transpile_ers_crate(&root).expect("transpile should succeed");
         let generated = fs::read_to_string(summary.generated_root.join("src/lib.rs"))
@@ -2024,7 +2076,9 @@ mod tests {
             .expect("interop module should exist");
         assert!(interop_module.contains("use std::sync::OnceLock;"));
         assert!(interop_module.contains("static REGISTRY: OnceLock<i64> = OnceLock::new();"));
-        assert!(interop_module.contains("pub fn registry() -> &'static OnceLock<i64> { &REGISTRY }"));
+        assert!(
+            interop_module.contains("pub fn registry() -> &'static OnceLock<i64> { &REGISTRY }")
+        );
 
         let generated_lib =
             fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");
@@ -2040,8 +2094,11 @@ mod tests {
             "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .expect("write manifest should succeed");
-        fs::write(root.join("src/lib.ers"), "pub fn identity(v: i64) -> i64 { v }\n")
-            .expect("write lib.ers should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "pub fn identity(v: i64) -> i64 { v }\n",
+        )
+        .expect("write lib.ers should succeed");
         fs::write(
             root.join("elevate.interop"),
             "runtime {\nuse std::sync::OnceLock;\nstatic REG: OnceLock<i64> = OnceLock::new();\nruntime }\n",
@@ -2065,17 +2122,26 @@ mod tests {
             "[package]\nname = \"mini\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .expect("write manifest should succeed");
-        fs::write(root.join("src/lib.ers"), "pub fn identity(v: i64) -> i64 { v }\n")
-            .expect("write lib.ers should succeed");
-        fs::write(root.join("elevate.interop"), "runtime_preset parser_state\n")
-            .expect("write interop contract should succeed");
+        fs::write(
+            root.join("src/lib.ers"),
+            "pub fn identity(v: i64) -> i64 { v }\n",
+        )
+        .expect("write lib.ers should succeed");
+        fs::write(
+            root.join("elevate.interop"),
+            "runtime_preset parser_state\n",
+        )
+        .expect("write interop contract should succeed");
 
         let summary = transpile_ers_crate(&root).expect("transpile should succeed");
         let generated_src = summary.generated_root.join("src");
         let interop_module = fs::read_to_string(generated_src.join("elevate_interop.rs"))
             .expect("interop module should exist");
         assert!(interop_module.contains("struct ParserState"));
-        assert!(interop_module.contains("static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();"));
+        assert!(
+            interop_module
+                .contains("static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();")
+        );
         assert!(interop_module.contains("pub fn take_next_arg(handle: i64) -> Option<String>"));
     }
 
@@ -2132,9 +2198,10 @@ mod tests {
         let generated_src = summary.generated_root.join("src");
         let generated_lib =
             fs::read_to_string(generated_src.join("lib.rs")).expect("generated lib should exist");
-        assert!(generated_lib.contains(
-            "let pick_fn = elevate_interop::__elevate_adapter_elevate__max_i64;"
-        ));
+        assert!(
+            generated_lib
+                .contains("let pick_fn = elevate_interop::__elevate_adapter_elevate__max_i64;")
+        );
         assert!(generated_lib.contains("let out: i64 = pick_fn(a, b);"));
     }
 
@@ -2184,7 +2251,8 @@ mod tests {
 
         let error = transpile_ers_crate(&root).expect_err("expected type validation failure");
         assert!(
-            error.contains("interop adapter `elevate::is_enabled` arg 1 expected `bool`, got `i64`")
+            error
+                .contains("interop adapter `elevate::is_enabled` arg 1 expected `bool`, got `i64`")
         );
     }
 
@@ -2332,8 +2400,7 @@ mod tests {
     fn infer_borrow_indexes_detects_ampersands_on_cloned_args() {
         let original =
             "let drawn = host::runtime_draw_scene(board.cells.clone(), board.fixed.clone(), row);";
-        let suggested =
-            "let drawn = host::runtime_draw_scene(&board.cells.clone(), &board.fixed.clone(), row);";
+        let suggested = "let drawn = host::runtime_draw_scene(&board.cells.clone(), &board.fixed.clone(), row);";
         let (callee, indexes) = infer_borrow_indexes_from_suggestion(original, suggested)
             .expect("borrow suggestion should be inferred");
         assert_eq!(callee, "host::runtime_draw_scene");

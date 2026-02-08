@@ -132,14 +132,8 @@ pub enum TypedStmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedAssignTarget {
     Path(String),
-    Field {
-        base: TypedExpr,
-        field: String,
-    },
-    Index {
-        base: TypedExpr,
-        index: TypedExpr,
-    },
+    Field { base: TypedExpr, field: String },
+    Index { base: TypedExpr, index: TypedExpr },
     Tuple(Vec<TypedAssignTarget>),
 }
 

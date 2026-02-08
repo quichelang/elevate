@@ -1,7 +1,7 @@
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, ConstDef, DestructurePattern, EnumDef, EnumVariant,
     Expr, Field, FunctionDef, GenericParam, ImplBlock, Item, MatchArm, Module, Param, Pattern,
-    PatternField, RustUse, StaticDef, Stmt, StructLiteralField, StructDef, TraitDef,
+    PatternField, RustUse, StaticDef, Stmt, StructDef, StructLiteralField, TraitDef,
     TraitMethodSig, Type, UnaryOp, Visibility,
 };
 use crate::diag::Diagnostic;
@@ -61,7 +61,9 @@ impl Parser {
                 self.error_current("`pub rust ...` is not supported; use `rust ...`");
             }
             if self.at(TokenKind::Use) {
-                self.error_current("`rust` prefix on imports is no longer supported; write `use ...;`");
+                self.error_current(
+                    "`rust` prefix on imports is no longer supported; write `use ...;`",
+                );
                 return None;
             }
             self.error_current("Expected inline `rust { ... }` block");
@@ -150,7 +152,10 @@ impl Parser {
                         payload.push(self.parse_type()?);
                     }
                 }
-                self.expect(TokenKind::RParen, "Expected ')' after variant payload type list")?;
+                self.expect(
+                    TokenKind::RParen,
+                    "Expected ')' after variant payload type list",
+                )?;
             }
             self.expect(TokenKind::Semicolon, "Expected ';' after enum variant")?;
             variants.push(EnumVariant {
@@ -219,9 +224,10 @@ impl Parser {
         }
         self.expect(TokenKind::LParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
-            while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
-                let param_name = self.expect_ident("Expected parameter name")?;
-                let param_ty = if param_name == "self" && impl_target.is_some() && !self.at(TokenKind::Colon) {
+        while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+            let param_name = self.expect_ident("Expected parameter name")?;
+            let param_ty =
+                if param_name == "self" && impl_target.is_some() && !self.at(TokenKind::Colon) {
                     Type {
                         path: vec![impl_target.expect("impl target checked above").to_string()],
                         args: Vec::new(),
@@ -307,7 +313,10 @@ impl Parser {
         } else {
             None
         };
-        self.expect(TokenKind::Semicolon, "Expected ';' after trait method signature")?;
+        self.expect(
+            TokenKind::Semicolon,
+            "Expected ';' after trait method signature",
+        )?;
         Some(TraitMethodSig {
             name,
             type_params,
@@ -463,7 +472,10 @@ impl Parser {
                 AssignOp::Assign
             };
             let value = self.parse_expr()?;
-            self.expect(TokenKind::Semicolon, "Expected ';' after assignment statement")?;
+            self.expect(
+                TokenKind::Semicolon,
+                "Expected ';' after assignment statement",
+            )?;
             let target = self.expr_to_assign_target(expr)?;
             return Some(Stmt::Assign { target, op, value });
         }
@@ -867,7 +879,10 @@ impl Parser {
                     break;
                 }
             }
-            self.expect(TokenKind::RBrace, "Expected '}' after struct pattern fields")?;
+            self.expect(
+                TokenKind::RBrace,
+                "Expected '}' after struct pattern fields",
+            )?;
             return Some(Pattern::Struct {
                 path,
                 fields,
@@ -1135,7 +1150,10 @@ impl Parser {
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let name = self.expect_ident("Expected field name in struct literal")?;
-            self.expect(TokenKind::Colon, "Expected ':' after struct literal field name")?;
+            self.expect(
+                TokenKind::Colon,
+                "Expected ':' after struct literal field name",
+            )?;
             let value = self.parse_expr()?;
             fields.push(StructLiteralField { name, value });
 
@@ -1240,7 +1258,9 @@ impl Parser {
         while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
             if self.match_kind(TokenKind::DotDot) {
                 if rest.is_some() {
-                    self.error_current("Destructure slice pattern can contain at most one `..` rest");
+                    self.error_current(
+                        "Destructure slice pattern can contain at most one `..` rest",
+                    );
                     return None;
                 }
                 rest = if let TokenKind::Identifier(name) = self.peek().kind.clone() {
@@ -1264,7 +1284,10 @@ impl Parser {
             }
         }
 
-        self.expect(TokenKind::RBracket, "Expected ']' after destructuring slice pattern")?;
+        self.expect(
+            TokenKind::RBracket,
+            "Expected ']' after destructuring slice pattern",
+        )?;
         Some(DestructurePattern::Slice {
             prefix,
             rest,
@@ -1479,11 +1502,10 @@ mod tests {
         "#;
         let tokens = lex(source).expect("expected lex success");
         let diagnostics = parse_module(tokens).expect_err("expected parse error");
-        assert!(
-            diagnostics
-                .iter()
-                .any(|diag| diag.message.contains("`rust` prefix on imports is no longer supported"))
-        );
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message
+                .contains("`rust` prefix on imports is no longer supported")
+        }));
     }
 
     #[test]

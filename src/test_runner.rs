@@ -3,8 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::ast::{Item, Module};
 use crate::CompileOptions;
+use crate::ast::{Item, Module};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestSummary {
@@ -59,8 +59,12 @@ fn inject_dir(
     let entries = fs::read_dir(current)
         .map_err(|error| format!("failed to read directory {}: {error}", current.display()))?;
     for entry in entries {
-        let entry = entry
-            .map_err(|error| format!("failed to read directory entry in {}: {error}", current.display()))?;
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read directory entry in {}: {error}",
+                current.display()
+            )
+        })?;
         let path = entry.path();
         if path.is_dir() {
             inject_dir(root_src, &path, generated_src, discovered)?;
@@ -83,8 +87,12 @@ fn inject_dir(
             .map_err(|error| format!("failed to compute relative source path: {error}"))?;
         let mut generated_file = generated_src.join(rel);
         generated_file.set_extension("rs");
-        let existing = fs::read_to_string(&generated_file)
-            .map_err(|error| format!("failed to read generated file {}: {error}", generated_file.display()))?;
+        let existing = fs::read_to_string(&generated_file).map_err(|error| {
+            format!(
+                "failed to read generated file {}: {error}",
+                generated_file.display()
+            )
+        })?;
         let mut wrapped = annotate_test_cfg(&existing, &tests);
         wrapped.push_str(&render_wrappers(&tests));
         fs::write(&generated_file, wrapped.as_bytes()).map_err(|error| {
@@ -98,10 +106,20 @@ fn inject_dir(
 }
 
 fn parse_module(source: &str, path: &Path) -> Result<Module, String> {
-    let tokens = crate::lexer::lex(source)
-        .map_err(|diagnostics| format!("failed to lex {}: {}", path.display(), join_diags(&diagnostics)))?;
-    crate::parser::parse_module(tokens)
-        .map_err(|diagnostics| format!("failed to parse {}: {}", path.display(), join_diags(&diagnostics)))
+    let tokens = crate::lexer::lex(source).map_err(|diagnostics| {
+        format!(
+            "failed to lex {}: {}",
+            path.display(),
+            join_diags(&diagnostics)
+        )
+    })?;
+    crate::parser::parse_module(tokens).map_err(|diagnostics| {
+        format!(
+            "failed to parse {}: {}",
+            path.display(),
+            join_diags(&diagnostics)
+        )
+    })
 }
 
 fn join_diags(diags: &[crate::diag::Diagnostic]) -> String {

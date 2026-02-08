@@ -233,14 +233,8 @@ pub struct StructLiteralField {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignTarget {
     Path(String),
-    Field {
-        base: Box<Expr>,
-        field: String,
-    },
-    Index {
-        base: Box<Expr>,
-        index: Box<Expr>,
-    },
+    Field { base: Box<Expr>, field: String },
+    Index { base: Box<Expr>, index: Box<Expr> },
     Tuple(Vec<AssignTarget>),
 }
 

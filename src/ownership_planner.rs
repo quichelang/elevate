@@ -43,12 +43,22 @@ pub fn should_flag_hot_clone(ty: &str, loop_depth: usize) -> bool {
 pub fn clone_cost_score(ty: &str) -> usize {
     let trimmed = ty.trim();
     if parse_tuple_items(trimmed)
-        .map(|items| items.iter().map(|item| clone_cost_score(item)).sum::<usize>())
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| clone_cost_score(item))
+                .sum::<usize>()
+        })
         .unwrap_or(0)
         > 0
     {
         return parse_tuple_items(trimmed)
-            .map(|items| items.iter().map(|item| clone_cost_score(item)).sum::<usize>())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| clone_cost_score(item))
+                    .sum::<usize>()
+            })
             .unwrap_or(0);
     }
     let (head, args) = split_type_head_and_args(trimmed);
@@ -149,8 +159,7 @@ fn last_path_segment(path: &str) -> &str {
 fn is_copy_primitive_type(type_name: &str) -> bool {
     matches!(
         type_name,
-        "i8"
-            | "i16"
+        "i8" | "i16"
             | "i32"
             | "i64"
             | "i128"
@@ -169,12 +178,15 @@ fn is_copy_primitive_type(type_name: &str) -> bool {
 }
 
 fn is_probably_nominal_type(type_name: &str) -> bool {
-    type_name.chars().next().is_some_and(|ch| ch.is_ascii_uppercase())
+    type_name
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{clone_cost_score, decide_clone, CloneDecision, ClonePlannerInput};
+    use super::{CloneDecision, ClonePlannerInput, clone_cost_score, decide_clone};
 
     #[test]
     fn planner_preserves_move_for_rebind_chain() {

@@ -240,10 +240,7 @@ impl<'a> Lexer<'a> {
                 }
                 c if c.is_ascii_digit() => self.lex_number(start, c),
                 '_' => {
-                    if self
-                        .peek_char()
-                        .is_some_and(is_identifier_continue)
-                    {
+                    if self.peek_char().is_some_and(is_identifier_continue) {
                         self.lex_identifier(start, '_');
                     } else {
                         self.push_simple(TokenKind::Underscore, start);
@@ -785,9 +782,9 @@ mod tests {
         let source = "rust { fn bridge(v: &str) -> usize { v.len() } }";
         let tokens = lex(source).expect("expected lex success");
         assert!(
-            tokens
-                .iter()
-                .any(|t| matches!(t.kind, TokenKind::RustBlock(ref body) if body.contains("v.len()")))
+            tokens.iter().any(
+                |t| matches!(t.kind, TokenKind::RustBlock(ref body) if body.contains("v.len()"))
+            )
         );
     }
 
@@ -836,7 +833,11 @@ mod tests {
         let source = "x = a + b; x += 1;";
         let tokens = lex(source).expect("expected lex success");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Plus)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::PlusEqual)));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::PlusEqual))
+        );
     }
 
     #[test]
@@ -901,11 +902,9 @@ mod tests {
     fn lex_leading_underscore_identifiers() {
         let source = "use crate::__elevate_interop;";
         let tokens = lex(source).expect("expected lex success");
-        assert!(
-            tokens
-                .iter()
-                .any(|t| matches!(t.kind, TokenKind::Identifier(ref name) if name == "__elevate_interop"))
-        );
+        assert!(tokens.iter().any(
+            |t| matches!(t.kind, TokenKind::Identifier(ref name) if name == "__elevate_interop")
+        ));
     }
 
     #[test]
@@ -930,15 +929,21 @@ last line"#;"##;
     fn lex_char_literals() {
         let source = r#"const a = 'x'; const b = '\n'; const c = '\'';"#;
         let tokens = lex(source).expect("expected lex success");
-        assert!(tokens
-            .iter()
-            .any(|t| matches!(t.kind, TokenKind::CharLiteral('x'))));
-        assert!(tokens
-            .iter()
-            .any(|t| matches!(t.kind, TokenKind::CharLiteral('\n'))));
-        assert!(tokens
-            .iter()
-            .any(|t| matches!(t.kind, TokenKind::CharLiteral('\''))));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::CharLiteral('x')))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::CharLiteral('\n')))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::CharLiteral('\'')))
+        );
     }
 
     #[test]

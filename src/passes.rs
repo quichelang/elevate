@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+use crate::DirectBorrowHint;
 use crate::ast::{
-    AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern,
-    Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp, Visibility,
+    AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern, Stmt,
+    StructLiteralField, TraitMethodSig, Type, UnaryOp, Visibility,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
@@ -22,8 +23,7 @@ use crate::ir::typed::{
     TypedStatic, TypedStmt, TypedStruct, TypedStructLiteralField, TypedTrait, TypedTraitMethod,
     TypedTypeParam, TypedUnaryOp, TypedVariant,
 };
-use crate::ownership_planner::{decide_clone, CloneDecision, ClonePlannerInput};
-use crate::DirectBorrowHint;
+use crate::ownership_planner::{CloneDecision, ClonePlannerInput, decide_clone};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SemType {
@@ -432,10 +432,9 @@ impl LoweringState {
                 }
                 TypedItem::Function(def) => {
                     state.known_functions.insert(def.name.clone());
-                    state.known_function_borrowed_args.insert(
-                        def.name.clone(),
-                        borrowed_param_indexes(&def.params),
-                    );
+                    state
+                        .known_function_borrowed_args
+                        .insert(def.name.clone(), borrowed_param_indexes(&def.params));
                 }
                 TypedItem::Impl(def) => {
                     for method in &def.methods {
@@ -477,7 +476,11 @@ impl LoweringState {
             candidates.push(name.clone());
         }
         if path.len() >= 2 {
-            candidates.push(format!("{}::{}", path[path.len() - 2], path[path.len() - 1]));
+            candidates.push(format!(
+                "{}::{}",
+                path[path.len() - 2],
+                path[path.len() - 1]
+            ));
         }
         for key in candidates {
             if let Some(indexes) = self.known_function_borrowed_args.get(&key) {
@@ -755,9 +758,7 @@ impl InteropPolicyRegistry {
         // Imported nominal types are treated as optimistic clone candidates so
         // lowering can preserve source ergonomics for repeated by-value use.
         let head_last = last_path_segment(head);
-        if is_probably_nominal_type(head_last)
-            && self.import_looks_like_type(head_last)
-        {
+        if is_probably_nominal_type(head_last) && self.import_looks_like_type(head_last) {
             return args.iter().all(|arg| self.is_clone_candidate_or_copy(arg));
         }
 
@@ -826,7 +827,12 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                 let fields = def
                     .fields
                     .iter()
-                    .map(|field| (field.name.clone(), type_from_ast_in_context(&field.ty, context)))
+                    .map(|field| {
+                        (
+                            field.name.clone(),
+                            type_from_ast_in_context(&field.ty, context),
+                        )
+                    })
                     .collect::<HashMap<_, _>>();
                 context.structs.insert(def.name.clone(), fields);
             }
@@ -837,7 +843,11 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     .map(|variant| {
                         (
                             variant.name.clone(),
-                            variant.payload.iter().map(type_from_ast).collect::<Vec<_>>(),
+                            variant
+                                .payload
+                                .iter()
+                                .map(type_from_ast)
+                                .collect::<Vec<_>>(),
                         )
                     })
                     .collect::<HashMap<_, _>>();
@@ -851,7 +861,11 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
             }
             Item::Function(def) => {
                 let sig = FunctionSig {
-                    type_params: def.type_params.iter().map(|param| param.name.clone()).collect(),
+                    type_params: def
+                        .type_params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect(),
                     type_param_bounds: def
                         .type_params
                         .iter()
@@ -889,9 +903,12 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                             .map(|param| {
                                 (
                                     param.name.clone(),
-                                    param.bounds
+                                    param
+                                        .bounds
                                         .iter()
-                                        .map(|bound| type_from_ast_with_impl_self(bound, &def.target))
+                                        .map(|bound| {
+                                            type_from_ast_with_impl_self(bound, &def.target)
+                                        })
                                         .collect::<Vec<_>>(),
                                 )
                             })
@@ -900,7 +917,9 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                             .params
                             .iter()
                             .enumerate()
-                            .filter(|(index, _)| !is_redundant_impl_self_param(&method.params, *index))
+                            .filter(|(index, _)| {
+                                !is_redundant_impl_self_param(&method.params, *index)
+                            })
                             .map(|(_, param)| {
                                 type_from_ast_with_impl_self_in_context(
                                     &param.ty,
@@ -913,11 +932,7 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                             .return_type
                             .as_ref()
                             .map(|ty| {
-                                type_from_ast_with_impl_self_in_context(
-                                    ty,
-                                    &def.target,
-                                    context,
-                                )
+                                type_from_ast_with_impl_self_in_context(ty, &def.target, context)
                             })
                             .unwrap_or(SemType::Unit),
                     };
@@ -1214,7 +1229,10 @@ fn lower_item(
             let mut locals = HashMap::new();
             let mut immutable_locals = HashSet::new();
             for param in &def.params {
-                locals.insert(param.name.clone(), type_from_ast_in_context(&param.ty, context));
+                locals.insert(
+                    param.name.clone(),
+                    type_from_ast_in_context(&param.ty, context),
+                );
             }
             let declared_return_ty = def
                 .return_type
@@ -1447,7 +1465,8 @@ fn lower_stmt_with_types(
                 return_ty,
                 diagnostics,
             )?;
-            let (typed_value, value_ty) = infer_expr(value, context, locals, return_ty, diagnostics);
+            let (typed_value, value_ty) =
+                infer_expr(value, context, locals, return_ty, diagnostics);
             diagnose_const_mutations_in_expr(&typed_value, immutable_locals, diagnostics);
             match op {
                 AssignOp::Assign => {
@@ -1525,7 +1544,11 @@ fn lower_stmt_with_types(
         Stmt::Expr(expr) => {
             let (typed_expr, _) = infer_expr(expr, context, locals, return_ty, diagnostics);
             diagnose_const_mutations_in_expr(&typed_expr, immutable_locals, diagnostics);
-            Some(TypedStmt::Expr(typed_expr))
+            if matches!(typed_expr.kind, TypedExprKind::String(_)) {
+                None
+            } else {
+                Some(TypedStmt::Expr(typed_expr))
+            }
         }
         Stmt::TailExpr(expr) => {
             let (typed_expr, _) = infer_expr(expr, context, locals, return_ty, diagnostics);
@@ -1671,7 +1694,10 @@ fn infer_assign_target(
                     Span::new(0, 0),
                 ));
             }
-            let ty = locals.get(name).cloned().or_else(|| context.globals.get(name).cloned());
+            let ty = locals
+                .get(name)
+                .cloned()
+                .or_else(|| context.globals.get(name).cloned());
             if let Some(ty) = ty {
                 Some((TypedAssignTarget::Path(name.clone()), ty))
             } else {
@@ -1919,7 +1945,8 @@ fn infer_expr(
             }
 
             if let Expr::Field { base, field } = callee.as_ref() {
-                let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
+                let (typed_base, base_ty) =
+                    infer_expr(base, context, locals, return_ty, diagnostics);
                 let resolved =
                     resolve_method_call_type(&base_ty, field, &arg_types, context, diagnostics);
                 let typed_callee = TypedExpr {
@@ -1943,7 +1970,8 @@ fn infer_expr(
 
             let (typed_callee, callee_ty) =
                 infer_expr(callee, context, locals, return_ty, diagnostics);
-            let resolved = resolve_call_type(&typed_callee, &callee_ty, &arg_types, context, diagnostics);
+            let resolved =
+                resolve_call_type(&typed_callee, &callee_ty, &arg_types, context, diagnostics);
             (
                 TypedExpr {
                     kind: TypedExprKind::Call {
@@ -1998,7 +2026,9 @@ fn infer_expr(
                 infer_expr(index, context, locals, return_ty, diagnostics);
 
             let resolved = match &base_ty {
-                SemType::Path { path, args } if path.len() == 1 && path[0] == "Vec" && args.len() == 1 => {
+                SemType::Path { path, args }
+                    if path.len() == 1 && path[0] == "Vec" && args.len() == 1 =>
+                {
                     if matches!(typed_index.kind, TypedExprKind::Range { .. }) {
                         SemType::Path {
                             path: vec!["Vec".to_string()],
@@ -2147,23 +2177,57 @@ fn infer_expr(
                 infer_expr(right, context, locals, return_ty, diagnostics);
             let (typed_op, out_ty) = match op {
                 BinaryOp::Add => {
-                    let out_ty = resolve_add_type(&left_ty, &right_ty, diagnostics);
+                    let out_ty = resolve_add_type_with_literals(
+                        left,
+                        &left_ty,
+                        right,
+                        &right_ty,
+                        diagnostics,
+                    );
                     (TypedBinaryOp::Add, out_ty)
                 }
                 BinaryOp::Sub => {
-                    let out_ty = resolve_numeric_binary_type("-", &left_ty, &right_ty, diagnostics);
+                    let out_ty = resolve_numeric_binary_type_with_literals(
+                        "-",
+                        left,
+                        &left_ty,
+                        right,
+                        &right_ty,
+                        diagnostics,
+                    );
                     (TypedBinaryOp::Sub, out_ty)
                 }
                 BinaryOp::Mul => {
-                    let out_ty = resolve_numeric_binary_type("*", &left_ty, &right_ty, diagnostics);
+                    let out_ty = resolve_numeric_binary_type_with_literals(
+                        "*",
+                        left,
+                        &left_ty,
+                        right,
+                        &right_ty,
+                        diagnostics,
+                    );
                     (TypedBinaryOp::Mul, out_ty)
                 }
                 BinaryOp::Div => {
-                    let out_ty = resolve_numeric_binary_type("/", &left_ty, &right_ty, diagnostics);
+                    let out_ty = resolve_numeric_binary_type_with_literals(
+                        "/",
+                        left,
+                        &left_ty,
+                        right,
+                        &right_ty,
+                        diagnostics,
+                    );
                     (TypedBinaryOp::Div, out_ty)
                 }
                 BinaryOp::Rem => {
-                    let out_ty = resolve_numeric_binary_type("%", &left_ty, &right_ty, diagnostics);
+                    let out_ty = resolve_numeric_binary_type_with_literals(
+                        "%",
+                        left,
+                        &left_ty,
+                        right,
+                        &right_ty,
+                        diagnostics,
+                    );
                     (TypedBinaryOp::Rem, out_ty)
                 }
                 BinaryOp::And | BinaryOp::Or => {
@@ -2452,9 +2516,7 @@ fn diagnose_const_mutations_in_expr(
                 && immutable_locals.contains(root)
             {
                 diagnostics.push(Diagnostic::new(
-                    format!(
-                        "Cannot mutate immutable const `{root}` via method `{field}`"
-                    ),
+                    format!("Cannot mutate immutable const `{root}` via method `{field}`"),
                     Span::new(0, 0),
                 ));
             }
@@ -2741,7 +2803,9 @@ fn check_match_exhaustiveness(
     }
 
     if covered.len() != expected_variants.len()
-        || expected_variants.iter().any(|variant| !covered.contains(variant))
+        || expected_variants
+            .iter()
+            .any(|variant| !covered.contains(variant))
     {
         let missing = expected_variants
             .iter()
@@ -2760,7 +2824,11 @@ fn bool_tuple_arity(ty: &SemType) -> Option<usize> {
     let SemType::Tuple(items) = ty else {
         return None;
     };
-    if items.is_empty() || items.iter().any(|item| !is_concrete_named_type(item, "bool")) {
+    if items.is_empty()
+        || items
+            .iter()
+            .any(|item| !is_concrete_named_type(item, "bool"))
+    {
         return None;
     }
     Some(items.len())
@@ -2872,7 +2940,10 @@ fn finite_tuple_domains(scrutinee_ty: &SemType, context: &Context) -> Option<Vec
     Some(domains)
 }
 
-fn finite_enum_variants_for_tuple_domain(enum_name: &str, context: &Context) -> Option<Vec<String>> {
+fn finite_enum_variants_for_tuple_domain(
+    enum_name: &str,
+    context: &Context,
+) -> Option<Vec<String>> {
     if enum_name == "Option" {
         return Some(vec!["Some".to_string(), "None".to_string()]);
     }
@@ -3004,8 +3075,9 @@ fn finite_tuple_combo_key(combo: &[String]) -> String {
 }
 
 fn match_has_total_pattern(arms: &[TypedMatchArm]) -> bool {
-    arms.iter()
-        .any(|arm| guard_counts_for_exhaustiveness(arm.guard.as_ref()) && pattern_is_total(&arm.pattern))
+    arms.iter().any(|arm| {
+        guard_counts_for_exhaustiveness(arm.guard.as_ref()) && pattern_is_total(&arm.pattern)
+    })
 }
 
 fn guard_counts_for_exhaustiveness(guard: Option<&TypedExpr>) -> bool {
@@ -3034,7 +3106,9 @@ fn collect_bool_coverage(pattern: &TypedPattern, has_true: &mut bool, has_false:
                 collect_bool_coverage(item, has_true, has_false);
             }
         }
-        TypedPattern::BindingAt { pattern, .. } => collect_bool_coverage(pattern, has_true, has_false),
+        TypedPattern::BindingAt { pattern, .. } => {
+            collect_bool_coverage(pattern, has_true, has_false)
+        }
         TypedPattern::Wildcard | TypedPattern::Binding(_) => {
             *has_true = true;
             *has_false = true;
@@ -3087,7 +3161,9 @@ fn collect_enum_coverage(pattern: &TypedPattern, enum_name: &str, covered: &mut 
                 collect_enum_coverage(item, enum_name, covered);
             }
         }
-        TypedPattern::BindingAt { pattern, .. } => collect_enum_coverage(pattern, enum_name, covered),
+        TypedPattern::BindingAt { pattern, .. } => {
+            collect_enum_coverage(pattern, enum_name, covered)
+        }
         TypedPattern::Wildcard | TypedPattern::Binding(_) => {}
         _ => {}
     }
@@ -3206,12 +3282,19 @@ fn resolve_trait_associated_call(
     }
 
     if assoc_name == "from_iter" {
-        return Some(resolve_from_iter_associated_type(type_name, args, diagnostics));
+        return Some(resolve_from_iter_associated_type(
+            type_name,
+            args,
+            diagnostics,
+        ));
     }
     if assoc_name == "default" {
         if !args.is_empty() {
             diagnostics.push(Diagnostic::new(
-                format!("`{type_name}::default` expects 0 arg(s), got {}", args.len()),
+                format!(
+                    "`{type_name}::default` expects 0 arg(s), got {}",
+                    args.len()
+                ),
                 Span::new(0, 0),
             ));
         }
@@ -3236,7 +3319,10 @@ fn resolve_from_iter_associated_type(
 ) -> SemType {
     if args.len() != 1 {
         diagnostics.push(Diagnostic::new(
-            format!("`{type_name}::from_iter` expects 1 arg(s), got {}", args.len()),
+            format!(
+                "`{type_name}::from_iter` expects 1 arg(s), got {}",
+                args.len()
+            ),
             Span::new(0, 0),
         ));
         return SemType::Unknown;
@@ -3314,7 +3400,9 @@ fn rustdex_has_method(type_name: &str, method: &str) -> bool {
 fn rustdex_type_implements(type_name: &str, trait_name: &str) -> bool {
     let key = (type_name.to_string(), trait_name.to_string());
     if let Some(cache) = RUSTDEX_TRAIT_CHECKS.get() {
-        let guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(value) = guard.get(&key) {
             return *value;
         }
@@ -3371,8 +3459,8 @@ fn rustdex_bin_path() -> Option<&'static PathBuf> {
                 }
             }
 
-            let local = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../rustdex/target/debug/rustdex");
+            let local =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../rustdex/target/debug/rustdex");
             if local.is_file() {
                 return Some(local);
             }
@@ -3479,7 +3567,10 @@ fn resolve_builtin_assert_call(
             }
             if !is_compatible(&args[0], &named_type("bool")) {
                 diagnostics.push(Diagnostic::new(
-                    format!("assert(...) expects `bool`, got `{}`", type_to_string(&args[0])),
+                    format!(
+                        "assert(...) expects `bool`, got `{}`",
+                        type_to_string(&args[0])
+                    ),
                     Span::new(0, 0),
                 ));
             }
@@ -3505,6 +3596,7 @@ fn resolve_builtin_assert_call(
             }
             Some(SemType::Unit)
         }
+        "strcat" => Some(named_type("String")),
         _ => None,
     }
 }
@@ -3533,7 +3625,10 @@ fn resolve_method_call_type(
                     return if method == "strip_prefix" {
                         option_type(named_type("String"))
                     } else if method == "split_once" {
-                        option_type(SemType::Tuple(vec![named_type("String"), named_type("String")]))
+                        option_type(SemType::Tuple(vec![
+                            named_type("String"),
+                            named_type("String"),
+                        ]))
                     } else {
                         named_type("bool")
                     };
@@ -3583,7 +3678,9 @@ fn resolve_method_call_type(
                 }
                 "push" => {
                     expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    if let SemType::Path { args: item_args, .. } = base_ty
+                    if let SemType::Path {
+                        args: item_args, ..
+                    } = base_ty
                         && let (Some(item_ty), Some(arg_ty)) = (item_args.first(), args.first())
                         && !is_compatible(arg_ty, item_ty)
                     {
@@ -3817,7 +3914,8 @@ fn resolve_method_call_type(
                         Span::new(0, 0),
                     ));
                 }
-                for (index, (actual, expected)) in args.iter().zip(sig.params.iter().skip(1)).enumerate()
+                for (index, (actual, expected)) in
+                    args.iter().zip(sig.params.iter().skip(1)).enumerate()
                 {
                     if !is_compatible(actual, expected) {
                         diagnostics.push(Diagnostic::new(
@@ -3896,14 +3994,7 @@ fn is_external_method_candidate(base_ty: &SemType, context: &Context) -> bool {
 fn is_builtin_method_carrier(type_name: &str) -> bool {
     matches!(
         type_name,
-        "String"
-            | "Vec"
-            | "Option"
-            | "Result"
-            | "HashMap"
-            | "BTreeMap"
-            | "HashSet"
-            | "BTreeSet"
+        "String" | "Vec" | "Option" | "Result" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
     )
 }
 
@@ -4159,6 +4250,21 @@ fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagn
     SemType::Unknown
 }
 
+fn resolve_add_type_with_literals(
+    left_expr: &Expr,
+    left_ty: &SemType,
+    right_expr: &Expr,
+    right_ty: &SemType,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> SemType {
+    if let Some(preserved) =
+        preserve_integer_type_for_default_int_literal(left_expr, left_ty, right_expr, right_ty)
+    {
+        return preserved;
+    }
+    resolve_add_type(left_ty, right_ty, diagnostics)
+}
+
 fn resolve_unary_neg_type(expr: &SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
     let ty = normalize_numeric_unary_type(expr);
     if ty != SemType::Unknown {
@@ -4192,6 +4298,44 @@ fn resolve_numeric_binary_type(
         Span::new(0, 0),
     ));
     SemType::Unknown
+}
+
+fn resolve_numeric_binary_type_with_literals(
+    op: &str,
+    left_expr: &Expr,
+    left_ty: &SemType,
+    right_expr: &Expr,
+    right_ty: &SemType,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> SemType {
+    if let Some(preserved) =
+        preserve_integer_type_for_default_int_literal(left_expr, left_ty, right_expr, right_ty)
+    {
+        return preserved;
+    }
+    resolve_numeric_binary_type(op, left_ty, right_ty, diagnostics)
+}
+
+fn preserve_integer_type_for_default_int_literal(
+    left_expr: &Expr,
+    left_ty: &SemType,
+    right_expr: &Expr,
+    right_ty: &SemType,
+) -> Option<SemType> {
+    if matches!(left_expr, Expr::Int(_)) && is_integral_numeric_type(right_ty) {
+        return Some(right_ty.clone());
+    }
+    if matches!(right_expr, Expr::Int(_)) && is_integral_numeric_type(left_ty) {
+        return Some(left_ty.clone());
+    }
+    None
+}
+
+fn is_integral_numeric_type(ty: &SemType) -> bool {
+    let Some(name) = canonical_numeric_name(ty) else {
+        return false;
+    };
+    !matches!(name, "f32" | "f64")
 }
 
 fn resolve_common_numeric_type(left: &SemType, right: &SemType) -> Option<SemType> {
@@ -4228,8 +4372,7 @@ fn canonical_numeric_name(ty: &SemType) -> Option<&str> {
 fn is_numeric_type_name(name: &str) -> bool {
     matches!(
         name,
-        "i8"
-            | "i16"
+        "i8" | "i16"
             | "i32"
             | "i64"
             | "i128"
@@ -4419,14 +4562,13 @@ fn lower_stmt_with_context(
     }
 }
 
-fn assignment_rebind_place(target: &TypedAssignTarget, value: &TypedExpr) -> Option<OwnershipPlace> {
+fn assignment_rebind_place(
+    target: &TypedAssignTarget,
+    value: &TypedExpr,
+) -> Option<OwnershipPlace> {
     let target_place = place_for_assign_target(target)?;
     let uses = count_exact_place_uses_in_expr(value, &target_place);
-    if uses == 1 {
-        Some(target_place)
-    } else {
-        None
-    }
+    if uses == 1 { Some(target_place) } else { None }
 }
 
 fn place_for_assign_target(target: &TypedAssignTarget) -> Option<OwnershipPlace> {
@@ -4475,7 +4617,9 @@ fn count_exact_place_uses_in_expr_rec(
             count_exact_place_uses_in_expr_rec(left, target, count);
             count_exact_place_uses_in_expr_rec(right, target, count);
         }
-        TypedExprKind::Unary { expr, .. } => count_exact_place_uses_in_expr_rec(expr, target, count),
+        TypedExprKind::Unary { expr, .. } => {
+            count_exact_place_uses_in_expr_rec(expr, target, count)
+        }
         TypedExprKind::Cast { expr, .. } => count_exact_place_uses_in_expr_rec(expr, target, count),
         TypedExprKind::Tuple(items) => {
             for item in items {
@@ -4535,7 +4679,9 @@ fn count_exact_place_uses_in_stmt_rec(
         TypedStmt::DestructureConst { value, .. } => {
             count_exact_place_uses_in_expr_rec(value, target, count)
         }
-        TypedStmt::Assign { target: _, value, .. } => {
+        TypedStmt::Assign {
+            target: _, value, ..
+        } => {
             count_exact_place_uses_in_expr_rec(value, target, count);
         }
         TypedStmt::Return(value) => {
@@ -4631,6 +4777,20 @@ fn lower_expr_with_context(
             }
             if let TypedExprKind::Path(path) = &callee.kind
                 && path.len() == 1
+                && path[0] == "strcat"
+            {
+                return RustExpr::MacroCall {
+                    path: vec!["crate".to_string(), "strcat".to_string()],
+                    args: args
+                        .iter()
+                        .map(|arg| {
+                            lower_expr_with_context(arg, context, ExprPosition::Value, state)
+                        })
+                        .collect(),
+                };
+            }
+            if let TypedExprKind::Path(path) = &callee.kind
+                && path.len() == 1
                 && path[0] == "view"
                 && args.len() == 1
             {
@@ -4714,9 +4874,7 @@ fn lower_expr_with_context(
             );
             match decision {
                 CloneDecision::Clone { is_hot } => {
-                    if !forced_clone
-                        && let Some(name) = place_name
-                    {
+                    if !forced_clone && let Some(name) = place_name {
                         push_auto_clone_notes(state, context, &name, expr.ty.trim(), is_hot);
                     }
                     clone_expr(lowered_field)
@@ -4769,9 +4927,7 @@ fn lower_expr_with_context(
             );
             match decision {
                 CloneDecision::Clone { is_hot } => {
-                    if !forced_clone
-                        && let Some(name) = place_name
-                    {
+                    if !forced_clone && let Some(name) = place_name {
                         push_auto_clone_notes(state, context, &name, expr.ty.trim(), is_hot);
                     }
                     clone_expr(lowered_index_expr)
@@ -4825,7 +4981,10 @@ fn lower_expr_with_context(
                 }
             }
         }
-        TypedExprKind::Cast { expr: inner, target_type } => RustExpr::Cast {
+        TypedExprKind::Cast {
+            expr: inner,
+            target_type,
+        } => RustExpr::Cast {
             expr: Box::new(lower_expr_with_context(
                 inner,
                 context,
@@ -4847,8 +5006,7 @@ fn lower_expr_with_context(
             } else {
                 ExprPosition::Value
             };
-            let mut lowered_left =
-                lower_expr_with_context(left, context, operand_position, state);
+            let mut lowered_left = lower_expr_with_context(left, context, operand_position, state);
             let mut lowered_right =
                 lower_expr_with_context(right, context, operand_position, state);
 
@@ -4862,8 +5020,7 @@ fn lower_expr_with_context(
             ) && is_numeric_type_name(&expr.ty)
             {
                 lowered_left = cast_expr_to_numeric_if_needed(lowered_left, &left.ty, &expr.ty);
-                lowered_right =
-                    cast_expr_to_numeric_if_needed(lowered_right, &right.ty, &expr.ty);
+                lowered_right = cast_expr_to_numeric_if_needed(lowered_right, &right.ty, &expr.ty);
             } else if matches!(op, TypedBinaryOp::Add)
                 && type_is_string_like(&expr.ty)
                 && type_is_string_like(&left.ty)
@@ -5019,14 +5176,8 @@ fn lower_path_expr(
     context.ownership_plan.consume_expr(expr);
 
     let path_expr = RustExpr::Path(path.to_vec());
-    let (decision, forced_clone) = clone_decision_for_expr(
-        expr,
-        ty,
-        position,
-        remaining_conflicting,
-        context,
-        state,
-    );
+    let (decision, forced_clone) =
+        clone_decision_for_expr(expr, ty, position, remaining_conflicting, context, state);
     if let CloneDecision::Clone { is_hot } = decision {
         if !forced_clone {
             push_auto_clone_notes(state, context, &name, ty.trim(), is_hot);
@@ -5072,7 +5223,10 @@ fn clone_decision_for_expr(
     context: &LoweringContext,
     state: &LoweringState,
 ) -> (CloneDecision, bool) {
-    let in_owned_position = matches!(position, ExprPosition::CallArgOwned | ExprPosition::OwnedOperand);
+    let in_owned_position = matches!(
+        position,
+        ExprPosition::CallArgOwned | ExprPosition::OwnedOperand
+    );
     let forced_clone = in_owned_position && state.is_forced_clone_expr(expr);
     let decision = decide_clone(ClonePlannerInput {
         ty,
@@ -5264,11 +5418,7 @@ fn resolve_method_call_modes(
 fn method_base_type_name(base_ty: &str) -> Option<&str> {
     let (head, _) = split_type_head_and_args(base_ty.trim());
     let name = last_path_segment(head);
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn resolve_declared_borrow_arg_modes(
@@ -5310,11 +5460,7 @@ fn resolve_heuristic_path_call_arg_modes(
             borrowed_any = true;
         }
     }
-    if borrowed_any {
-        Some(modes)
-    } else {
-        None
-    }
+    if borrowed_any { Some(modes) } else { None }
 }
 
 fn is_known_function_path(state: &LoweringState, path: &[String]) -> bool {
@@ -5389,12 +5535,7 @@ fn method_borrows_first_arg(base_ty: &str, field: &str) -> bool {
     match last_path_segment(base_ty) {
         "String" => matches!(
             field,
-            "contains"
-                | "starts_with"
-                | "ends_with"
-                | "strip_prefix"
-                | "split_once"
-                | "push_str"
+            "contains" | "starts_with" | "ends_with" | "strip_prefix" | "split_once" | "push_str"
         ),
         "Vec" => matches!(field, "contains"),
         "HashMap" | "BTreeMap" => matches!(field, "contains_key"),
@@ -6072,7 +6213,10 @@ fn promote_trait_shorthand(ty: SemType, context: &Context) -> SemType {
                 .map(|arg| promote_trait_shorthand(arg, context))
                 .collect::<Vec<_>>();
             if path.len() == 1 && args.is_empty() && context.traits.contains_key(&path[0]) {
-                SemType::TraitObject(vec![SemType::Path { path, args: Vec::new() }])
+                SemType::TraitObject(vec![SemType::Path {
+                    path,
+                    args: Vec::new(),
+                }])
             } else {
                 SemType::Path { path, args }
             }
@@ -6366,13 +6510,7 @@ fn type_is_clone(ty: &SemType) -> bool {
             }
             if matches!(
                 head,
-                "Option"
-                    | "Result"
-                    | "Vec"
-                    | "HashMap"
-                    | "BTreeMap"
-                    | "HashSet"
-                    | "BTreeSet"
+                "Option" | "Result" | "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
             ) {
                 return args.iter().all(type_is_clone);
             }
@@ -6412,13 +6550,7 @@ fn type_is_debug(ty: &SemType) -> bool {
             }
             if matches!(
                 head,
-                "Option"
-                    | "Result"
-                    | "Vec"
-                    | "HashMap"
-                    | "BTreeMap"
-                    | "HashSet"
-                    | "BTreeSet"
+                "Option" | "Result" | "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
             ) {
                 return args.iter().all(type_is_debug);
             }
@@ -6464,13 +6596,7 @@ fn type_is_partial_eq(ty: &SemType) -> bool {
             }
             if matches!(
                 head,
-                "Option"
-                    | "Result"
-                    | "Vec"
-                    | "HashMap"
-                    | "BTreeMap"
-                    | "HashSet"
-                    | "BTreeSet"
+                "Option" | "Result" | "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
             ) {
                 return args.iter().all(type_is_partial_eq);
             }
@@ -6497,13 +6623,7 @@ fn type_is_eq(ty: &SemType) -> bool {
             }
             if matches!(
                 head,
-                "Option"
-                    | "Result"
-                    | "Vec"
-                    | "HashMap"
-                    | "BTreeMap"
-                    | "HashSet"
-                    | "BTreeSet"
+                "Option" | "Result" | "Vec" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
             ) {
                 return args.iter().all(type_is_eq);
             }
@@ -6615,16 +6735,7 @@ fn bind_generic_params(
     }
 
     match (expected, actual) {
-        (
-            SemType::Path {
-                path: ep,
-                args: ea,
-            },
-            SemType::Path {
-                path: ap,
-                args: aa,
-            },
-        ) => {
+        (SemType::Path { path: ep, args: ea }, SemType::Path { path: ap, args: aa }) => {
             if ep != ap || ea.len() != aa.len() {
                 return false;
             }
@@ -6674,10 +6785,7 @@ fn substitute_generic_type(
     match ty {
         SemType::Path { path, args } if path.len() == 1 && args.is_empty() => {
             if type_params.contains(&path[0]) {
-                return bindings
-                    .get(&path[0])
-                    .cloned()
-                    .unwrap_or(SemType::Unknown);
+                return bindings.get(&path[0]).cloned().unwrap_or(SemType::Unknown);
             }
             ty.clone()
         }
@@ -6707,9 +6815,11 @@ fn substitute_generic_type(
                 .map(|bound| substitute_generic_type(bound, type_params, bindings))
                 .collect(),
         ),
-        SemType::Iter(item) => {
-            SemType::Iter(Box::new(substitute_generic_type(item, type_params, bindings)))
-        }
+        SemType::Iter(item) => SemType::Iter(Box::new(substitute_generic_type(
+            item,
+            type_params,
+            bindings,
+        ))),
         SemType::Unit | SemType::Unknown => ty.clone(),
     }
 }
@@ -6748,7 +6858,9 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
             }
             lp.iter().zip(rp.iter()).all(|(a, b)| is_compatible(a, b)) && is_compatible(lr, rr)
         }
-        (_, SemType::TraitObject(bounds)) => bounds.iter().all(|bound| type_satisfies_bound(actual, bound)),
+        (_, SemType::TraitObject(bounds)) => bounds
+            .iter()
+            .all(|bound| type_satisfies_bound(actual, bound)),
         (SemType::Iter(left), SemType::Iter(right)) => is_compatible(left, right),
         (
             SemType::Path {
@@ -7032,7 +7144,10 @@ fn lower_pattern(
             if let Some(expected_fields) = struct_fields
                 && !*has_rest
             {
-                let bound = fields.iter().map(|field| field.name.as_str()).collect::<HashSet<_>>();
+                let bound = fields
+                    .iter()
+                    .map(|field| field.name.as_str())
+                    .collect::<HashSet<_>>();
                 let missing = expected_fields
                     .keys()
                     .filter(|name| !bound.contains(name.as_str()))
@@ -7206,7 +7321,13 @@ fn lower_pattern(
                                         .iter()
                                         .zip(expected_payload.iter())
                                         .map(|(item, expected_ty)| {
-                                            lower_pattern(item, expected_ty, context, locals, diagnostics)
+                                            lower_pattern(
+                                                item,
+                                                expected_ty,
+                                                context,
+                                                locals,
+                                                diagnostics,
+                                            )
                                         })
                                         .collect::<Vec<_>>();
                                     Some(Box::new(TypedPattern::Tuple(lowered)))
@@ -7635,10 +7756,7 @@ fn bind_destructure_pattern(
     }
 }
 
-fn collect_destructure_pattern_names(
-    pattern: &DestructurePattern,
-    names: &mut HashSet<String>,
-) {
+fn collect_destructure_pattern_names(pattern: &DestructurePattern, names: &mut HashSet<String>) {
     match pattern {
         DestructurePattern::Name(name) => {
             names.insert(name.clone());

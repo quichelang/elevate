@@ -3,8 +3,8 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process;
+use std::process::Command;
 use std::time::Instant;
 
 use elevate::{CompileOptions, ExperimentFlags};
@@ -43,8 +43,7 @@ fn run_build(args: &[String]) {
     let options = parse_compile_options(&non_flag_args).unwrap_or_else(|error| {
         eprintln!("error: {error}");
         process::exit(2);
-    }
-    );
+    });
 
     match elevate::crate_builder::build_ers_crate_with_options(&crate_root, release, &options) {
         Ok(summary) => {
@@ -250,10 +249,11 @@ fn run_bench(args: &[String]) {
         let mut latest = None;
         for _ in 0..iterations {
             let started = Instant::now();
-            let output = elevate::compile_source_with_options(case.source, &options).unwrap_or_else(|error| {
-                eprintln!("benchmark compile failed for `{}`: {error}", case.name);
-                process::exit(1);
-            });
+            let output = elevate::compile_source_with_options(case.source, &options)
+                .unwrap_or_else(|error| {
+                    eprintln!("benchmark compile failed for `{}`: {error}", case.name);
+                    process::exit(1);
+                });
             timings.push(started.elapsed().as_secs_f64() * 1000.0);
             latest = Some(output);
         }
@@ -330,7 +330,10 @@ fn run_bench(args: &[String]) {
             ));
         }
         if let Err(error) = fs::write(&path, csv.as_bytes()) {
-            eprintln!("failed to write benchmark report {}: {error}", path.display());
+            eprintln!(
+                "failed to write benchmark report {}: {error}",
+                path.display()
+            );
             process::exit(1);
         }
         println!("wrote benchmark report to {}", path.display());
@@ -363,14 +366,7 @@ fn print_comparison_table(
 ) -> usize {
     println!(
         "{:<34} {:>9} {:>9} {:>9} {:>8} {:>8} {:>11} {:>11}",
-        "case",
-        "median",
-        "p95",
-        "clone()",
-        "auto",
-        "hot",
-        "delta-median",
-        "status"
+        "case", "median", "p95", "clone()", "auto", "hot", "delta-median", "status"
     );
     let mut regressions = 0usize;
     for row in current {
@@ -645,7 +641,9 @@ fn usage() {
     eprintln!("  elevate <input-file.ers> [--emit-rust [output-file]] [experiment flags]");
     eprintln!("  elevate build <crate-root> [--release] [experiment flags]");
     eprintln!("  elevate test <crate-root> [experiment flags]");
-    eprintln!("  elevate bench [--iters N] [--warmup N] [--out report.csv] [--compare baseline.csv] [--fail-on-regression] [experiment flags]");
+    eprintln!(
+        "  elevate bench [--iters N] [--warmup N] [--out report.csv] [--compare baseline.csv] [--fail-on-regression] [experiment flags]"
+    );
     eprintln!("  elevate init <crate-root> [cargo init flags]");
     eprintln!("experiment flags:");
     eprintln!("  --exp-move-mut-args");
@@ -700,11 +698,19 @@ fn apply_elevate_templates(crate_root: &Path) -> Result<(), String> {
         src_dir.join("main.rs"),
         include_str!("templates/init_bootstrap_main.rs").as_bytes(),
     )
-    .map_err(|error| format!("failed to write {}: {error}", src_dir.join("main.rs").display()))?;
+    .map_err(|error| {
+        format!(
+            "failed to write {}: {error}",
+            src_dir.join("main.rs").display()
+        )
+    })?;
     let main_ers = src_dir.join("main.ers");
     if !main_ers.exists() {
-        fs::write(&main_ers, include_str!("templates/init_main.ers").as_bytes())
-            .map_err(|error| format!("failed to write {}: {error}", main_ers.display()))?;
+        fs::write(
+            &main_ers,
+            include_str!("templates/init_main.ers").as_bytes(),
+        )
+        .map_err(|error| format!("failed to write {}: {error}", main_ers.display()))?;
     }
     Ok(())
 }
@@ -793,9 +799,7 @@ fn parse_compile_options(args: &[String]) -> Result<CompileOptions, String> {
                 if index + 1 >= args.len() {
                     return Err("`--allow-hot-clone-place` expects a place name".to_string());
                 }
-                options
-                    .allow_hot_clone_places
-                    .push(args[index + 1].clone());
+                options.allow_hot_clone_places.push(args[index + 1].clone());
                 index += 2;
             }
             "--force-clone-place" => {

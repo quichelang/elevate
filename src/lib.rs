@@ -153,9 +153,10 @@ fn enforce_hot_clone_policy(
             continue;
         }
         let place = extract_hot_clone_place(note).unwrap_or_else(|| "<unknown>".to_string());
-        let is_allowed = options.allow_hot_clone_places.iter().any(|allowed| {
-            note.contains(&format!("place=`{}`", allowed))
-        });
+        let is_allowed = options
+            .allow_hot_clone_places
+            .iter()
+            .any(|allowed| note.contains(&format!("place=`{}`", allowed)));
         if is_allowed {
             continue;
         }
@@ -188,7 +189,7 @@ mod tests {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{compile_ast, compile_source, compile_source_with_options, CompileOptions};
+    use super::{CompileOptions, compile_ast, compile_source, compile_source_with_options};
 
     #[test]
     fn compile_smoke_test() {
@@ -293,10 +294,16 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("fn update(mut values: Vec<i64>) -> i64"));
-        assert!(output
-            .rust_code
-            .contains("values[(1) as usize] = (values[(1) as usize] % 3);"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn update(mut values: Vec<i64>) -> i64")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("values[(1) as usize] = (values[(1) as usize] % 3);")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -550,9 +557,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output
-            .rust_code
-            .contains("text.clone().into_bytes().len() + text.into_bytes().len()"));
+        assert!(
+            output
+                .rust_code
+                .contains("text.clone().into_bytes().len() + text.into_bytes().len()")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -620,7 +629,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("canvas = Canvas::put(canvas, i);"));
+        assert!(
+            output
+                .rust_code
+                .contains("canvas = Canvas::put(canvas, i);")
+        );
         assert!(!output.rust_code.contains("Canvas::put(canvas.clone(), i)"));
         assert!(
             output
@@ -650,8 +663,13 @@ mod tests {
         let mut options = CompileOptions::default();
         options.fail_on_hot_clone = true;
 
-        let error = compile_source_with_options(source, &options).expect_err("expected policy failure");
-        assert!(error.to_string().contains("Hot-path auto-clone rejected by policy"));
+        let error =
+            compile_source_with_options(source, &options).expect_err("expected policy failure");
+        assert!(
+            error
+                .to_string()
+                .contains("Hot-path auto-clone rejected by policy")
+        );
         assert!(error.to_string().contains("--allow-hot-clone-place text"));
     }
 
@@ -675,7 +693,8 @@ mod tests {
         options.fail_on_hot_clone = true;
         options.allow_hot_clone_places.push("text".to_string());
 
-        let output = compile_source_with_options(source, &options).expect("expected compile success");
+        let output =
+            compile_source_with_options(source, &options).expect("expected compile success");
         assert!(output.rust_code.contains("consume(text.clone());"));
         assert!(
             output
@@ -754,9 +773,7 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output
-            .rust_code
-            .contains("state.text.clone().into_bytes()"));
+        assert!(output.rust_code.contains("state.text.clone().into_bytes()"));
         assert!(output.rust_code.contains("state.text.into_bytes()"));
         assert!(
             output
@@ -815,7 +832,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("consume_text(pair.left.clone());"));
+        assert!(
+            output
+                .rust_code
+                .contains("consume_text(pair.left.clone());")
+        );
         assert!(output.rust_code.contains("consume_pair(pair);"));
         assert!(
             output
@@ -934,9 +955,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output
-            .rust_code
-            .contains("Foreign::has_prefix(&text, &prefix)"));
+        assert!(
+            output
+                .rust_code
+                .contains("Foreign::has_prefix(&text, &prefix)")
+        );
         assert!(!output.rust_code.contains("text.clone()"));
         assert!(!output.rust_code.contains("prefix.clone()"));
         assert_rust_code_compiles(&output.rust_code);
@@ -961,12 +984,16 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output
-            .rust_code
-            .contains("runtime_draw_scene(&cells, &fixed)"));
-        assert!(output
-            .rust_code
-            .contains("return runtime_draw_scene(&cells, &fixed);"));
+        assert!(
+            output
+                .rust_code
+                .contains("runtime_draw_scene(&cells, &fixed)")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("return runtime_draw_scene(&cells, &fixed);")
+        );
         assert!(!output.rust_code.contains("cells.clone()"));
         assert!(!output.rust_code.contains("fixed.clone()"));
         assert_rust_code_compiles(&output.rust_code);
@@ -1128,7 +1155,8 @@ mod tests {
 
         let mut failures = Vec::new();
         for case in cases {
-            let output = compile_source(case.source).expect("benchmark regression case should compile");
+            let output =
+                compile_source(case.source).expect("benchmark regression case should compile");
             let clone_calls = output.rust_code.match_indices(".clone()").count()
                 + output.rust_code.match_indices(".clone(").count();
             let hot_clone_notes = output
@@ -1270,18 +1298,18 @@ mod tests {
                 .rust_code
                 .contains("__elevate_shim_str_split_once_known(&rest")
         );
+        assert!(output.rust_code.contains(
+            "fn __elevate_shim_str_strip_prefix_known(__arg0: &str, __arg1: &str) -> String"
+        ));
         assert!(
             output
                 .rust_code
-                .contains("fn __elevate_shim_str_strip_prefix_known(__arg0: &str, __arg1: &str) -> String")
+                .contains("str::strip_prefix(__arg0, __arg1)")
         );
-        assert!(output.rust_code.contains("str::strip_prefix(__arg0, __arg1)"));
         assert!(output.rust_code.contains(".unwrap().to_string()"));
-        assert!(
-            output
-                .rust_code
-                .contains("fn __elevate_shim_str_split_once_known(__arg0: &str, __arg1: &str) -> (String, String)")
-        );
+        assert!(output.rust_code.contains(
+            "fn __elevate_shim_str_split_once_known(__arg0: &str, __arg1: &str) -> (String, String)"
+        ));
         assert!(output.rust_code.contains("str::split_once(__arg0, __arg1)"));
         assert!(output.rust_code.contains("let (__left, __right) ="));
         assert!(!output.rust_code.contains("text.clone()"));
@@ -1336,9 +1364,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output
-            .rust_code
-            .contains("fn demo(mut values: Vec<i64>, item: i64) -> usize"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn demo(mut values: Vec<i64>, item: i64) -> usize")
+        );
         assert!(output.rust_code.contains("values.push(item);"));
         assert!(output.rust_code.contains("Vec::len(&values)"));
         assert_rust_code_compiles(&output.rust_code);
@@ -1355,9 +1385,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output
-            .rust_code
-            .contains("let mut values: Vec<i64> = vec![];"));
+        assert!(
+            output
+                .rust_code
+                .contains("let mut values: Vec<i64> = vec![];")
+        );
         assert!(output.rust_code.contains("values.push(1);"));
         assert!(output.rust_code.contains("Vec::len(&values)"));
         assert_rust_code_compiles(&output.rust_code);
@@ -1373,9 +1405,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected compile error");
-        assert!(error
-            .to_string()
-            .contains("Cannot mutate immutable const `values` via method `push`"));
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot mutate immutable const `values` via method `push`")
+        );
     }
 
     #[test]
@@ -1389,9 +1423,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected compile error");
-        assert!(error
-            .to_string()
-            .contains("Cannot redeclare `value` because it is an immutable const in scope"));
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot redeclare `value` because it is an immutable const in scope")
+        );
     }
 
     #[test]
@@ -1408,9 +1444,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected compile error");
-        assert!(error
-            .to_string()
-            .contains("Cannot redeclare `value` because it is an immutable const in scope"));
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot redeclare `value` because it is an immutable const in scope")
+        );
     }
 
     #[test]
@@ -1544,7 +1582,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("fn keep<T: Clone + Copy>(value: T) -> T"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn keep<T: Clone + Copy>(value: T) -> T")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1579,9 +1621,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected generic bounds support");
-        assert!(output
-            .rust_code
-            .contains("fn ordered<T: Default + Ord>(left: T, right: T) -> bool"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn ordered<T: Default + Ord>(left: T, right: T) -> bool")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1600,7 +1644,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected PartialEq bound violation");
-        assert!(error.to_string().contains("does not satisfy bound `PartialEq`"));
+        assert!(
+            error
+                .to_string()
+                .contains("does not satisfy bound `PartialEq`")
+        );
     }
 
     #[test]
@@ -1823,7 +1871,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected compile error");
-        assert!(error.to_string().contains("Non-exhaustive match on tuple bool pattern"));
+        assert!(
+            error
+                .to_string()
+                .contains("Non-exhaustive match on tuple bool pattern")
+        );
         assert!(error.to_string().contains("(true, false)"));
         assert!(error.to_string().contains("(false, true)"));
     }
@@ -1863,7 +1915,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected compile error");
-        assert!(error.to_string().contains("Non-exhaustive match on `Maybe`"));
+        assert!(
+            error
+                .to_string()
+                .contains("Non-exhaustive match on `Maybe`")
+        );
         assert!(error.to_string().contains("None"));
     }
 
@@ -1886,7 +1942,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected compile error");
-        assert!(error.to_string().contains("Non-exhaustive match on finite tuple domain"));
+        assert!(
+            error
+                .to_string()
+                .contains("Non-exhaustive match on finite tuple domain")
+        );
         assert!(error.to_string().contains("(false, Switch::Left)"));
     }
 
@@ -1928,7 +1988,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected compile error");
-        assert!(error.to_string().contains("Non-exhaustive match on finite tuple domain"));
+        assert!(
+            error
+                .to_string()
+                .contains("Non-exhaustive match on finite tuple domain")
+        );
         assert!(error.to_string().contains("(false, Option::None)"));
     }
 
@@ -2089,7 +2153,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("for __item in vec![vec![1, 2], vec![3, 4]]"));
+        assert!(
+            output
+                .rust_code
+                .contains("for __item in vec![vec![1, 2], vec![3, 4]]")
+        );
         assert!(
             output
                 .rust_code
@@ -2197,7 +2265,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("for (key, value) in map.into_iter()"));
+        assert!(
+            output
+                .rust_code
+                .contains("for (key, value) in map.into_iter()")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -2213,7 +2285,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("for value in Option::Some(1).into_iter()"));
+        assert!(
+            output
+                .rust_code
+                .contains("for value in Option::Some(1).into_iter()")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -2227,7 +2303,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected compile error");
-        assert!(error.to_string().contains("Slice destructure requires Vec value"));
+        assert!(
+            error
+                .to_string()
+                .contains("Slice destructure requires Vec value")
+        );
     }
 
     #[test]
@@ -2301,7 +2381,11 @@ mod tests {
 
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("impl Point"));
-        assert!(output.rust_code.contains("pub fn bump(mut self: Point, n: i64) -> Point"));
+        assert!(
+            output
+                .rust_code
+                .contains("pub fn bump(mut self: Point, n: i64) -> Point")
+        );
         assert!(output.rust_code.contains("self.x += n;"));
         assert!(output.rust_code.contains("Point::bump(p, 1)"));
         assert_rust_code_compiles(&output.rust_code);
@@ -2341,8 +2425,16 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("pub trait Renderable: Debug + Display"));
-        assert!(output.rust_code.contains("fn render(self: Self) -> String;"));
+        assert!(
+            output
+                .rust_code
+                .contains("pub trait Renderable: Debug + Display")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("fn render(self: Self) -> String;")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -2399,10 +2491,16 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("fn read(value: &dyn Printable) -> i64"));
-        assert!(output
-            .rust_code
-            .contains("fn wrap(input: String) -> Box<dyn Printable>"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn read(value: &dyn Printable) -> i64")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("fn wrap(input: String) -> Box<dyn Printable>")
+        );
         assert!(output.rust_code.contains("return read(&input);"));
         assert_rust_code_compiles(&output.rust_code);
     }
@@ -2542,7 +2640,11 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("values[(1 as usize)..(3 as usize)].to_vec()"));
+        assert!(
+            output
+                .rust_code
+                .contains("values[(1 as usize)..(3 as usize)].to_vec()")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -2807,7 +2909,11 @@ world"#;
         "#;
 
         let strict_error = compile_source(source).expect_err("strict typing should reject");
-        assert!(strict_error.to_string().contains("expected `i32`, got `i64`"));
+        assert!(
+            strict_error
+                .to_string()
+                .contains("expected `i32`, got `i64`")
+        );
 
         let mut options = CompileOptions::default();
         options.experiments.numeric_coercion = true;
@@ -2819,7 +2925,7 @@ world"#;
 
     #[test]
     fn compile_ast_supports_explicit_cast_variant() {
-        use crate::ast as ast;
+        use crate::ast;
 
         let module = ast::Module {
             items: vec![ast::Item::Function(ast::FunctionDef {
@@ -2852,7 +2958,7 @@ world"#;
 
     #[test]
     fn compile_ast_supports_legacy_quiche_cast_macro() {
-        use crate::ast as ast;
+        use crate::ast;
 
         let module = ast::Module {
             items: vec![ast::Item::Function(ast::FunctionDef {
@@ -2891,7 +2997,7 @@ world"#;
 
     #[test]
     fn compile_ast_tolerates_duplicate_impl_self_param_from_bridge() {
-        use crate::ast as ast;
+        use crate::ast;
 
         let self_ty = ast::Type {
             path: vec!["Self".to_string()],
@@ -2981,7 +3087,7 @@ world"#;
 
     #[test]
     fn compile_ast_allows_vec_index_with_usize() {
-        use crate::ast as ast;
+        use crate::ast;
 
         let module = ast::Module {
             items: vec![ast::Item::Function(ast::FunctionDef {
@@ -3038,7 +3144,51 @@ world"#;
         "#;
 
         let output = compile_source(source).expect("from_iter associated call should compile");
-        assert!(output.rust_code.contains("HashMap::from_iter(pairs.into_iter())"));
+        assert!(
+            output
+                .rust_code
+                .contains("HashMap::from_iter(pairs.into_iter())")
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_lowers_strcat_calls_to_runtime_macro() {
+        let source = r#"
+            fn message(name: String) -> String {
+                return strcat("hi ", name);
+            }
+        "#;
+
+        let output = compile_source(source).expect("strcat calls should type-check");
+        assert!(output.rust_code.contains("crate::strcat!("));
+    }
+
+    #[test]
+    fn compile_preserves_usize_for_add_with_int_literal() {
+        let source = r#"
+            fn bump(count: usize) -> usize {
+                return count + 1;
+            }
+        "#;
+
+        let output = compile_source(source).expect("usize + int literal should compile");
+        assert!(output.rust_code.contains("(1 as usize)"));
+        assert!(!output.rust_code.contains("(count as i64)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_strips_dead_string_expression_statements() {
+        let source = r#"
+            fn value() -> i64 {
+                "this should be stripped";
+                return 1;
+            }
+        "#;
+
+        let output = compile_source(source).expect("dead string expression should be allowed");
+        assert!(!output.rust_code.contains("this should be stripped"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

@@ -133,14 +133,8 @@ pub enum RustStmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustAssignTarget {
     Path(String),
-    Field {
-        base: RustExpr,
-        field: String,
-    },
-    Index {
-        base: RustExpr,
-        index: RustExpr,
-    },
+    Field { base: RustExpr, field: String },
+    Index { base: RustExpr, index: RustExpr },
     Tuple(Vec<RustAssignTarget>),
 }
 
