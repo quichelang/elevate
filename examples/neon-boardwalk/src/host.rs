@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -52,6 +52,15 @@ struct WindowState {
     thread_handle: JoinHandle<()>,
 }
 
+struct SdlMainState {
+    _sdl: sdl2::Sdl,
+    event_pump: sdl2::EventPump,
+    canvas: sdl2::render::Canvas<sdl2::video::Window>,
+    texture_creator: sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+    buffer: Vec<u32>,
+    key_queue: VecDeque<KeyEvent>,
+}
+
 #[derive(Debug)]
 struct TerminalState {
     _raw: Option<RawModeGuard>,
@@ -59,19 +68,21 @@ struct TerminalState {
     _reader_handle: Option<JoinHandle<()>>,
 }
 
-#[derive(Debug)]
 enum RuntimeBackend {
     Window(WindowState),
+    SdlMain(SdlMainState),
     Terminal(TerminalState),
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct RuntimeRegistry {
     next_id: i64,
     backends: HashMap<i64, RuntimeBackend>,
 }
 
-static RUNTIMES: OnceLock<Mutex<RuntimeRegistry>> = OnceLock::new();
+thread_local! {
+    static RUNTIMES: RefCell<RuntimeRegistry> = RefCell::new(RuntimeRegistry::default());
+}
 
 pub fn runtime_start() -> i64 {
     // Window mode is opt-in while runtime/thread-safety work is in progress.
@@ -83,33 +94,35 @@ pub fn runtime_start() -> i64 {
     let enable_window_backend = window_opt_in;
     let backend = if enable_window_backend {
         start_window_runtime()
-            .map(RuntimeBackend::Window)
             .unwrap_or_else(|| RuntimeBackend::Terminal(start_terminal_runtime()))
     } else {
         RuntimeBackend::Terminal(start_terminal_runtime())
     };
 
-    let mut registry = runtimes().lock().expect("runtime registry mutex poisoned");
-    registry.next_id += 1;
-    let id = registry.next_id;
-    registry.backends.insert(id, backend);
-    id
+    with_registry(|registry| {
+        registry.next_id += 1;
+        let id = registry.next_id;
+        registry.backends.insert(id, backend);
+        id
+    })
 }
 
 pub fn runtime_poll_key(handle: i64) -> Option<KeyEvent> {
-    let mut registry = runtimes().lock().expect("runtime registry mutex poisoned");
-    let backend = registry.backends.get_mut(&handle)?;
-    match backend {
-        RuntimeBackend::Window(state) => poll_key_channel(&mut state.key_rx),
-        RuntimeBackend::Terminal(state) => poll_key_channel(&mut state.rx),
-    }
+    with_registry(|registry| {
+        let backend = registry.backends.get_mut(&handle)?;
+        match backend {
+            RuntimeBackend::Window(state) => poll_key_channel(&mut state.key_rx),
+            RuntimeBackend::SdlMain(state) => {
+                pump_sdl_events(state);
+                state.key_queue.pop_front()
+            }
+            RuntimeBackend::Terminal(state) => poll_key_channel(&mut state.rx),
+        }
+    })
 }
 
 pub fn runtime_shutdown(handle: i64) {
-    let backend = {
-        let mut registry = runtimes().lock().expect("runtime registry mutex poisoned");
-        registry.backends.remove(&handle)
-    };
+    let backend = with_registry(|registry| registry.backends.remove(&handle));
 
     if let Some(backend) = backend {
         match backend {
@@ -117,6 +130,7 @@ pub fn runtime_shutdown(handle: i64) {
                 let _ = state.shutdown_tx.send(());
                 let _ = state.thread_handle.join();
             }
+            RuntimeBackend::SdlMain(_) => {}
             RuntimeBackend::Terminal(_) => {
                 let mut out = io::stdout();
                 let _ = write!(out, "\x1b[0m\x1b[?25h\x1b[?1049l");
@@ -142,11 +156,10 @@ pub fn runtime_draw_scene(
     debug_enabled: bool,
     fps: i64,
 ) -> bool {
-    let mut rendered = false;
-    let mut packet: Option<RenderPacket> = None;
-    let mut registry = runtimes().lock().expect("runtime registry mutex poisoned");
-    for backend in registry.backends.values_mut() {
-        if let RuntimeBackend::Window(state) = backend {
+    with_registry(|registry| {
+        let mut rendered = false;
+        let mut packet: Option<RenderPacket> = None;
+        for backend in registry.backends.values_mut() {
             if packet.is_none() {
                 packet = Some(RenderPacket {
                     cells: cells.to_vec(),
@@ -159,16 +172,26 @@ pub fn runtime_draw_scene(
                     fps,
                 });
             }
-            if state
-                .render_tx
-                .send(packet.as_ref().expect("packet initialized").clone())
-                .is_ok()
-            {
-                rendered = true;
+
+            match backend {
+                RuntimeBackend::Window(state) => {
+                    if state
+                        .render_tx
+                        .send(packet.as_ref().expect("packet initialized").clone())
+                        .is_ok()
+                    {
+                        rendered = true;
+                    }
+                }
+                RuntimeBackend::SdlMain(state) => {
+                    rendered = render_sdl_frame(state, packet.as_ref().expect("packet initialized"))
+                        || rendered;
+                }
+                RuntimeBackend::Terminal(_) => {}
             }
         }
-    }
-    rendered
+        rendered
+    })
 }
 
 pub fn runtime_now_millis() -> i64 {
@@ -178,16 +201,20 @@ pub fn runtime_now_millis() -> i64 {
     elapsed.as_millis() as i64
 }
 
-fn start_window_runtime() -> Option<WindowState> {
+fn start_window_runtime() -> Option<RuntimeBackend> {
     let preferred = std::env::var("ELEVATE_NEON_BACKEND")
         .ok()
         .map(|value| value.to_ascii_lowercase())
         .unwrap_or_else(|| "sdl".to_string());
 
     if preferred == "minifb" {
-        start_minifb_window_runtime().or_else(start_sdl_window_runtime)
+        start_minifb_window_runtime()
+            .map(RuntimeBackend::Window)
+            .or_else(|| start_sdl_window_runtime().map(RuntimeBackend::SdlMain))
     } else {
-        start_sdl_window_runtime().or_else(start_minifb_window_runtime)
+        start_sdl_window_runtime()
+            .map(RuntimeBackend::SdlMain)
+            .or_else(|| start_minifb_window_runtime().map(RuntimeBackend::Window))
     }
 }
 
@@ -216,29 +243,31 @@ fn start_minifb_window_runtime() -> Option<WindowState> {
     }
 }
 
-fn start_sdl_window_runtime() -> Option<WindowState> {
-    let (key_tx, key_rx) = mpsc::channel::<KeyEvent>();
-    let (render_tx, render_rx) = mpsc::channel::<RenderPacket>();
-    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
-    let (init_tx, init_rx) = mpsc::channel::<bool>();
+fn start_sdl_window_runtime() -> Option<SdlMainState> {
+    const WIDTH: u32 = 1280;
+    const HEIGHT: u32 = 840;
 
-    let handle = thread::spawn(move || {
-        run_sdl_window_loop(key_tx, render_rx, shutdown_rx, init_tx);
-    });
+    let sdl = sdl2::init().ok()?;
+    let video = sdl.video().ok()?;
+    let window = video
+        .window("Neon Boardwalk - SDL/OpenGL Renderer", WIDTH, HEIGHT)
+        .position_centered()
+        .allow_highdpi()
+        .opengl()
+        .build()
+        .ok()?;
+    let canvas = window.into_canvas().accelerated().present_vsync().build().ok()?;
+    let texture_creator = canvas.texture_creator();
+    let event_pump = sdl.event_pump().ok()?;
 
-    match init_rx.recv_timeout(Duration::from_secs(2)) {
-        Ok(true) => Some(WindowState {
-            key_rx,
-            render_tx,
-            shutdown_tx,
-            thread_handle: handle,
-        }),
-        _ => {
-            let _ = shutdown_tx.send(());
-            let _ = handle.join();
-            None
-        }
-    }
+    Some(SdlMainState {
+        _sdl: sdl,
+        event_pump,
+        canvas,
+        texture_creator,
+        buffer: vec![0u32; WIDTH as usize * HEIGHT as usize],
+        key_queue: VecDeque::new(),
+    })
 }
 
 fn run_minifb_window_loop(
@@ -292,123 +321,63 @@ fn run_minifb_window_loop(
     let _ = key_tx.send(KeyEvent::Quit);
 }
 
-fn run_sdl_window_loop(
-    key_tx: Sender<KeyEvent>,
-    render_rx: Receiver<RenderPacket>,
-    shutdown_rx: Receiver<()>,
-    init_tx: Sender<bool>,
-) {
+fn pump_sdl_events(state: &mut SdlMainState) {
+    for event in state.event_pump.poll_iter() {
+        match event {
+            Event::Quit { .. } => state.key_queue.push_back(KeyEvent::Quit),
+            Event::KeyDown {
+                keycode: Some(keycode),
+                ..
+            } => {
+                if let Some(mapped) = map_sdl_key(keycode) {
+                    state.key_queue.push_back(mapped);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn render_sdl_frame(state: &mut SdlMainState, frame: &RenderPacket) -> bool {
     const WIDTH: u32 = 1280;
     const HEIGHT: u32 = 840;
 
-    let sdl = match sdl2::init() {
-        Ok(ctx) => ctx,
-        Err(_) => {
-            let _ = init_tx.send(false);
-            return;
-        }
-    };
-    let video = match sdl.video() {
-        Ok(video) => video,
-        Err(_) => {
-            let _ = init_tx.send(false);
-            return;
-        }
-    };
-    let window = match video
-        .window("Neon Boardwalk - SDL/OpenGL Renderer", WIDTH, HEIGHT)
-        .position_centered()
-        .allow_highdpi()
-        .opengl()
-        .build()
+    pump_sdl_events(state);
+    draw_scene(&mut state.buffer, WIDTH as i32, HEIGHT as i32, frame);
+
+    let mut texture = match state
+        .texture_creator
+        .create_texture_streaming(PixelFormatEnum::RGBA8888, WIDTH, HEIGHT)
     {
-        Ok(window) => window,
-        Err(_) => {
-            let _ = init_tx.send(false);
-            return;
-        }
+        Ok(texture) => texture,
+        Err(_) => return false,
     };
-    let mut canvas = match window.into_canvas().accelerated().present_vsync().build() {
-        Ok(canvas) => canvas,
-        Err(_) => {
-            let _ = init_tx.send(false);
-            return;
-        }
-    };
-    let texture_creator = canvas.texture_creator();
-    let mut texture =
-        match texture_creator.create_texture_streaming(PixelFormatEnum::RGBA8888, WIDTH, HEIGHT) {
-            Ok(texture) => texture,
-            Err(_) => {
-                let _ = init_tx.send(false);
-                return;
-            }
-        };
-    let mut event_pump = match sdl.event_pump() {
-        Ok(pump) => pump,
-        Err(_) => {
-            let _ = init_tx.send(false);
-            return;
-        }
-    };
-
-    let _ = init_tx.send(true);
-    let mut frame = RenderPacket::default();
-    let mut buffer = vec![0u32; WIDTH as usize * HEIGHT as usize];
-
-    'running: loop {
-        if shutdown_rx.try_recv().is_ok() {
-            break;
-        }
-
-        while let Ok(next) = render_rx.try_recv() {
-            frame = next;
-        }
-
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. } => break 'running,
-                Event::KeyDown {
-                    keycode: Some(keycode),
-                    ..
-                } => {
-                    if let Some(mapped) = map_sdl_key(keycode) {
-                        let _ = key_tx.send(mapped);
-                    }
+    if texture
+        .with_lock(None, |pixels: &mut [u8], pitch: usize| {
+            for y in 0..HEIGHT as usize {
+                let src = y * WIDTH as usize;
+                let dst = y * pitch;
+                for x in 0..WIDTH as usize {
+                    let color = state.buffer[src + x];
+                    let offset = dst + x * 4;
+                    pixels[offset] = ((color >> 16) & 0xFF) as u8;
+                    pixels[offset + 1] = ((color >> 8) & 0xFF) as u8;
+                    pixels[offset + 2] = (color & 0xFF) as u8;
+                    pixels[offset + 3] = 0xFF;
                 }
-                _ => {}
             }
-        }
-
-        draw_scene(&mut buffer, WIDTH as i32, HEIGHT as i32, &frame);
-        if texture
-            .with_lock(None, |pixels: &mut [u8], pitch: usize| {
-                for y in 0..HEIGHT as usize {
-                    let src = y * WIDTH as usize;
-                    let dst = y * pitch;
-                    for x in 0..WIDTH as usize {
-                        let color = buffer[src + x];
-                        let offset = dst + x * 4;
-                        pixels[offset] = ((color >> 16) & 0xFF) as u8;
-                        pixels[offset + 1] = ((color >> 8) & 0xFF) as u8;
-                        pixels[offset + 2] = (color & 0xFF) as u8;
-                        pixels[offset + 3] = 0xFF;
-                    }
-                }
-            })
-            .is_err()
-        {
-            break;
-        }
-
-        canvas.clear();
-        if canvas.copy(&texture, None, None).is_err() {
-            break;
-        }
-        canvas.present();
+        })
+        .is_err()
+    {
+        return false;
     }
 
-    let _ = key_tx.send(KeyEvent::Quit);
+    state.canvas.clear();
+    if state.canvas.copy(&texture, None, None).is_err() {
+        return false;
+    }
+    state.canvas.present();
+    true
 }
 
 fn map_sdl_key(key: Keycode) -> Option<KeyEvent> {
@@ -975,8 +944,11 @@ fn run_stty(args: &[&str]) -> io::Result<String> {
     }
 }
 
-fn runtimes() -> &'static Mutex<RuntimeRegistry> {
-    RUNTIMES.get_or_init(|| Mutex::new(RuntimeRegistry::default()))
+fn with_registry<R>(f: impl FnOnce(&mut RuntimeRegistry) -> R) -> R {
+    RUNTIMES.with(|registry| {
+        let mut borrowed = registry.borrow_mut();
+        f(&mut borrowed)
+    })
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> u32 {
