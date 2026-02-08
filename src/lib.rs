@@ -955,6 +955,9 @@ mod tests {
         assert!(output
             .rust_code
             .contains("runtime_draw_scene(&cells, &fixed)"));
+        assert!(output
+            .rust_code
+            .contains("return runtime_draw_scene(&cells, &fixed);"));
         assert!(!output.rust_code.contains("cells.clone()"));
         assert!(!output.rust_code.contains("fixed.clone()"));
         assert_rust_code_compiles(&output.rust_code);
@@ -996,6 +999,30 @@ mod tests {
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("draw_footer_status(message)"));
         assert!(!output.rust_code.contains("draw_footer_status(&message)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_does_not_auto_borrow_by_value_associated_calls_with_nominal_args() {
+        let source = r#"
+            rust {
+                pub struct Board;
+                impl Board {
+                    pub fn is_complete(board: Board) -> bool {
+                        let _ = board;
+                        true
+                    }
+                }
+            }
+
+            fn demo(board: Board) -> bool {
+                Board::is_complete(board)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("Board::is_complete(board)"));
+        assert!(!output.rust_code.contains("Board::is_complete(&board)"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

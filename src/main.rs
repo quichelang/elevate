@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process;
+use std::time::Instant;
 
 use elevate::{CompileOptions, ExperimentFlags};
 
@@ -17,6 +18,7 @@ fn main() {
     match args[0].as_str() {
         "build" => run_build(&args[1..]),
         "test" => run_test(&args[1..]),
+        "bench" => run_bench(&args[1..]),
         "init" => run_init(&args[1..]),
         _ => run_compile(&args),
     }
@@ -167,11 +169,272 @@ fn run_compile(args: &[String]) {
     }
 }
 
+fn run_bench(args: &[String]) {
+    let mut iterations = 30usize;
+    let mut warmup = 3usize;
+    let mut out: Option<PathBuf> = None;
+    let mut options_args = Vec::new();
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--iters" => {
+                if idx + 1 >= args.len() {
+                    eprintln!("error: --iters expects a positive integer");
+                    process::exit(2);
+                }
+                iterations = args[idx + 1].parse::<usize>().unwrap_or_else(|_| {
+                    eprintln!("error: invalid --iters value `{}`", args[idx + 1]);
+                    process::exit(2);
+                });
+                idx += 2;
+            }
+            "--warmup" => {
+                if idx + 1 >= args.len() {
+                    eprintln!("error: --warmup expects a non-negative integer");
+                    process::exit(2);
+                }
+                warmup = args[idx + 1].parse::<usize>().unwrap_or_else(|_| {
+                    eprintln!("error: invalid --warmup value `{}`", args[idx + 1]);
+                    process::exit(2);
+                });
+                idx += 2;
+            }
+            "--out" => {
+                if idx + 1 >= args.len() {
+                    eprintln!("error: --out expects a file path");
+                    process::exit(2);
+                }
+                out = Some(PathBuf::from(&args[idx + 1]));
+                idx += 2;
+            }
+            other => {
+                options_args.push(other.to_string());
+                idx += 1;
+            }
+        }
+    }
+    if iterations == 0 {
+        eprintln!("error: --iters must be greater than zero");
+        process::exit(2);
+    }
+    let options = parse_compile_options(&options_args).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        process::exit(2);
+    });
+
+    let mut results = Vec::new();
+    let cases = benchmark_cases();
+    for case in cases {
+        for _ in 0..warmup {
+            if let Err(error) = elevate::compile_source_with_options(case.source, &options) {
+                eprintln!("benchmark warmup failed for `{}`: {error}", case.name);
+                process::exit(1);
+            }
+        }
+        let mut timings = Vec::with_capacity(iterations);
+        let mut latest = None;
+        for _ in 0..iterations {
+            let started = Instant::now();
+            let output = elevate::compile_source_with_options(case.source, &options).unwrap_or_else(|error| {
+                eprintln!("benchmark compile failed for `{}`: {error}", case.name);
+                process::exit(1);
+            });
+            timings.push(started.elapsed().as_secs_f64() * 1000.0);
+            latest = Some(output);
+        }
+        let output = latest.expect("at least one iteration");
+        timings.sort_by(|a, b| a.total_cmp(b));
+        let median_ms = percentile_ms(&timings, 0.50);
+        let p95_ms = percentile_ms(&timings, 0.95);
+        let min_ms = *timings.first().unwrap_or(&0.0);
+        let max_ms = *timings.last().unwrap_or(&0.0);
+        let clone_calls = output.rust_code.match_indices(".clone(").count()
+            + output.rust_code.match_indices(".clone()").count();
+        let auto_clone_notes = output
+            .ownership_notes
+            .iter()
+            .filter(|note| note.starts_with("auto-clone inserted"))
+            .count();
+        let hot_clone_notes = output
+            .ownership_notes
+            .iter()
+            .filter(|note| note.starts_with("hot-clone:auto "))
+            .count();
+        results.push(BenchResult {
+            name: case.name.to_string(),
+            iterations,
+            warmup,
+            median_ms,
+            p95_ms,
+            min_ms,
+            max_ms,
+            clone_calls,
+            auto_clone_notes,
+            hot_clone_notes,
+            rust_bytes: output.rust_code.len(),
+        });
+    }
+
+    println!(
+        "{:<34} {:>9} {:>9} {:>9} {:>9} {:>8} {:>8} {:>8}",
+        "case", "median", "p95", "min", "max", "clone()", "auto", "hot"
+    );
+    for row in &results {
+        println!(
+            "{:<34} {:>9.2} {:>9.2} {:>9.2} {:>9.2} {:>8} {:>8} {:>8}",
+            row.name,
+            row.median_ms,
+            row.p95_ms,
+            row.min_ms,
+            row.max_ms,
+            row.clone_calls,
+            row.auto_clone_notes,
+            row.hot_clone_notes
+        );
+    }
+
+    if let Some(path) = out {
+        let mut csv = String::from(
+            "case,iterations,warmup,median_ms,p95_ms,min_ms,max_ms,clone_calls,auto_clone_notes,hot_clone_notes,rust_bytes\n",
+        );
+        for row in &results {
+            csv.push_str(&format!(
+                "{},{},{},{:.3},{:.3},{:.3},{:.3},{},{},{},{}\n",
+                row.name,
+                row.iterations,
+                row.warmup,
+                row.median_ms,
+                row.p95_ms,
+                row.min_ms,
+                row.max_ms,
+                row.clone_calls,
+                row.auto_clone_notes,
+                row.hot_clone_notes,
+                row.rust_bytes
+            ));
+        }
+        if let Err(error) = fs::write(&path, csv.as_bytes()) {
+            eprintln!("failed to write benchmark report {}: {error}", path.display());
+            process::exit(1);
+        }
+        println!("wrote benchmark report to {}", path.display());
+    }
+}
+
+fn percentile_ms(sorted_ms: &[f64], quantile: f64) -> f64 {
+    if sorted_ms.is_empty() {
+        return 0.0;
+    }
+    let last = sorted_ms.len() - 1;
+    let idx = ((last as f64) * quantile).round() as usize;
+    sorted_ms[idx.min(last)]
+}
+
+struct BenchCase {
+    name: &'static str,
+    source: &'static str,
+}
+
+struct BenchResult {
+    name: String,
+    iterations: usize,
+    warmup: usize,
+    median_ms: f64,
+    p95_ms: f64,
+    min_ms: f64,
+    max_ms: f64,
+    clone_calls: usize,
+    auto_clone_notes: usize,
+    hot_clone_notes: usize,
+    rust_bytes: usize,
+}
+
+fn benchmark_cases() -> Vec<BenchCase> {
+    vec![
+        BenchCase {
+            name: "strings: read-only borrow",
+            source: r#"
+                fn demo(text: String, needle: String) -> bool {
+                    std::mem::drop(str::contains(text, needle));
+                    return str::contains(text, needle);
+                }
+            "#,
+        },
+        BenchCase {
+            name: "strings: mixed move chain",
+            source: r#"
+                rust { pub fn consume(bytes: Vec<u8>) -> usize { bytes.len() } }
+                fn demo(text: String) -> usize {
+                    std::mem::drop(text.len());
+                    consume(text.into_bytes())
+                }
+            "#,
+        },
+        BenchCase {
+            name: "vec: loop ownership",
+            source: r#"
+                rust { pub fn consume(values: Vec<i64>) { let _ = values.len(); } }
+                fn demo(values: Vec<i64>) {
+                    for _ in 0..3 {
+                        consume(values);
+                    }
+                    return;
+                }
+            "#,
+        },
+        BenchCase {
+            name: "interop: runtime_draw_scene",
+            source: r#"
+                rust {
+                    pub fn runtime_draw_scene(cells: &[i64], fixed: &[bool]) -> bool {
+                        !cells.is_empty() && !fixed.is_empty()
+                    }
+                }
+                fn demo(cells: Vec<i64>, fixed: Vec<bool>) -> bool {
+                    const drawn = runtime_draw_scene(cells, fixed);
+                    if drawn {
+                        return runtime_draw_scene(cells, fixed);
+                    }
+                    runtime_draw_scene(cells, fixed)
+                }
+            "#,
+        },
+        BenchCase {
+            name: "nominal: by-value associated",
+            source: r#"
+                rust {
+                    pub struct Board;
+                    impl Board {
+                        pub fn is_complete(board: Board) -> bool {
+                            let _ = board;
+                            true
+                        }
+                    }
+                }
+                fn demo(board: Board) -> bool {
+                    Board::is_complete(board)
+                }
+            "#,
+        },
+        BenchCase {
+            name: "contrived: nested containers",
+            source: r#"
+                rust { pub fn observe(data: &[Vec<String>]) -> bool { !data.is_empty() } }
+                fn demo(data: Vec<Vec<String>>) -> bool {
+                    std::mem::drop(observe(data));
+                    observe(data)
+                }
+            "#,
+        },
+    ]
+}
+
 fn usage() {
     eprintln!("usage:");
     eprintln!("  elevate <input-file.ers> [--emit-rust [output-file]] [experiment flags]");
     eprintln!("  elevate build <crate-root> [--release] [experiment flags]");
     eprintln!("  elevate test <crate-root> [experiment flags]");
+    eprintln!("  elevate bench [--iters N] [--warmup N] [--out report.csv] [experiment flags]");
     eprintln!("  elevate init <crate-root> [cargo init flags]");
     eprintln!("experiment flags:");
     eprintln!("  --exp-move-mut-args");
