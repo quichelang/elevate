@@ -22,6 +22,7 @@ use ir::typed::TypedModule;
 pub struct ExperimentFlags {
     pub move_mut_args: bool,
     pub infer_local_bidi: bool,
+    pub infer_literal_bidi: bool,
     pub effect_rows: bool,
     pub effect_rows_internal: bool,
     pub infer_principal_fallback: bool,
@@ -36,6 +37,9 @@ impl ExperimentFlags {
         }
         if self.infer_local_bidi {
             out.push("exp_infer_local_bidi");
+        }
+        if self.infer_literal_bidi {
+            out.push("exp_literal_bidi");
         }
         if self.effect_rows {
             out.push("exp_effect_rows");
@@ -155,12 +159,20 @@ pub fn compile_ast_with_options(
     module: &Module,
     options: &CompileOptions,
 ) -> Result<CompilerOutput, CompileError> {
+    if let Err(message) = validate_experiment_flags(&options.experiments) {
+        return Err(CompileError::from_diagnostics(
+            vec![Diagnostic::new(message, diag::Span::new(0, 0))],
+            options.source_name.clone(),
+            None,
+        ));
+    }
     let warnings = collect_compile_warnings(module, options);
     let typed = passes::lower_to_typed_with_options(
         module,
         &passes::TypecheckOptions {
             numeric_coercion: options.experiments.numeric_coercion,
             infer_local_bidi: options.experiments.infer_local_bidi,
+            infer_literal_bidi: options.experiments.infer_literal_bidi,
             infer_principal_fallback: options.experiments.infer_principal_fallback,
             effect_rows_surface: options.experiments.effect_rows,
             effect_rows_internal: options.experiments.effect_rows_internal,
@@ -179,10 +191,9 @@ pub fn compile_ast_with_options(
             .ownership_notes
             .push(format!("experimental flag enabled: {name}"));
     }
-    enforce_hot_clone_policy(&lowered.ownership_notes, options)
-        .map_err(|diagnostics| {
-            CompileError::from_diagnostics(diagnostics, options.source_name.clone(), None)
-        })?;
+    enforce_hot_clone_policy(&lowered.ownership_notes, options).map_err(|diagnostics| {
+        CompileError::from_diagnostics(diagnostics, options.source_name.clone(), None)
+    })?;
     let ownership_notes = lowered.ownership_notes.clone();
     let rust_code = codegen::emit_rust_module(&lowered);
 
@@ -193,6 +204,15 @@ pub fn compile_ast_with_options(
         ownership_notes,
         warnings,
     })
+}
+
+pub fn validate_experiment_flags(experiments: &ExperimentFlags) -> Result<(), String> {
+    if experiments.infer_local_bidi && experiments.infer_literal_bidi {
+        return Err(
+            "`--exp-infer-local-bidi` and `--exp-literal-bidi` are mutually exclusive".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn collect_compile_warnings(module: &Module, options: &CompileOptions) -> Vec<Diagnostic> {
@@ -351,7 +371,8 @@ mod tests {
         let source = "fn broken( { return 1; }";
         let mut options = CompileOptions::default();
         options.source_name = Some("examples/broken.ers".to_string());
-        let error = compile_source_with_options(source, &options).expect_err("expected parse error");
+        let error =
+            compile_source_with_options(source, &options).expect_err("expected parse error");
         let rendered = error.to_string();
         assert!(rendered.contains("examples/broken.ers:"));
         assert!(rendered.contains("Expected"));
@@ -366,7 +387,8 @@ mod tests {
         "#;
         let mut options = CompileOptions::default();
         options.source_name = Some("examples/missing.ers".to_string());
-        let error = compile_source_with_options(source, &options).expect_err("expected unknown function");
+        let error =
+            compile_source_with_options(source, &options).expect_err("expected unknown function");
         let rendered = error.to_string();
         assert!(rendered.contains("examples/missing.ers:"));
         assert!(rendered.contains("Unknown function `missing_call`"));
@@ -486,11 +508,9 @@ mod tests {
                 .rust_code
                 .contains("fn update(mut board: Vec<Vec<i64>>) -> i64")
         );
-        assert!(
-            output
-                .rust_code
-                .contains("board[(1) as usize][(2) as usize] = (board[(1) as usize][(2) as usize] + 1);")
-        );
+        assert!(output.rust_code.contains(
+            "board[(1) as usize][(2) as usize] = (board[(1) as usize][(2) as usize] + 1);"
+        ));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1731,7 +1751,11 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected unknown function diagnostic");
-        assert!(error.to_string().contains("Unknown function `missing_call`"));
+        assert!(
+            error
+                .to_string()
+                .contains("Unknown function `missing_call`")
+        );
     }
 
     #[test]
@@ -1768,7 +1792,11 @@ mod tests {
         options.experiments.infer_local_bidi = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
-        assert!(output.rust_code.contains("fn maybe(flag: bool) -> Option<i64>"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn maybe(flag: bool) -> Option<i64>")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1787,7 +1815,9 @@ mod tests {
         assert!(rendered.contains("--exp-infer-local-bidi"));
         assert!(!rendered.contains("`+` expects numeric operands"));
         assert_eq!(
-            rendered.matches("Cannot infer type for `left` in strict mode").count(),
+            rendered
+                .matches("Cannot infer type for `left` in strict mode")
+                .count(),
             1
         );
     }
@@ -1842,7 +1872,11 @@ mod tests {
         options.experiments.infer_local_bidi = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
-        assert!(output.rust_code.contains("fn parse(flag: bool) -> Result<i64, String>"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn parse(flag: bool) -> Result<i64, String>")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1861,7 +1895,11 @@ mod tests {
         options.experiments.infer_local_bidi = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
-        assert!(output.rust_code.contains("fn choose(flag: bool) -> Option<i64>"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn choose(flag: bool) -> Option<i64>")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -2083,7 +2121,11 @@ mod tests {
 
         let output = compile_source(source).expect("expected generic trait impl target support");
         assert!(output.rust_code.contains("impl<T> Named for Wrapper<T>"));
-        assert!(output.rust_code.contains("fn name(self: Wrapper<T>) -> String"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn name(self: Wrapper<T>) -> String")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -2205,6 +2247,75 @@ mod tests {
 
         let error = compile_source(source).expect_err("expected Hash bound violation");
         assert!(error.to_string().contains("does not satisfy bound `Hash`"));
+    }
+
+    #[test]
+    fn compile_supports_structural_method_polymorphism_via_specialization() {
+        let source = r#"
+            struct Label { text: String; }
+
+            impl Label {
+                fn draw_label(self: Self, prefix: String) -> String {
+                    return prefix + self.text;
+                }
+            }
+
+            fn render<T>(value: T) -> String {
+                return value.draw_label("> ");
+            }
+
+            fn run(label: Label) -> String {
+                return render(label);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected structural method specialization");
+        assert!(output.rust_code.contains("__elevate_row_render_"));
+        assert!(!output.rust_code.contains("fn render<T>"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_structural_field_polymorphism_via_specialization() {
+        let source = r#"
+            struct Entry { count: i64; }
+
+            fn read<T>(value: T) -> i64 {
+                return value.count;
+            }
+
+            fn run(item: Entry) -> i64 {
+                return read(item);
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected structural field specialization");
+        assert!(output.rust_code.contains("__elevate_row_read_"));
+        assert!(!output.rust_code.contains("fn read<T>"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_reports_missing_structural_member_at_call_site() {
+        let source = r#"
+            struct Entry { count: i64; }
+            struct Empty { id: i64; }
+
+            fn read<T>(value: T) -> i64 {
+                return value.count;
+            }
+
+            fn run(item: Empty) -> i64 {
+                return read(item);
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected missing structural field");
+        assert!(
+            error
+                .to_string()
+                .contains("does not provide required field `count`")
+        );
     }
 
     #[test]
@@ -2393,8 +2504,8 @@ mod tests {
 
         let mut options = CompileOptions::default();
         options.experiments.effect_rows = true;
-        let error =
-            compile_source_with_options(source, &options).expect_err("expected effect row mismatch");
+        let error = compile_source_with_options(source, &options)
+            .expect_err("expected effect row mismatch");
         let rendered = error.to_string();
         assert!(rendered.contains("missing capability `call::std::mem::drop`"));
     }

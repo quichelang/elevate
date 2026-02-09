@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -48,6 +49,25 @@ struct FunctionSig {
     type_param_bounds: HashMap<String, Vec<SemType>>,
     params: Vec<SemType>,
     return_type: SemType,
+    structural_requirements: HashMap<String, StructuralRequirements>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StructuralRequirements {
+    fields: BTreeSet<String>,
+    methods: HashMap<String, BTreeSet<usize>>,
+}
+
+impl StructuralRequirements {
+    fn is_empty(&self) -> bool {
+        self.fields.is_empty() && self.methods.values().all(BTreeSet::is_empty)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StructuralSpecialization {
+    specialized_name: String,
+    bindings: HashMap<String, SemType>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,12 +81,15 @@ struct Context {
     trait_impls: HashMap<String, HashSet<String>>,
     globals: HashMap<String, SemType>,
     rust_block_functions: HashSet<String>,
+    structural_specializations: RefCell<HashMap<String, Vec<StructuralSpecialization>>>,
+    structural_specialization_lookup: RefCell<HashMap<(String, Vec<String>), String>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TypecheckOptions {
     pub numeric_coercion: bool,
     pub infer_local_bidi: bool,
+    pub infer_literal_bidi: bool,
     pub infer_principal_fallback: bool,
     pub effect_rows_surface: bool,
     pub effect_rows_internal: bool,
@@ -75,6 +98,7 @@ pub struct TypecheckOptions {
 thread_local! {
     static NUMERIC_COERCION_ENABLED: Cell<bool> = Cell::new(false);
     static INFER_LOCAL_BIDI_ENABLED: Cell<bool> = Cell::new(false);
+    static INFER_LITERAL_BIDI_ENABLED: Cell<bool> = Cell::new(false);
     static INFER_PRINCIPAL_FALLBACK_ENABLED: Cell<bool> = Cell::new(false);
     static EFFECT_ROWS_SURFACE_ENABLED: Cell<bool> = Cell::new(false);
     static EFFECT_ROWS_INTERNAL_ENABLED: Cell<bool> = Cell::new(false);
@@ -89,33 +113,34 @@ static RUSTDEX_TRAIT_CHECKS: OnceLock<Mutex<HashMap<(String, String), bool>>> = 
 fn with_typecheck_options_scope<T>(options: &TypecheckOptions, f: impl FnOnce() -> T) -> T {
     NUMERIC_COERCION_ENABLED.with(|cell| {
         INFER_LOCAL_BIDI_ENABLED.with(|bidi_cell| {
-            INFER_PRINCIPAL_FALLBACK_ENABLED.with(|fallback_cell| {
-                let previous_numeric = cell.replace(options.numeric_coercion);
-                let previous_bidi = bidi_cell.replace(options.infer_local_bidi);
-                let previous_fallback =
-                    fallback_cell.replace(options.infer_principal_fallback);
-                let previous_effect_rows_surface =
-                    EFFECT_ROWS_SURFACE_ENABLED.with(|effect_cell| {
-                        effect_cell.replace(options.effect_rows_surface)
-                    });
-                let previous_effect_rows =
-                    EFFECT_ROWS_INTERNAL_ENABLED.with(|effect_cell| {
-                        effect_cell.replace(options.effect_rows_internal)
-                    });
-                STRICT_HOLE_REPORTED.with(|reported| {
-                    let previous_emitted = STRICT_HOLE_EMITTED.with(|emitted| emitted.replace(false));
-                    let previous_reported = std::mem::take(&mut *reported.borrow_mut());
-                    let out = f();
-                    *reported.borrow_mut() = previous_reported;
-                    STRICT_HOLE_EMITTED.with(|emitted| emitted.set(previous_emitted));
-                    cell.set(previous_numeric);
-                    bidi_cell.set(previous_bidi);
-                    fallback_cell.set(previous_fallback);
-                    EFFECT_ROWS_SURFACE_ENABLED
-                        .with(|effect_cell| effect_cell.set(previous_effect_rows_surface));
-                    EFFECT_ROWS_INTERNAL_ENABLED
-                        .with(|effect_cell| effect_cell.set(previous_effect_rows));
-                    out
+            INFER_LITERAL_BIDI_ENABLED.with(|literal_bidi_cell| {
+                INFER_PRINCIPAL_FALLBACK_ENABLED.with(|fallback_cell| {
+                    let previous_numeric = cell.replace(options.numeric_coercion);
+                    let previous_bidi = bidi_cell.replace(options.infer_local_bidi);
+                    let previous_literal_bidi =
+                        literal_bidi_cell.replace(options.infer_literal_bidi);
+                    let previous_fallback = fallback_cell.replace(options.infer_principal_fallback);
+                    let previous_effect_rows_surface = EFFECT_ROWS_SURFACE_ENABLED
+                        .with(|effect_cell| effect_cell.replace(options.effect_rows_surface));
+                    let previous_effect_rows = EFFECT_ROWS_INTERNAL_ENABLED
+                        .with(|effect_cell| effect_cell.replace(options.effect_rows_internal));
+                    STRICT_HOLE_REPORTED.with(|reported| {
+                        let previous_emitted =
+                            STRICT_HOLE_EMITTED.with(|emitted| emitted.replace(false));
+                        let previous_reported = std::mem::take(&mut *reported.borrow_mut());
+                        let out = f();
+                        *reported.borrow_mut() = previous_reported;
+                        STRICT_HOLE_EMITTED.with(|emitted| emitted.set(previous_emitted));
+                        cell.set(previous_numeric);
+                        bidi_cell.set(previous_bidi);
+                        literal_bidi_cell.set(previous_literal_bidi);
+                        fallback_cell.set(previous_fallback);
+                        EFFECT_ROWS_SURFACE_ENABLED
+                            .with(|effect_cell| effect_cell.set(previous_effect_rows_surface));
+                        EFFECT_ROWS_INTERNAL_ENABLED
+                            .with(|effect_cell| effect_cell.set(previous_effect_rows));
+                        out
+                    })
                 })
             })
         })
@@ -128,6 +153,10 @@ fn numeric_coercion_enabled() -> bool {
 
 fn infer_local_bidi_enabled() -> bool {
     INFER_LOCAL_BIDI_ENABLED.with(|cell| cell.get())
+}
+
+fn infer_literal_bidi_enabled() -> bool {
+    INFER_LITERAL_BIDI_ENABLED.with(|cell| cell.get())
 }
 
 fn infer_principal_fallback_enabled() -> bool {
@@ -220,9 +249,7 @@ annotation or enable `--exp-infer-local-bidi`."
 
 fn inference_hole_message(default_message: String, site: &str, annotation: &str) -> String {
     if infer_principal_fallback_enabled() {
-        return format!(
-            "Principal fallback: add {annotation} on {site} to pin a principal type"
-        );
+        return format!("Principal fallback: add {annotation} on {site} to pin a principal type");
     }
     default_message
 }
@@ -247,6 +274,8 @@ pub fn lower_to_typed_with_options(
             trait_impls: HashMap::new(),
             globals: HashMap::new(),
             rust_block_functions: HashSet::new(),
+            structural_specializations: RefCell::new(HashMap::new()),
+            structural_specialization_lookup: RefCell::new(HashMap::new()),
         };
 
         collect_definitions(module, &mut context, &mut diagnostics);
@@ -255,6 +284,8 @@ pub fn lower_to_typed_with_options(
             .iter()
             .filter_map(|item| lower_item(item, &mut context, &mut diagnostics))
             .collect::<Vec<_>>();
+        let mut items = items;
+        materialize_structural_specializations(module, &mut items, &mut context, &mut diagnostics);
 
         if diagnostics.is_empty() {
             if effect_rows_analysis_enabled() {
@@ -291,7 +322,10 @@ fn analyze_effect_rows_internal(
         match item {
             TypedItem::Function(def) => {
                 let mut row = direct_effects_for_stmts(&def.body);
-                merge_effect_rows(&mut row, &effect_caps_for_type_params(&def.type_params, &trait_caps));
+                merge_effect_rows(
+                    &mut row,
+                    &effect_caps_for_type_params(&def.type_params, &trait_caps),
+                );
                 validate_generic_method_capabilities(
                     &def.body,
                     &type_param_cap_rows(&def.type_params, &trait_caps),
@@ -456,7 +490,13 @@ fn expand_trait_capabilities(
     let mut cache = HashMap::<String, EffectRow>::new();
     let mut visiting = HashSet::<String>::new();
     for trait_name in context.traits.keys() {
-        let row = walk(trait_name, context, trait_methods, &mut cache, &mut visiting);
+        let row = walk(
+            trait_name,
+            context,
+            trait_methods,
+            &mut cache,
+            &mut visiting,
+        );
         cache.insert(trait_name.clone(), row);
     }
     cache
@@ -518,12 +558,9 @@ fn validate_stmt_method_capabilities(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match stmt {
-        TypedStmt::Const(def) => validate_expr_method_capabilities(
-            &def.value,
-            type_param_caps,
-            trait_caps,
-            diagnostics,
-        ),
+        TypedStmt::Const(def) => {
+            validate_expr_method_capabilities(&def.value, type_param_caps, trait_caps, diagnostics)
+        }
         TypedStmt::DestructureConst { value, .. } => {
             validate_expr_method_capabilities(value, type_param_caps, trait_caps, diagnostics)
         }
@@ -541,7 +578,12 @@ fn validate_stmt_method_capabilities(
             else_body,
         } => {
             validate_expr_method_capabilities(condition, type_param_caps, trait_caps, diagnostics);
-            validate_generic_method_capabilities(then_body, type_param_caps, trait_caps, diagnostics);
+            validate_generic_method_capabilities(
+                then_body,
+                type_param_caps,
+                trait_caps,
+                diagnostics,
+            );
             if let Some(else_body) = else_body {
                 validate_generic_method_capabilities(
                     else_body,
@@ -587,7 +629,10 @@ fn validate_expr_method_capabilities(
                     let hint = if suggested.is_empty() {
                         "add an explicit trait bound".to_string()
                     } else {
-                        format!("add a bound like `{type_param_name}: {}`", suggested.join(" + "))
+                        format!(
+                            "add a bound like `{type_param_name}: {}`",
+                            suggested.join(" + ")
+                        )
                     };
                     diagnostics.push(Diagnostic::new(
                         format!(
@@ -658,12 +703,7 @@ fn validate_expr_method_capabilities(
         TypedExprKind::Block { body, tail } => {
             validate_generic_method_capabilities(body, type_param_caps, trait_caps, diagnostics);
             if let Some(tail) = tail {
-                validate_expr_method_capabilities(
-                    tail,
-                    type_param_caps,
-                    trait_caps,
-                    diagnostics,
-                );
+                validate_expr_method_capabilities(tail, type_param_caps, trait_caps, diagnostics);
             }
         }
         TypedExprKind::Closure { body, .. } => {
@@ -1671,6 +1711,11 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                         .as_ref()
                         .map(|ty| type_from_ast_in_context(ty, context))
                         .unwrap_or(SemType::Unknown),
+                    structural_requirements: collect_structural_requirements_for_function(
+                        &def.type_params,
+                        &def.params,
+                        &def.body,
+                    ),
                 };
                 context.functions.insert(def.name.clone(), sig);
             }
@@ -1740,10 +1785,12 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                                 )
                             })
                             .unwrap_or(SemType::Unknown),
+                        structural_requirements: HashMap::new(),
                     };
-                    context
-                        .functions
-                        .insert(format!("{}::{}", impl_lookup_name(&def.target), method.name), sig);
+                    context.functions.insert(
+                        format!("{}::{}", impl_lookup_name(&def.target), method.name),
+                        sig,
+                    );
                 }
             }
             Item::Const(def) => {
@@ -1766,6 +1813,597 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     .extend(extract_rust_block_function_names(code));
             }
         }
+    }
+}
+
+fn function_has_structural_requirements(sig: &FunctionSig) -> bool {
+    sig.structural_requirements
+        .values()
+        .any(|requirements| !requirements.is_empty())
+}
+
+fn materialize_structural_specializations(
+    module: &Module,
+    items: &mut Vec<TypedItem>,
+    context: &mut Context,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let templates = module
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Function(def) = item {
+                Some((def.name.clone(), def))
+            } else {
+                None
+            }
+        })
+        .collect::<HashMap<_, _>>();
+    let structural_templates = context
+        .functions
+        .iter()
+        .filter_map(|(name, sig)| function_has_structural_requirements(sig).then_some(name.clone()))
+        .collect::<HashSet<_>>();
+    if structural_templates.is_empty() {
+        return;
+    }
+
+    let mut emitted = HashSet::<String>::new();
+    loop {
+        let pending = context
+            .structural_specializations
+            .borrow()
+            .iter()
+            .flat_map(|(template_name, specs)| {
+                specs
+                    .iter()
+                    .filter(|spec| !emitted.contains(&spec.specialized_name))
+                    .map(|spec| (template_name.clone(), spec.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        if pending.is_empty() {
+            break;
+        }
+        for (template_name, spec) in pending {
+            emitted.insert(spec.specialized_name.clone());
+            let Some(template_def) = templates.get(&template_name) else {
+                continue;
+            };
+            let Some(template_sig) = context.functions.get(&template_name).cloned() else {
+                continue;
+            };
+            let Some(specialized_def) = specialize_function_def_ast(
+                template_def,
+                &spec.specialized_name,
+                &spec.bindings,
+                diagnostics,
+            ) else {
+                continue;
+            };
+            let specialized_sig = substitute_function_sig(&template_sig, &spec.bindings);
+            context
+                .functions
+                .insert(spec.specialized_name.clone(), specialized_sig);
+            let specialized_item = Item::Function(specialized_def);
+            if let Some(lowered) = lower_item(&specialized_item, context, diagnostics) {
+                items.push(lowered);
+            }
+        }
+    }
+
+    let lookup = context.structural_specialization_lookup.borrow().clone();
+    rewrite_structural_calls(items, &lookup);
+
+    let specialized_templates = lookup
+        .keys()
+        .map(|(template_name, _)| template_name.clone())
+        .collect::<HashSet<_>>();
+    items.retain(|item| {
+        !matches!(
+            item,
+            TypedItem::Function(def)
+                if structural_templates.contains(&def.name)
+                    && specialized_templates.contains(&def.name)
+        )
+    });
+}
+
+fn substitute_function_sig(sig: &FunctionSig, bindings: &HashMap<String, SemType>) -> FunctionSig {
+    let bound_names = bindings.keys().cloned().collect::<HashSet<_>>();
+    FunctionSig {
+        type_params: Vec::new(),
+        type_param_bounds: HashMap::new(),
+        params: sig
+            .params
+            .iter()
+            .map(|param| substitute_generic_type(param, &bound_names, bindings))
+            .collect(),
+        return_type: substitute_generic_type(&sig.return_type, &bound_names, bindings),
+        structural_requirements: HashMap::new(),
+    }
+}
+
+fn specialize_function_def_ast(
+    template: &crate::ast::FunctionDef,
+    specialized_name: &str,
+    bindings: &HashMap<String, SemType>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<crate::ast::FunctionDef> {
+    for param in &template.type_params {
+        if !bindings.contains_key(&param.name) {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Cannot specialize structural function `{}` because type parameter `{}` is unresolved",
+                    template.name, param.name
+                ),
+                default_diag_span(),
+            ));
+            return None;
+        }
+    }
+
+    Some(crate::ast::FunctionDef {
+        visibility: template.visibility,
+        name: specialized_name.to_string(),
+        type_params: Vec::new(),
+        params: template
+            .params
+            .iter()
+            .map(|param| crate::ast::Param {
+                name: param.name.clone(),
+                ty: substitute_type_in_ast_type(&param.ty, bindings),
+            })
+            .collect(),
+        return_type: template
+            .return_type
+            .as_ref()
+            .map(|ty| substitute_type_in_ast_type(ty, bindings)),
+        effect_row: template.effect_row.clone(),
+        body: substitute_type_in_block(&template.body, bindings),
+        span: template.span,
+    })
+}
+
+fn substitute_type_in_block(block: &Block, bindings: &HashMap<String, SemType>) -> Block {
+    Block {
+        statements: block
+            .statements
+            .iter()
+            .map(|stmt| substitute_type_in_stmt(stmt, bindings))
+            .collect(),
+    }
+}
+
+fn substitute_type_in_stmt(stmt: &Stmt, bindings: &HashMap<String, SemType>) -> Stmt {
+    match stmt {
+        Stmt::Const(def) => Stmt::Const(crate::ast::ConstDef {
+            visibility: def.visibility,
+            name: def.name.clone(),
+            ty: def
+                .ty
+                .as_ref()
+                .map(|ty| substitute_type_in_ast_type(ty, bindings)),
+            value: substitute_type_in_expr(&def.value, bindings),
+            is_const: def.is_const,
+            span: def.span,
+        }),
+        Stmt::DestructureConst {
+            pattern,
+            value,
+            is_const,
+        } => Stmt::DestructureConst {
+            pattern: pattern.clone(),
+            value: substitute_type_in_expr(value, bindings),
+            is_const: *is_const,
+        },
+        Stmt::Assign { target, op, value } => Stmt::Assign {
+            target: substitute_type_in_assign_target(target, bindings),
+            op: *op,
+            value: substitute_type_in_expr(value, bindings),
+        },
+        Stmt::Return(value) => Stmt::Return(
+            value
+                .as_ref()
+                .map(|value| substitute_type_in_expr(value, bindings)),
+        ),
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => Stmt::If {
+            condition: substitute_type_in_expr(condition, bindings),
+            then_block: substitute_type_in_block(then_block, bindings),
+            else_block: else_block
+                .as_ref()
+                .map(|else_block| substitute_type_in_block(else_block, bindings)),
+        },
+        Stmt::While { condition, body } => Stmt::While {
+            condition: substitute_type_in_expr(condition, bindings),
+            body: substitute_type_in_block(body, bindings),
+        },
+        Stmt::For {
+            binding,
+            iter,
+            body,
+        } => Stmt::For {
+            binding: binding.clone(),
+            iter: substitute_type_in_expr(iter, bindings),
+            body: substitute_type_in_block(body, bindings),
+        },
+        Stmt::Loop { body } => Stmt::Loop {
+            body: substitute_type_in_block(body, bindings),
+        },
+        Stmt::Break => Stmt::Break,
+        Stmt::Continue => Stmt::Continue,
+        Stmt::RustBlock(code) => Stmt::RustBlock(code.clone()),
+        Stmt::Expr(expr) => Stmt::Expr(substitute_type_in_expr(expr, bindings)),
+        Stmt::TailExpr(expr) => Stmt::TailExpr(substitute_type_in_expr(expr, bindings)),
+    }
+}
+
+fn substitute_type_in_assign_target(
+    target: &AssignTarget,
+    bindings: &HashMap<String, SemType>,
+) -> AssignTarget {
+    match target {
+        AssignTarget::Path(name) => AssignTarget::Path(name.clone()),
+        AssignTarget::Field { base, field } => AssignTarget::Field {
+            base: Box::new(substitute_type_in_expr(base, bindings)),
+            field: field.clone(),
+        },
+        AssignTarget::Index { base, index } => AssignTarget::Index {
+            base: Box::new(substitute_type_in_expr(base, bindings)),
+            index: Box::new(substitute_type_in_expr(index, bindings)),
+        },
+        AssignTarget::Tuple(items) => AssignTarget::Tuple(
+            items
+                .iter()
+                .map(|item| substitute_type_in_assign_target(item, bindings))
+                .collect(),
+        ),
+    }
+}
+
+fn substitute_type_in_expr(expr: &Expr, bindings: &HashMap<String, SemType>) -> Expr {
+    match expr {
+        Expr::Int(value) => Expr::Int(*value),
+        Expr::Bool(value) => Expr::Bool(*value),
+        Expr::Char(value) => Expr::Char(*value),
+        Expr::String(value) => Expr::String(value.clone()),
+        Expr::Path(path) => Expr::Path(path.clone()),
+        Expr::Call { callee, args } => Expr::Call {
+            callee: Box::new(substitute_type_in_expr(callee, bindings)),
+            args: args
+                .iter()
+                .map(|arg| substitute_type_in_expr(arg, bindings))
+                .collect(),
+        },
+        Expr::MacroCall { path, args } => Expr::MacroCall {
+            path: path.clone(),
+            args: args
+                .iter()
+                .map(|arg| substitute_type_in_expr(arg, bindings))
+                .collect(),
+        },
+        Expr::Field { base, field } => Expr::Field {
+            base: Box::new(substitute_type_in_expr(base, bindings)),
+            field: field.clone(),
+        },
+        Expr::Index { base, index } => Expr::Index {
+            base: Box::new(substitute_type_in_expr(base, bindings)),
+            index: Box::new(substitute_type_in_expr(index, bindings)),
+        },
+        Expr::Match { scrutinee, arms } => Expr::Match {
+            scrutinee: Box::new(substitute_type_in_expr(scrutinee, bindings)),
+            arms: arms
+                .iter()
+                .map(|arm| crate::ast::MatchArm {
+                    pattern: arm.pattern.clone(),
+                    guard: arm
+                        .guard
+                        .as_ref()
+                        .map(|guard| substitute_type_in_expr(guard, bindings)),
+                    value: substitute_type_in_expr(&arm.value, bindings),
+                })
+                .collect(),
+        },
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: op.clone(),
+            expr: Box::new(substitute_type_in_expr(expr, bindings)),
+        },
+        Expr::Binary { op, left, right } => Expr::Binary {
+            op: op.clone(),
+            left: Box::new(substitute_type_in_expr(left, bindings)),
+            right: Box::new(substitute_type_in_expr(right, bindings)),
+        },
+        Expr::Array(items) => Expr::Array(
+            items
+                .iter()
+                .map(|item| substitute_type_in_expr(item, bindings))
+                .collect(),
+        ),
+        Expr::Tuple(items) => Expr::Tuple(
+            items
+                .iter()
+                .map(|item| substitute_type_in_expr(item, bindings))
+                .collect(),
+        ),
+        Expr::StructLiteral { path, fields } => Expr::StructLiteral {
+            path: path.clone(),
+            fields: fields
+                .iter()
+                .map(|field| StructLiteralField {
+                    name: field.name.clone(),
+                    value: substitute_type_in_expr(&field.value, bindings),
+                })
+                .collect(),
+        },
+        Expr::Block(block) => Expr::Block(substitute_type_in_block(block, bindings)),
+        Expr::Closure {
+            params,
+            return_type,
+            body,
+        } => Expr::Closure {
+            params: params
+                .iter()
+                .map(|param| crate::ast::Param {
+                    name: param.name.clone(),
+                    ty: substitute_type_in_ast_type(&param.ty, bindings),
+                })
+                .collect(),
+            return_type: return_type
+                .as_ref()
+                .map(|ret| substitute_type_in_ast_type(ret, bindings)),
+            body: substitute_type_in_block(body, bindings),
+        },
+        Expr::Range {
+            start,
+            end,
+            inclusive,
+        } => Expr::Range {
+            start: start
+                .as_ref()
+                .map(|start| Box::new(substitute_type_in_expr(start, bindings))),
+            end: end
+                .as_ref()
+                .map(|end| Box::new(substitute_type_in_expr(end, bindings))),
+            inclusive: *inclusive,
+        },
+        Expr::Cast { expr, target_type } => Expr::Cast {
+            expr: Box::new(substitute_type_in_expr(expr, bindings)),
+            target_type: substitute_type_in_ast_type(target_type, bindings),
+        },
+        Expr::Try(inner) => Expr::Try(Box::new(substitute_type_in_expr(inner, bindings))),
+    }
+}
+
+fn substitute_type_in_ast_type(ty: &Type, bindings: &HashMap<String, SemType>) -> Type {
+    if ty.path.len() == 1
+        && ty.args.is_empty()
+        && ty.trait_bounds.is_empty()
+        && let Some(bound) = bindings.get(&ty.path[0])
+    {
+        return sem_type_to_ast_type(bound);
+    }
+    Type {
+        path: ty.path.clone(),
+        args: ty
+            .args
+            .iter()
+            .map(|arg| substitute_type_in_ast_type(arg, bindings))
+            .collect(),
+        trait_bounds: ty
+            .trait_bounds
+            .iter()
+            .map(|bound| substitute_type_in_ast_type(bound, bindings))
+            .collect(),
+    }
+}
+
+fn sem_type_to_ast_type(ty: &SemType) -> Type {
+    match ty {
+        SemType::Path { path, args } => Type {
+            path: path.clone(),
+            args: args.iter().map(sem_type_to_ast_type).collect(),
+            trait_bounds: Vec::new(),
+        },
+        SemType::Tuple(items) => Type {
+            path: vec!["Tuple".to_string()],
+            args: items.iter().map(sem_type_to_ast_type).collect(),
+            trait_bounds: Vec::new(),
+        },
+        SemType::TraitObject(bounds) => {
+            if bounds.is_empty() {
+                return Type {
+                    path: vec!["_".to_string()],
+                    args: Vec::new(),
+                    trait_bounds: Vec::new(),
+                };
+            }
+            let mut base = sem_type_to_ast_type(&bounds[0]);
+            base.trait_bounds = bounds.iter().skip(1).map(sem_type_to_ast_type).collect();
+            base
+        }
+        SemType::Unit => Type {
+            path: vec!["Tuple".to_string()],
+            args: Vec::new(),
+            trait_bounds: Vec::new(),
+        },
+        SemType::Unknown | SemType::Fn { .. } | SemType::Iter(_) => Type {
+            path: vec!["_".to_string()],
+            args: Vec::new(),
+            trait_bounds: Vec::new(),
+        },
+    }
+}
+
+fn rewrite_structural_calls(
+    items: &mut [TypedItem],
+    lookup: &HashMap<(String, Vec<String>), String>,
+) {
+    for item in items {
+        match item {
+            TypedItem::Function(def) => {
+                for stmt in &mut def.body {
+                    rewrite_structural_calls_in_stmt(stmt, lookup);
+                }
+            }
+            TypedItem::Impl(def) => {
+                for method in &mut def.methods {
+                    for stmt in &mut method.body {
+                        rewrite_structural_calls_in_stmt(stmt, lookup);
+                    }
+                }
+            }
+            TypedItem::Const(def) => rewrite_structural_calls_in_expr(&mut def.value, lookup),
+            TypedItem::Static(def) => rewrite_structural_calls_in_expr(&mut def.value, lookup),
+            TypedItem::RustUse(_)
+            | TypedItem::RustBlock(_)
+            | TypedItem::Struct(_)
+            | TypedItem::Enum(_)
+            | TypedItem::Trait(_) => {}
+        }
+    }
+}
+
+fn rewrite_structural_calls_in_stmt(
+    stmt: &mut TypedStmt,
+    lookup: &HashMap<(String, Vec<String>), String>,
+) {
+    match stmt {
+        TypedStmt::Const(def) => rewrite_structural_calls_in_expr(&mut def.value, lookup),
+        TypedStmt::DestructureConst { value, .. } => {
+            rewrite_structural_calls_in_expr(value, lookup)
+        }
+        TypedStmt::Assign { value, .. } => rewrite_structural_calls_in_expr(value, lookup),
+        TypedStmt::Return(value) => {
+            if let Some(value) = value {
+                rewrite_structural_calls_in_expr(value, lookup);
+            }
+        }
+        TypedStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            rewrite_structural_calls_in_expr(condition, lookup);
+            for stmt in then_body {
+                rewrite_structural_calls_in_stmt(stmt, lookup);
+            }
+            if let Some(else_body) = else_body {
+                for stmt in else_body {
+                    rewrite_structural_calls_in_stmt(stmt, lookup);
+                }
+            }
+        }
+        TypedStmt::While { condition, body } => {
+            rewrite_structural_calls_in_expr(condition, lookup);
+            for stmt in body {
+                rewrite_structural_calls_in_stmt(stmt, lookup);
+            }
+        }
+        TypedStmt::For { iter, body, .. } => {
+            rewrite_structural_calls_in_expr(iter, lookup);
+            for stmt in body {
+                rewrite_structural_calls_in_stmt(stmt, lookup);
+            }
+        }
+        TypedStmt::Loop { body } => {
+            for stmt in body {
+                rewrite_structural_calls_in_stmt(stmt, lookup);
+            }
+        }
+        TypedStmt::Expr(expr) => rewrite_structural_calls_in_expr(expr, lookup),
+        TypedStmt::Break | TypedStmt::Continue | TypedStmt::RustBlock(_) => {}
+    }
+}
+
+fn rewrite_structural_calls_in_expr(
+    expr: &mut TypedExpr,
+    lookup: &HashMap<(String, Vec<String>), String>,
+) {
+    match &mut expr.kind {
+        TypedExprKind::Call { callee, args } => {
+            if let TypedExprKind::Path(path) = &mut callee.kind
+                && path.len() == 1
+            {
+                let key = (
+                    path[0].clone(),
+                    args.iter().map(|arg| arg.ty.clone()).collect(),
+                );
+                if let Some(specialized_name) = lookup.get(&key) {
+                    *path = vec![specialized_name.clone()];
+                    callee.ty = "_".to_string();
+                }
+            }
+            rewrite_structural_calls_in_expr(callee, lookup);
+            for arg in args {
+                rewrite_structural_calls_in_expr(arg, lookup);
+            }
+        }
+        TypedExprKind::MacroCall { args, .. } => {
+            for arg in args {
+                rewrite_structural_calls_in_expr(arg, lookup);
+            }
+        }
+        TypedExprKind::Field { base, .. } => rewrite_structural_calls_in_expr(base, lookup),
+        TypedExprKind::Index { base, index } => {
+            rewrite_structural_calls_in_expr(base, lookup);
+            rewrite_structural_calls_in_expr(index, lookup);
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            rewrite_structural_calls_in_expr(scrutinee, lookup);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    rewrite_structural_calls_in_expr(guard, lookup);
+                }
+                rewrite_structural_calls_in_expr(&mut arm.value, lookup);
+            }
+        }
+        TypedExprKind::Unary { expr, .. } => rewrite_structural_calls_in_expr(expr, lookup),
+        TypedExprKind::Cast { expr, .. } => rewrite_structural_calls_in_expr(expr, lookup),
+        TypedExprKind::Binary { left, right, .. } => {
+            rewrite_structural_calls_in_expr(left, lookup);
+            rewrite_structural_calls_in_expr(right, lookup);
+        }
+        TypedExprKind::Array(items) | TypedExprKind::Tuple(items) => {
+            for item in items {
+                rewrite_structural_calls_in_expr(item, lookup);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                rewrite_structural_calls_in_expr(&mut field.value, lookup);
+            }
+        }
+        TypedExprKind::Block { body, tail } => {
+            for stmt in body {
+                rewrite_structural_calls_in_stmt(stmt, lookup);
+            }
+            if let Some(tail) = tail {
+                rewrite_structural_calls_in_expr(tail, lookup);
+            }
+        }
+        TypedExprKind::Closure { body, .. } => {
+            for stmt in body {
+                rewrite_structural_calls_in_stmt(stmt, lookup);
+            }
+        }
+        TypedExprKind::Range { start, end, .. } => {
+            if let Some(start) = start {
+                rewrite_structural_calls_in_expr(start, lookup);
+            }
+            if let Some(end) = end {
+                rewrite_structural_calls_in_expr(end, lookup);
+            }
+        }
+        TypedExprKind::Try(inner) => rewrite_structural_calls_in_expr(inner, lookup),
+        TypedExprKind::Path(_)
+        | TypedExprKind::Int(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::String(_)
+        | TypedExprKind::Char(_) => {}
     }
 }
 
@@ -1815,7 +2453,9 @@ fn lower_item(
                     bounds: param
                         .bounds
                         .iter()
-                        .map(|bound| rust_trait_bound_string(&type_from_ast_in_context(bound, context)))
+                        .map(|bound| {
+                            rust_trait_bound_string(&type_from_ast_in_context(bound, context))
+                        })
                         .collect(),
                 })
                 .collect(),
@@ -1839,7 +2479,9 @@ fn lower_item(
                     bounds: param
                         .bounds
                         .iter()
-                        .map(|bound| rust_trait_bound_string(&type_from_ast_in_context(bound, context)))
+                        .map(|bound| {
+                            rust_trait_bound_string(&type_from_ast_in_context(bound, context))
+                        })
                         .collect(),
                 })
                 .collect(),
@@ -1892,17 +2534,14 @@ fn lower_item(
                             ),
                         );
                     }
-                    let declared_return_ty = method
-                        .return_type
-                        .as_ref()
-                        .map(|ty| {
-                            type_from_ast_with_impl_self_in_context(
-                                ty,
-                                &def.target,
-                                &def.target_args,
-                                context,
-                            )
-                        });
+                    let declared_return_ty = method.return_type.as_ref().map(|ty| {
+                        type_from_ast_with_impl_self_in_context(
+                            ty,
+                            &def.target,
+                            &def.target_args,
+                            context,
+                        )
+                    });
                     let provisional_return_ty =
                         declared_return_ty.clone().unwrap_or(SemType::Unknown);
                     let mut body = Vec::new();
@@ -1975,40 +2614,44 @@ fn lower_item(
                         is_public: method.visibility == Visibility::Public,
                         name: method.name.clone(),
                         type_params: method
-                        .type_params
-                        .iter()
-                        .map(|param| TypedTypeParam {
-                            name: param.name.clone(),
-                            bounds: param
-                                .bounds
-                                .iter()
-                                .map(|bound| {
-                                    rust_trait_bound_string(&type_from_ast_with_impl_self(
-                                        bound,
+                            .type_params
+                            .iter()
+                            .map(|param| TypedTypeParam {
+                                name: param.name.clone(),
+                                bounds: param
+                                    .bounds
+                                    .iter()
+                                    .map(|bound| {
+                                        rust_trait_bound_string(&type_from_ast_with_impl_self(
+                                            bound,
+                                            &def.target,
+                                            &def.target_args,
+                                        ))
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                        params: method
+                            .params
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| {
+                                !is_redundant_impl_self_param(&method.params, *index)
+                            })
+                            .map(|(_, param)| TypedParam {
+                                name: param.name.clone(),
+                                ty: rust_param_type_string(
+                                    &type_from_ast_with_impl_self_in_context(
+                                        &param.ty,
                                         &def.target,
                                         &def.target_args,
-                                    ))
-                                })
-                                .collect(),
-                        })
-                        .collect(),
-                    params: method
-                        .params
-                        .iter()
-                        .enumerate()
-                        .filter(|(index, _)| !is_redundant_impl_self_param(&method.params, *index))
-                        .map(|(_, param)| TypedParam {
-                            name: param.name.clone(),
-                            ty: rust_param_type_string(&type_from_ast_with_impl_self_in_context(
-                                &param.ty,
-                                &def.target,
-                                &def.target_args,
-                                context,
-                            )),
-                        })
-                        .collect(),
-                    return_type: rust_owned_type_string(&final_return_ty),
-                    body,
+                                        context,
+                                    ),
+                                ),
+                            })
+                            .collect(),
+                        return_type: rust_owned_type_string(&final_return_ty),
+                        body,
                     }
                 });
                 methods.push(typed_method);
@@ -2022,7 +2665,9 @@ fn lower_item(
                         bounds: param
                             .bounds
                             .iter()
-                            .map(|bound| rust_trait_bound_string(&type_from_ast_in_context(bound, context)))
+                            .map(|bound| {
+                                rust_trait_bound_string(&type_from_ast_in_context(bound, context))
+                            })
                             .collect(),
                     })
                     .collect(),
@@ -2053,7 +2698,14 @@ fn lower_item(
                 .as_ref()
                 .map(|ty| type_from_ast_in_context(ty, context));
             let final_ty = if let Some(declared_ty) = declared {
-                if !is_compatible(&inferred, &declared_ty) {
+                if !is_compatible(&inferred, &declared_ty)
+                    && literal_bidi_adjusted_numeric_arg_type(
+                        Some(&def.value),
+                        &inferred,
+                        &declared_ty,
+                    )
+                    .is_none()
+                {
                     diagnostics.push(Diagnostic::new(
                         format!(
                             "Const `{}` type mismatch: expected `{}`, got `{}`",
@@ -2126,8 +2778,7 @@ fn lower_item(
                 value: typed_value,
             }))
         }
-        Item::Function(def) => {
-            with_diag_span_scope(def.span, || {
+        Item::Function(def) => with_diag_span_scope(def.span, || {
             let mut locals = HashMap::new();
             let mut immutable_locals = HashSet::new();
             for param in &def.params {
@@ -2245,8 +2896,7 @@ fn lower_item(
                 return_type: rust_owned_type_string(&final_return_ty),
                 body,
             }))
-            })
-        }
+        }),
     }
 }
 
@@ -2930,8 +3580,14 @@ fn infer_expr(
             if let Expr::Field { base, field } = callee.as_ref() {
                 let (typed_base, base_ty) =
                     infer_expr(base, context, locals, return_ty, diagnostics);
-                let resolved =
-                    resolve_method_call_type(&base_ty, field, &arg_types, context, diagnostics);
+                let resolved = resolve_method_call_type(
+                    &base_ty,
+                    field,
+                    args,
+                    &arg_types,
+                    context,
+                    diagnostics,
+                );
                 let typed_callee = TypedExpr {
                     kind: TypedExprKind::Field {
                         base: Box::new(typed_base),
@@ -2953,15 +3609,15 @@ fn infer_expr(
 
             let (typed_callee, callee_ty) =
                 infer_expr(callee, context, locals, return_ty, diagnostics);
-            let resolved =
-                resolve_call_type(
-                    &typed_callee,
-                    &callee_ty,
-                    &arg_types,
-                    context,
-                    locals,
-                    diagnostics,
-                );
+            let resolved = resolve_call_type(
+                &typed_callee,
+                &callee_ty,
+                args,
+                &arg_types,
+                context,
+                locals,
+                diagnostics,
+            );
             (
                 TypedExpr {
                     kind: TypedExprKind::Call {
@@ -3276,6 +3932,7 @@ fn infer_expr(
                 | BinaryOp::Gt
                 | BinaryOp::Ge => {
                     if !is_compatible(&left_ty, &right_ty)
+                        && !literal_bidi_comparison_compatible(left, &left_ty, right, &right_ty)
                         && !(strict_mode_enabled()
                             && (left_ty == SemType::Unknown || right_ty == SemType::Unknown))
                     {
@@ -4285,6 +4942,7 @@ fn resolve_field_type(
 fn resolve_call_type(
     callee: &TypedExpr,
     callee_ty: &SemType,
+    arg_exprs: &[Expr],
     args: &[SemType],
     context: &Context,
     locals: &HashMap<String, SemType>,
@@ -4303,7 +4961,10 @@ fn resolve_call_type(
             return *ret.clone();
         }
         for (index, (actual, expected)) in args.iter().zip(params.iter()).enumerate() {
-            if !is_compatible(actual, expected) {
+            let adjusted_actual =
+                literal_bidi_adjusted_numeric_arg_type(arg_exprs.get(index), actual, expected)
+                    .unwrap_or_else(|| actual.clone());
+            if !is_compatible(&adjusted_actual, expected) {
                 diagnostics.push(Diagnostic::new(
                     format!(
                         "Arg {} mismatch: expected `{}`, got `{}`",
@@ -4324,7 +4985,14 @@ fn resolve_call_type(
         }
 
         if let Some((resolved_name, sig)) = resolve_function_sig_for_path(path, context) {
-            return resolve_named_function_call(sig, &resolved_name, args, context, diagnostics);
+            return resolve_named_function_call(
+                sig,
+                &resolved_name,
+                Some(arg_exprs),
+                args,
+                context,
+                diagnostics,
+            );
         }
 
         if let Some(resolved) = resolve_constructor_call(path, args, context, diagnostics) {
@@ -4347,7 +5015,10 @@ fn resolve_call_type(
         return SemType::Unknown;
     }
 
-    diagnostics.push(Diagnostic::new("Unsupported call target", default_diag_span()));
+    diagnostics.push(Diagnostic::new(
+        "Unsupported call target",
+        default_diag_span(),
+    ));
     SemType::Unknown
 }
 
@@ -4386,7 +5057,12 @@ fn resolve_trait_associated_call(
     }
     let assoc_name = path.last()?.as_str();
     let type_name = path[path.len() - 2].as_str();
-    if !rustdex_has_method(type_name, assoc_name) {
+    let supports_assoc = if assoc_name == "try_from" {
+        rustdex_has_method(type_name, assoc_name) || is_numeric_type_name(type_name)
+    } else {
+        rustdex_has_method(type_name, assoc_name)
+    };
+    if !supports_assoc {
         return None;
     }
 
@@ -4417,6 +5093,21 @@ fn resolve_trait_associated_call(
             ));
         }
         return Some(SemType::Unknown);
+    }
+    if assoc_name == "try_from" {
+        if args.len() != 1 {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "`{type_name}::try_from` expects 1 arg(s), got {}",
+                    args.len()
+                ),
+                default_diag_span(),
+            ));
+        }
+        return Some(SemType::Path {
+            path: vec!["Result".to_string()],
+            args: vec![named_type(type_name), SemType::Unknown],
+        });
     }
     Some(SemType::Unknown)
 }
@@ -4501,6 +5192,7 @@ fn rustdex_has_method(type_name: &str, method: &str) -> bool {
     match method {
         "from_iter" => rustdex_type_implements(type_name, "FromIterator"),
         "from" => rustdex_type_implements(type_name, "From"),
+        "try_from" => rustdex_type_implements(type_name, "TryFrom"),
         "default" => rustdex_type_implements(type_name, "Default"),
         _ => false,
     }
@@ -4586,6 +5278,7 @@ fn rustdex_bin_path() -> Option<&'static PathBuf> {
 fn resolve_named_function_call(
     sig: &FunctionSig,
     name: &str,
+    arg_exprs: Option<&[Expr]>,
     args: &[SemType],
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4606,8 +5299,15 @@ fn resolve_named_function_call(
     let mut generic_bindings = HashMap::new();
 
     for (index, (actual, expected)) in args.iter().zip(&sig.params).enumerate() {
-        if !bind_generic_params(expected, actual, &type_param_set, &mut generic_bindings)
-            && !is_compatible(actual, expected)
+        let actual_expr = arg_exprs.and_then(|exprs| exprs.get(index));
+        let adjusted_actual = literal_bidi_adjusted_numeric_arg_type(actual_expr, actual, expected)
+            .unwrap_or_else(|| actual.clone());
+        if !bind_generic_params(
+            expected,
+            &adjusted_actual,
+            &type_param_set,
+            &mut generic_bindings,
+        ) && !is_compatible(&adjusted_actual, expected)
         {
             diagnostics.push(Diagnostic::new(
                 format!(
@@ -4644,7 +5344,438 @@ fn resolve_named_function_call(
         }
     }
 
+    validate_structural_call_requirements(sig, name, args, &generic_bindings, context, diagnostics);
+    register_structural_specialization(sig, name, args, &generic_bindings, context);
+
     substitute_generic_type(&sig.return_type, &type_param_set, &generic_bindings)
+}
+
+fn validate_structural_call_requirements(
+    sig: &FunctionSig,
+    fn_name: &str,
+    args: &[SemType],
+    generic_bindings: &HashMap<String, SemType>,
+    context: &Context,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for (type_param, requirements) in &sig.structural_requirements {
+        if requirements.is_empty() {
+            continue;
+        }
+        let Some(actual_ty) = generic_bindings.get(type_param) else {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Unable to resolve structural type parameter `{type_param}` for `{fn_name}` call"
+                ),
+                default_diag_span(),
+            ));
+            continue;
+        };
+        if contains_unknown(actual_ty) {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Structural type parameter `{type_param}` for `{fn_name}` remains unknown at call site"
+                ),
+                default_diag_span(),
+            ));
+            continue;
+        }
+        for field in &requirements.fields {
+            if !structural_type_supports_field(actual_ty, field, context) {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "`{}` passed to `{fn_name}` does not provide required field `{field}` for `{type_param}`",
+                        type_to_string(actual_ty)
+                    ),
+                    default_diag_span(),
+                ));
+            }
+        }
+        for (method, arities) in &requirements.methods {
+            for arity in arities {
+                if !structural_type_supports_method(actual_ty, method, *arity, context) {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "`{}` passed to `{fn_name}` does not provide required method `{method}` with {} argument(s) for `{type_param}`",
+                            type_to_string(actual_ty),
+                            arity
+                        ),
+                        default_diag_span(),
+                    ));
+                }
+            }
+        }
+    }
+
+    if !sig.structural_requirements.is_empty() && args.iter().any(contains_unknown) {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "Call to structural function `{fn_name}` must use fully resolved argument types"
+            ),
+            default_diag_span(),
+        ));
+    }
+}
+
+fn structural_type_supports_field(ty: &SemType, field: &str, context: &Context) -> bool {
+    let SemType::Path { path, args } = ty else {
+        return false;
+    };
+    if !args.is_empty() {
+        return false;
+    }
+    let Some(type_name) = path.last() else {
+        return false;
+    };
+    context
+        .structs
+        .get(type_name)
+        .map(|fields| fields.contains_key(field))
+        .unwrap_or(false)
+}
+
+fn structural_type_supports_method(
+    ty: &SemType,
+    method: &str,
+    arity: usize,
+    context: &Context,
+) -> bool {
+    let SemType::Path { path, args } = ty else {
+        return false;
+    };
+    let Some(type_name) = path.last() else {
+        return false;
+    };
+    if method_is_builtin_for_type(type_name, method, arity) {
+        return true;
+    }
+    if !args.is_empty() {
+        return false;
+    }
+    context
+        .functions
+        .get(&format!("{type_name}::{method}"))
+        .map(|sig| sig.params.len() == arity + 1)
+        .unwrap_or(false)
+}
+
+fn method_is_builtin_for_type(type_name: &str, method: &str, arity: usize) -> bool {
+    match type_name {
+        "String" => match method {
+            "len" | "is_empty" | "into_bytes" | "chars" | "to_string" => arity == 0,
+            "starts_with" | "contains" | "ends_with" | "strip_prefix" | "split_once" => arity == 1,
+            "push_str" => arity == 1,
+            _ => false,
+        },
+        "Vec" => match method {
+            "len" | "is_empty" | "first" | "last" | "into_iter" | "iter" => arity == 0,
+            "contains" | "push" | "get" => arity == 1,
+            _ => false,
+        },
+        "Option" => match method {
+            "is_some" | "is_none" | "into_iter" => arity == 0,
+            _ => false,
+        },
+        "Result" => match method {
+            "is_ok" | "is_err" | "into_iter" => arity == 0,
+            _ => false,
+        },
+        "HashMap" | "BTreeMap" => match method {
+            "len" | "is_empty" | "keys" | "values" | "into_iter" => arity == 0,
+            "contains_key" | "get" => arity == 1,
+            "insert" => arity == 2,
+            _ => false,
+        },
+        "HashSet" | "BTreeSet" => match method {
+            "len" | "is_empty" | "into_iter" => arity == 0,
+            "contains" | "insert" => arity == 1,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn register_structural_specialization(
+    sig: &FunctionSig,
+    fn_name: &str,
+    args: &[SemType],
+    generic_bindings: &HashMap<String, SemType>,
+    context: &Context,
+) {
+    let has_requirements = sig
+        .structural_requirements
+        .values()
+        .any(|requirements| !requirements.is_empty());
+    if !has_requirements {
+        return;
+    }
+
+    let arg_key = args.iter().map(type_to_string).collect::<Vec<_>>();
+    let key = (fn_name.to_string(), arg_key.clone());
+    {
+        let lookup = context.structural_specialization_lookup.borrow();
+        if lookup.contains_key(&key) {
+            return;
+        }
+    }
+
+    let mut hasher = DefaultHasher::new();
+    fn_name.hash(&mut hasher);
+    for (name, ty) in generic_bindings {
+        name.hash(&mut hasher);
+        type_to_string(ty).hash(&mut hasher);
+    }
+    let suffix = hasher.finish();
+    let specialized_name = format!("__elevate_row_{fn_name}_{suffix:x}");
+
+    context
+        .structural_specialization_lookup
+        .borrow_mut()
+        .insert(key, specialized_name.clone());
+
+    let mut specializations = context.structural_specializations.borrow_mut();
+    let entry = specializations.entry(fn_name.to_string()).or_default();
+    if entry
+        .iter()
+        .any(|existing| existing.specialized_name == specialized_name)
+    {
+        return;
+    }
+    entry.push(StructuralSpecialization {
+        specialized_name,
+        bindings: generic_bindings.clone(),
+    });
+}
+
+fn collect_structural_requirements_for_function(
+    type_params: &[GenericParam],
+    params: &[crate::ast::Param],
+    body: &Block,
+) -> HashMap<String, StructuralRequirements> {
+    let structural_params = type_params
+        .iter()
+        .filter(|param| param.bounds.is_empty())
+        .map(|param| param.name.clone())
+        .collect::<HashSet<_>>();
+
+    let mut out = structural_params
+        .iter()
+        .map(|name| (name.clone(), StructuralRequirements::default()))
+        .collect::<HashMap<_, _>>();
+    let param_bindings = params
+        .iter()
+        .filter_map(|param| {
+            path_type_param_name(&param.ty, &structural_params)
+                .map(|type_param| (param.name.clone(), type_param.to_string()))
+        })
+        .collect::<HashMap<_, _>>();
+    for stmt in &body.statements {
+        collect_structural_requirements_in_stmt(stmt, &param_bindings, &mut out);
+    }
+    out.retain(|_, req| !req.is_empty());
+    out
+}
+
+fn path_type_param_name<'a>(ty: &'a Type, type_params: &HashSet<String>) -> Option<&'a str> {
+    if ty.path.len() == 1
+        && ty.args.is_empty()
+        && ty.trait_bounds.is_empty()
+        && type_params.contains(&ty.path[0])
+    {
+        return Some(ty.path[0].as_str());
+    }
+    None
+}
+
+fn collect_structural_requirements_in_stmt(
+    stmt: &Stmt,
+    param_bindings: &HashMap<String, String>,
+    out: &mut HashMap<String, StructuralRequirements>,
+) {
+    match stmt {
+        Stmt::Const(def) => {
+            collect_structural_requirements_in_expr(&def.value, param_bindings, out)
+        }
+        Stmt::Assign { target, value, .. } => {
+            collect_structural_requirements_in_assign_target(target, param_bindings, out);
+            collect_structural_requirements_in_expr(value, param_bindings, out);
+        }
+        Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_structural_requirements_in_expr(value, param_bindings, out);
+            }
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_structural_requirements_in_expr(condition, param_bindings, out);
+            for stmt in &then_block.statements {
+                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+            }
+            if let Some(else_block) = else_block {
+                for stmt in &else_block.statements {
+                    collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+                }
+            }
+        }
+        Stmt::While { condition, body } => {
+            collect_structural_requirements_in_expr(condition, param_bindings, out);
+            for stmt in &body.statements {
+                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+            }
+        }
+        Stmt::For { iter, body, .. } => {
+            collect_structural_requirements_in_expr(iter, param_bindings, out);
+            for stmt in &body.statements {
+                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+            }
+        }
+        Stmt::Loop { body } => {
+            for stmt in &body.statements {
+                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+            }
+        }
+        Stmt::Expr(expr) | Stmt::TailExpr(expr) => {
+            collect_structural_requirements_in_expr(expr, param_bindings, out);
+        }
+        Stmt::DestructureConst { value, .. } => {
+            collect_structural_requirements_in_expr(value, param_bindings, out);
+        }
+        Stmt::Break | Stmt::Continue | Stmt::RustBlock(_) => {}
+    }
+}
+
+fn collect_structural_requirements_in_assign_target(
+    target: &AssignTarget,
+    param_bindings: &HashMap<String, String>,
+    out: &mut HashMap<String, StructuralRequirements>,
+) {
+    match target {
+        AssignTarget::Path(_) => {}
+        AssignTarget::Field { base, field } => {
+            if let Expr::Path(path) = base.as_ref()
+                && path.len() == 1
+                && let Some(type_param) = param_bindings.get(&path[0])
+            {
+                out.entry(type_param.clone())
+                    .or_default()
+                    .fields
+                    .insert(field.clone());
+            }
+            collect_structural_requirements_in_expr(base, param_bindings, out);
+        }
+        AssignTarget::Index { base, index } => {
+            collect_structural_requirements_in_expr(base, param_bindings, out);
+            collect_structural_requirements_in_expr(index, param_bindings, out);
+        }
+        AssignTarget::Tuple(items) => {
+            for item in items {
+                collect_structural_requirements_in_assign_target(item, param_bindings, out);
+            }
+        }
+    }
+}
+
+fn collect_structural_requirements_in_expr(
+    expr: &Expr,
+    param_bindings: &HashMap<String, String>,
+    out: &mut HashMap<String, StructuralRequirements>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            if let Expr::Field { base, field } = callee.as_ref() {
+                if let Expr::Path(path) = base.as_ref()
+                    && path.len() == 1
+                    && let Some(type_param) = param_bindings.get(&path[0])
+                {
+                    out.entry(type_param.clone())
+                        .or_default()
+                        .methods
+                        .entry(field.clone())
+                        .or_default()
+                        .insert(args.len());
+                }
+                collect_structural_requirements_in_expr(base, param_bindings, out);
+            } else {
+                collect_structural_requirements_in_expr(callee, param_bindings, out);
+            }
+            for arg in args {
+                collect_structural_requirements_in_expr(arg, param_bindings, out);
+            }
+        }
+        Expr::MacroCall { args, .. } => {
+            for arg in args {
+                collect_structural_requirements_in_expr(arg, param_bindings, out);
+            }
+        }
+        Expr::Field { base, field } => {
+            if let Expr::Path(path) = base.as_ref()
+                && path.len() == 1
+                && let Some(type_param) = param_bindings.get(&path[0])
+            {
+                out.entry(type_param.clone())
+                    .or_default()
+                    .fields
+                    .insert(field.clone());
+            }
+            collect_structural_requirements_in_expr(base, param_bindings, out);
+        }
+        Expr::Index { base, index } => {
+            collect_structural_requirements_in_expr(base, param_bindings, out);
+            collect_structural_requirements_in_expr(index, param_bindings, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_structural_requirements_in_expr(scrutinee, param_bindings, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_structural_requirements_in_expr(guard, param_bindings, out);
+                }
+                collect_structural_requirements_in_expr(&arm.value, param_bindings, out);
+            }
+        }
+        Expr::Unary { expr, .. } => {
+            collect_structural_requirements_in_expr(expr, param_bindings, out)
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_structural_requirements_in_expr(left, param_bindings, out);
+            collect_structural_requirements_in_expr(right, param_bindings, out);
+        }
+        Expr::Array(items) | Expr::Tuple(items) => {
+            for item in items {
+                collect_structural_requirements_in_expr(item, param_bindings, out);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for field in fields {
+                collect_structural_requirements_in_expr(&field.value, param_bindings, out);
+            }
+        }
+        Expr::Block(block) => {
+            for stmt in &block.statements {
+                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+            }
+        }
+        Expr::Closure { body, .. } => {
+            for stmt in &body.statements {
+                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+            }
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                collect_structural_requirements_in_expr(start, param_bindings, out);
+            }
+            if let Some(end) = end {
+                collect_structural_requirements_in_expr(end, param_bindings, out);
+            }
+        }
+        Expr::Cast { expr, .. } => {
+            collect_structural_requirements_in_expr(expr, param_bindings, out)
+        }
+        Expr::Try(inner) => collect_structural_requirements_in_expr(inner, param_bindings, out),
+        Expr::Int(_) | Expr::Bool(_) | Expr::Char(_) | Expr::String(_) | Expr::Path(_) => {}
+    }
 }
 
 fn resolve_builtin_assert_call(
@@ -4714,6 +5845,7 @@ fn resolve_builtin_assert_call(
 fn resolve_method_call_type(
     base_ty: &SemType,
     method: &str,
+    arg_exprs: &[Expr],
     args: &[SemType],
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4745,7 +5877,13 @@ fn resolve_method_call_type(
                 }
                 "push_str" => {
                     expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    if args.len() == 1 && !is_compatible(&args[0], &named_type("String")) {
+                    if args.len() == 1
+                        && !method_arg_type_compatible(
+                            arg_exprs.first(),
+                            &args[0],
+                            &named_type("String"),
+                        )
+                    {
                         diagnostics.push(Diagnostic::new(
                             format!(
                                 "Method `String::push_str` expects `String`, got `{}`",
@@ -4792,7 +5930,7 @@ fn resolve_method_call_type(
                         args: item_args, ..
                     } = base_ty
                         && let (Some(item_ty), Some(arg_ty)) = (item_args.first(), args.first())
-                        && !is_compatible(arg_ty, item_ty)
+                        && !method_arg_type_compatible(arg_exprs.first(), arg_ty, item_ty)
                     {
                         diagnostics.push(Diagnostic::new(
                             format!(
@@ -4857,6 +5995,29 @@ fn resolve_method_call_type(
                     }
                     return SemType::Iter(Box::new(SemType::Unknown));
                 }
+                "unwrap_or" => {
+                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
+                    if let SemType::Path {
+                        args: inner_args, ..
+                    } = base_ty
+                        && let Some(inner_ty) = inner_args.first()
+                    {
+                        if let Some(arg_ty) = args.first()
+                            && !method_arg_type_compatible(arg_exprs.first(), arg_ty, inner_ty)
+                        {
+                            diagnostics.push(Diagnostic::new(
+                                format!(
+                                    "Method `Option::unwrap_or` expects `{}`, got `{}`",
+                                    type_to_string(inner_ty),
+                                    type_to_string(arg_ty)
+                                ),
+                                default_diag_span(),
+                            ));
+                        }
+                        return inner_ty.clone();
+                    }
+                    return SemType::Unknown;
+                }
                 _ => {}
             },
             "Result" => match method {
@@ -4872,6 +6033,29 @@ fn resolve_method_call_type(
                         return SemType::Iter(Box::new(ok_ty.clone()));
                     }
                     return SemType::Iter(Box::new(SemType::Unknown));
+                }
+                "unwrap_or" => {
+                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
+                    if let SemType::Path {
+                        args: result_args, ..
+                    } = base_ty
+                        && let Some(ok_ty) = result_args.first()
+                    {
+                        if let Some(arg_ty) = args.first()
+                            && !method_arg_type_compatible(arg_exprs.first(), arg_ty, ok_ty)
+                        {
+                            diagnostics.push(Diagnostic::new(
+                                format!(
+                                    "Method `Result::unwrap_or` expects `{}`, got `{}`",
+                                    type_to_string(ok_ty),
+                                    type_to_string(arg_ty)
+                                ),
+                                default_diag_span(),
+                            ));
+                        }
+                        return ok_ty.clone();
+                    }
+                    return SemType::Unknown;
                 }
                 _ => {}
             },
@@ -5017,10 +6201,24 @@ fn resolve_method_call_type(
                 let mut call_args = Vec::with_capacity(args.len() + 1);
                 call_args.push(base_ty.clone());
                 call_args.extend(args.iter().cloned());
-                return resolve_named_function_call(sig, &lookup, &call_args, context, diagnostics);
+                return resolve_named_function_call(
+                    sig,
+                    &lookup,
+                    None,
+                    &call_args,
+                    context,
+                    diagnostics,
+                );
             }
             if sig.params.len() == args.len() {
-                return resolve_named_function_call(sig, &lookup, args, context, diagnostics);
+                return resolve_named_function_call(
+                    sig,
+                    &lookup,
+                    Some(arg_exprs),
+                    args,
+                    context,
+                    diagnostics,
+                );
             }
             diagnostics.push(Diagnostic::new(
                 format!(
@@ -5035,6 +6233,13 @@ fn resolve_method_call_type(
     }
 
     if is_external_method_candidate(base_ty, context) {
+        return infer_external_method_call_type(method, args);
+    }
+
+    if let SemType::Path { path, .. } = base_ty
+        && let Some(type_name) = path.last()
+        && matches!(type_name.as_str(), "Option" | "Result")
+    {
         return infer_external_method_call_type(method, args);
     }
 
@@ -5542,6 +6747,45 @@ fn preserve_integer_type_for_default_int_literal(
         return Some(left_ty.clone());
     }
     None
+}
+
+fn literal_bidi_adjusted_numeric_arg_type(
+    expr: Option<&Expr>,
+    actual: &SemType,
+    expected: &SemType,
+) -> Option<SemType> {
+    if infer_literal_bidi_enabled()
+        && expr.is_some_and(|expr| matches!(expr, Expr::Int(_)))
+        && canonical_numeric_name(expected).is_some()
+        && canonical_numeric_name(actual) == Some("i64")
+    {
+        return Some(expected.clone());
+    }
+    None
+}
+
+fn method_arg_type_compatible(expr: Option<&Expr>, actual: &SemType, expected: &SemType) -> bool {
+    if is_compatible(actual, expected) {
+        return true;
+    }
+    literal_bidi_adjusted_numeric_arg_type(expr, actual, expected).is_some()
+}
+
+fn literal_bidi_comparison_compatible(
+    left_expr: &Expr,
+    left_ty: &SemType,
+    right_expr: &Expr,
+    right_ty: &SemType,
+) -> bool {
+    if !infer_literal_bidi_enabled() {
+        return false;
+    }
+    (matches!(left_expr, Expr::Int(_))
+        && canonical_numeric_name(left_ty) == Some("i64")
+        && canonical_numeric_name(right_ty).is_some())
+        || (matches!(right_expr, Expr::Int(_))
+            && canonical_numeric_name(right_ty) == Some("i64")
+            && canonical_numeric_name(left_ty).is_some())
 }
 
 fn is_integral_numeric_type(ty: &SemType) -> bool {
@@ -7562,7 +8806,11 @@ fn type_from_ast(ty: &Type) -> SemType {
     }
 }
 
-fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str, impl_target_args: &[Type]) -> SemType {
+fn type_from_ast_with_impl_self(
+    ty: &Type,
+    impl_target: &str,
+    impl_target_args: &[Type],
+) -> SemType {
     if ty.path.len() == 1 && ty.path[0] == "_" && ty.args.is_empty() && ty.trait_bounds.is_empty() {
         return SemType::Unknown;
     }
@@ -9440,6 +10688,8 @@ mod tests {
             trait_impls: HashMap::new(),
             globals: HashMap::new(),
             rust_block_functions: HashSet::new(),
+            structural_specializations: RefCell::new(HashMap::new()),
+            structural_specialization_lookup: RefCell::new(HashMap::new()),
         };
         context.functions.insert(
             "board_left".to_string(),
@@ -9448,6 +10698,7 @@ mod tests {
                 type_param_bounds: HashMap::new(),
                 params: Vec::new(),
                 return_type: named_type("i64"),
+                structural_requirements: HashMap::new(),
             },
         );
 

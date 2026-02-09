@@ -336,6 +336,7 @@ impl Board {
 }
 
 pub fn runtime_start() -> i64 {
+    install_portrait_sprites();
     const mode = resolve_runtime_backend_mode();
     host::runtime_start_mode(mode)
 }
@@ -372,6 +373,165 @@ fn resolve_runtime_backend_mode() -> String {
         return String::from("sdl");
     }
     String::from("terminal")
+}
+
+fn install_portrait_sprites() {
+    const (player_width, player_height, player_pixels) = build_portrait_sprite(true);
+    const (cpu_width, cpu_height, cpu_pixels) = build_portrait_sprite(false);
+    host::runtime_set_portrait_sprites(
+        player_width,
+        player_height,
+        player_pixels,
+        cpu_width,
+        cpu_height,
+        cpu_pixels,
+    );
+}
+
+fn build_portrait_sprite(is_player: bool) -> (i64, i64, Vec<i64>) {
+    const rows = portrait_rows(is_player);
+    parse_portrait_rows(rows, is_player)
+}
+
+fn parse_portrait_rows(rows: Vec<String>, is_player: bool) -> (i64, i64, Vec<i64>) {
+    let pixels: Vec<i64> = [];
+    let row = 0;
+    while row < 32 {
+        const row_text = format!("{}", rows[row]);
+        let col = 0;
+        for token in row_text.chars() {
+            if col < 32 {
+                pixels.push(sprite_color(token, is_player));
+                col = col + 1;
+            }
+        }
+        while col < 32 {
+            pixels.push(-1);
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    (32, 32, pixels)
+}
+
+fn portrait_rows(is_player: bool) -> Vec<String> {
+    let rows: Vec<String> = [];
+    if is_player {
+        rows.push(String::from("................................"));
+        rows.push(String::from("................................"));
+        rows.push(String::from(".............rrrrrrrrrr........."));
+        rows.push(String::from("..........rrrrrrrrrrrrrrrr......"));
+        rows.push(String::from("........rrrrrrrrrrrrrrrrrrrr...."));
+        rows.push(String::from(".......rrrkkkkrrrrrrrrkkkkrr...."));
+        rows.push(String::from("......rrrkkkkkkrrrrrrkkkkkkrr..."));
+        rows.push(String::from("......rrrrrrrrrrrrrrrrrrrrrrr..."));
+        rows.push(String::from(".....rrrwwwwwwwwwwwwwwwwwwrrr..."));
+        rows.push(String::from(".....rrwwwwwwwwwwwwwwwwwwwwrr..."));
+        rows.push(String::from(".....rrwwwwssssssssssssswwwwrr.."));
+        rows.push(String::from(".....rrwwsssssssssssssssswwrr..."));
+        rows.push(String::from(".....rrwssssshhhhsshhhsssswrr..."));
+        rows.push(String::from(".....rrwsssshhhhhhshhhhhssswrr.."));
+        rows.push(String::from(".....rrwsssshhhhhhshhhhhssswrr.."));
+        rows.push(String::from(".....rrwssssskssssssssksssswrr.."));
+        rows.push(String::from(".....rrwssssskssssssssksssswrr.."));
+        rows.push(String::from(".....rrwssssssssssssssssssswrr.."));
+        rows.push(String::from(".....rrwssssssshhhhhssssssswrr.."));
+        rows.push(String::from(".....rrwwsssssssssssssssswwrr..."));
+        rows.push(String::from(".....rrrwwsssssssssssssswwrrr..."));
+        rows.push(String::from("......rrrwwwwsssssssswwwwrrr...."));
+        rows.push(String::from(".......rrrwwwwwwwwwwwwrrr......."));
+        rows.push(String::from(".......rrrbbbebbbbbbebbbrrr....."));
+        rows.push(String::from(".......rrbbbeebbbbbeebbbrrr....."));
+        rows.push(String::from(".......rbbbeeeebbbeeeebbbrr....."));
+        rows.push(String::from(".......rbbbbbeeeeeeeebbbbrr....."));
+        rows.push(String::from(".......rrbbbbbbbbbbbbbbbrr......"));
+        rows.push(String::from("........rrrbbbbbbbbbbbrrr......."));
+        rows.push(String::from(".........rrrrbbbbbbbrrrr........"));
+        rows.push(String::from("...........rrrrrrrrrr..........."));
+        rows.push(String::from("................................"));
+        return rows;
+    }
+
+    rows.push(String::from("................................"));
+    rows.push(String::from("............hhhhhhhh............"));
+    rows.push(String::from(".........hhhhhhhhhhhhhh........."));
+    rows.push(String::from(".......hhhhhhhhhhhhhhhhhh......."));
+    rows.push(String::from("......hhhkkkkhhhhhhhhkkkkhh....."));
+    rows.push(String::from(".....hhhkkkkkkhhhhhhkkkkkkhh...."));
+    rows.push(String::from(".....hhhkkkkkkkkkkkkkkkkkkhh...."));
+    rows.push(String::from(".....hhwwwwwwwwwwwwwwwwwwwhh...."));
+    rows.push(String::from(".....hwwwwwwwwwwwwwwwwwwwwwrh..."));
+    rows.push(String::from("....hhwwwwsssssssssssssswwwhh..."));
+    rows.push(String::from("....hwwwsssssssssssssssssswwh..."));
+    rows.push(String::from("....hwwsssshhhhhssshhhhhssswh..."));
+    rows.push(String::from("....hwwssshhhhhhssshhhhhhsswh..."));
+    rows.push(String::from("....hwwssshhhhhsssshhhhhhsswh..."));
+    rows.push(String::from("....hwwsssskkkksssskkkksssswh..."));
+    rows.push(String::from("....hwwsssskkkksssskkkksssswh..."));
+    rows.push(String::from("....hwwsssssssssssssssssssswh..."));
+    rows.push(String::from("....hwwssssswwssssssssssssswh..."));
+    rows.push(String::from("....hwwsssswwwwsssssssssssswh..."));
+    rows.push(String::from("....hhwwsssssssssssssssssswwh..."));
+    rows.push(String::from(".....hwwwwsssssssssssssswwwh...."));
+    rows.push(String::from(".....hhwwwwwwwwwwwwwwwwwwhh....."));
+    rows.push(String::from(".....hhbbbbbbbbbebbbbbbbrhh....."));
+    rows.push(String::from("......hbbbbbbbbeeebbbbbbrh......"));
+    rows.push(String::from("......hbbbbbbbeeeeebbbbbrh......"));
+    rows.push(String::from("......hhbbbbbeeeeeebbbbhh......."));
+    rows.push(String::from(".......hhbbbbbbbbbbbbbhh........"));
+    rows.push(String::from("........hhhbbbbbbbbbhhh........."));
+    rows.push(String::from(".........hhhhbbbbhhhh..........."));
+    rows.push(String::from("...........hhhhhhhh............."));
+    rows.push(String::from("................................"));
+    rows.push(String::from("................................"));
+    rows
+}
+
+fn sprite_color(token: char, is_player: bool) -> i64 {
+    if token == ' ' or token == '.' {
+        return -1;
+    }
+    if token == '#' {
+        return rgb_i64(22, 18, 24);
+    }
+    if token == 'w' {
+        return rgb_i64(255, 255, 255);
+    }
+    if token == 's' {
+        if is_player {
+            return rgb_i64(242, 184, 140);
+        }
+        return rgb_i64(235, 188, 159);
+    }
+    if token == 'h' {
+        return rgb_i64(99, 54, 29);
+    }
+    if token == 'r' {
+        return rgb_i64(198, 53, 47);
+    }
+    if token == 'b' {
+        if is_player {
+            return rgb_i64(24, 86, 195);
+        }
+        return rgb_i64(127, 63, 162);
+    }
+    if token == 'e' {
+        return rgb_i64(37, 97, 170);
+    }
+    if token == 'g' {
+        return rgb_i64(54, 150, 82);
+    }
+    if token == 'y' {
+        return rgb_i64(248, 224, 109);
+    }
+    if token == 'k' {
+        return rgb_i64(13, 11, 16);
+    }
+    rgb_i64(255, 0, 255)
+}
+
+fn rgb_i64(r: i64, g: i64, b: i64) -> i64 {
+    r * 65536 + g * 256 + b
 }
 
 pub fn runtime_render(
@@ -491,15 +651,15 @@ fn render_frame(
 }
 
 fn draw_board(canvas: Canvas, board: Board, cursor_row: i64, cursor_col: i64, vga: bool, selected_slot: i64) -> Canvas {
-    const left = gamekit::board_left();
-    const top = gamekit::board_top();
+    const left: i64 = gamekit::board_left();
+    const top: i64 = gamekit::board_top();
     const header = Canvas::text(canvas, left + 2, top - 2, "  A B C D E F G H I J K L M N O", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
     let out = header;
 
-    let row = 0;
+    let row: i64 = 0;
     while row < 15 {
         out = draw_row_label(out, row, left, top, vga);
-        let col = 0;
+        let col: i64 = 0;
         while col < 15 {
             const idx = row * 15 + col;
             const tile = board.cells[idx];
@@ -519,9 +679,10 @@ fn draw_board(canvas: Canvas, board: Board, cursor_row: i64, cursor_col: i64, vg
         row = row + 1;
     }
 
-    const rack_y = gamekit::footer_y() - 4;
+    const footer_y: i64 = gamekit::footer_y();
+    const rack_y: i64 = footer_y - 4;
     out = Canvas::text(out, left + 2, rack_y - 1, "RACK", gamekit::palette_status(vga), gamekit::palette_bg(vga), true);
-    let slot = 0;
+    let slot: i64 = 0;
     while slot < 7 {
         const tile = board.rack[slot];
         const x = left + 2 + slot * 4;
@@ -570,8 +731,9 @@ fn draw_hud(canvas: Canvas, board: Board, elapsed_secs: i64, vga: bool) -> Canva
 }
 
 fn draw_control_hint(canvas: Canvas, vga: bool) -> Canvas {
-    let out = Canvas::text(canvas, 4, gamekit::footer_y() - 2, "Scrabble UX: start at center, build one line per turn, c place, n lock-in, r undo turn", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
-    Canvas::text(out, 4, gamekit::footer_y() - 1, "h next tile, p shuffle, o sort by score, v terminal/sdl", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false)
+    const footer_y: i64 = gamekit::footer_y();
+    let out = Canvas::text(canvas, 4, footer_y - 2, "Scrabble UX: start at center, build one line per turn, c place, n lock-in, r undo turn", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    Canvas::text(out, 4, footer_y - 1, "h next tile, p shuffle, o sort by score, v terminal/sdl", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false)
 }
 
 fn draw_quit_prompt(canvas: Canvas, vga: bool, quit_armed: bool) -> Canvas {
