@@ -1,7 +1,7 @@
 use crate::ast::{
-    AssignOp, AssignTarget, BinaryOp, Block, ConstDef, DestructurePattern, EnumDef, EnumVariant,
-    Expr, Field, FunctionDef, GenericParam, ImplBlock, Item, MatchArm, Module, Param, Pattern,
-    PatternField, RustUse, StaticDef, Stmt, StructDef, StructLiteralField, TraitDef,
+    AssignOp, AssignTarget, BinaryOp, Block, ConstDef, DestructurePattern, EffectRow, EnumDef,
+    EnumVariant, Expr, Field, FunctionDef, GenericParam, ImplBlock, Item, MatchArm, Module, Param,
+    Pattern, PatternField, RustUse, StaticDef, Stmt, StructDef, StructLiteralField, TraitDef,
     TraitMethodSig, Type, UnaryOp, Visibility,
 };
 use crate::diag::Diagnostic;
@@ -114,7 +114,9 @@ impl Parser {
     }
 
     fn parse_struct(&mut self, visibility: Visibility) -> Option<StructDef> {
+        let start = self.previous_span_end();
         let name = self.expect_ident("Expected struct name")?;
+        let type_params = self.parse_optional_generic_params()?;
         self.expect(TokenKind::LBrace, "Expected '{' after struct name")?;
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -131,12 +133,16 @@ impl Parser {
         Some(StructDef {
             visibility,
             name,
+            type_params,
             fields,
+            span: Some(self.span_from_start(start)),
         })
     }
 
     fn parse_enum(&mut self, visibility: Visibility) -> Option<EnumDef> {
+        let start = self.previous_span_end();
         let name = self.expect_ident("Expected enum name")?;
+        let type_params = self.parse_optional_generic_params()?;
         self.expect(TokenKind::LBrace, "Expected '{' after enum name")?;
         let mut variants = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -167,11 +173,14 @@ impl Parser {
         Some(EnumDef {
             visibility,
             name,
+            type_params,
             variants,
+            span: Some(self.span_from_start(start)),
         })
     }
 
     fn parse_trait(&mut self, visibility: Visibility) -> Option<TraitDef> {
+        let start = self.previous_span_end();
         let name = self.expect_ident("Expected trait name")?;
         let mut supertraits = Vec::new();
         if self.match_kind(TokenKind::Colon) {
@@ -192,45 +201,29 @@ impl Parser {
             name,
             supertraits,
             methods,
+            span: Some(self.span_from_start(start)),
         })
     }
 
     fn parse_function(
         &mut self,
         visibility: Visibility,
-        impl_target: Option<&str>,
+        impl_target: Option<(&str, &[Type])>,
     ) -> Option<FunctionDef> {
+        let start = self.previous_span_end();
         let name = self.expect_ident("Expected function name")?;
-        let mut type_params = Vec::new();
-        if self.match_kind(TokenKind::Lt) {
-            while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
-                let param_name = self.expect_ident("Expected generic type parameter name")?;
-                let mut bounds = Vec::new();
-                if self.match_kind(TokenKind::Colon) {
-                    bounds.push(self.parse_type_bound()?);
-                    while self.match_kind(TokenKind::Plus) {
-                        bounds.push(self.parse_type_bound()?);
-                    }
-                }
-                type_params.push(GenericParam {
-                    name: param_name,
-                    bounds,
-                });
-                if !self.match_kind(TokenKind::Comma) {
-                    break;
-                }
-            }
-            self.expect(TokenKind::Gt, "Expected '>' after generic type parameters")?;
-        }
+        let type_params = self.parse_optional_generic_params()?;
         self.expect(TokenKind::LParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
         while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
             let param_name = self.expect_ident("Expected parameter name")?;
             let param_ty =
                 if param_name == "self" && impl_target.is_some() && !self.at(TokenKind::Colon) {
+                    let (impl_target_name, impl_target_args) =
+                        impl_target.expect("impl target checked above");
                     Type {
-                        path: vec![impl_target.expect("impl target checked above").to_string()],
-                        args: Vec::new(),
+                        path: vec![impl_target_name.to_string()],
+                        args: impl_target_args.to_vec(),
                         trait_bounds: Vec::new(),
                     }
                 } else {
@@ -254,6 +247,7 @@ impl Parser {
         } else {
             None
         };
+        let effect_row = self.parse_optional_effect_row()?;
         let body = self.parse_block()?;
         Some(FunctionDef {
             visibility,
@@ -261,33 +255,16 @@ impl Parser {
             type_params,
             params,
             return_type,
+            effect_row,
             body,
+            span: Some(self.span_from_start(start)),
         })
     }
 
     fn parse_trait_method_signature(&mut self) -> Option<TraitMethodSig> {
+        let start = self.previous_span_end();
         let name = self.expect_ident("Expected trait method name")?;
-        let mut type_params = Vec::new();
-        if self.match_kind(TokenKind::Lt) {
-            while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
-                let param_name = self.expect_ident("Expected generic type parameter name")?;
-                let mut bounds = Vec::new();
-                if self.match_kind(TokenKind::Colon) {
-                    bounds.push(self.parse_type_bound()?);
-                    while self.match_kind(TokenKind::Plus) {
-                        bounds.push(self.parse_type_bound()?);
-                    }
-                }
-                type_params.push(GenericParam {
-                    name: param_name,
-                    bounds,
-                });
-                if !self.match_kind(TokenKind::Comma) {
-                    break;
-                }
-            }
-            self.expect(TokenKind::Gt, "Expected '>' after generic type parameters")?;
-        }
+        let type_params = self.parse_optional_generic_params()?;
         self.expect(TokenKind::LParen, "Expected '(' after trait method name")?;
         let mut params = Vec::new();
         while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
@@ -316,6 +293,7 @@ impl Parser {
         } else {
             None
         };
+        let effect_row = self.parse_optional_effect_row()?;
         self.expect(
             TokenKind::Semicolon,
             "Expected ';' after trait method signature",
@@ -325,22 +303,28 @@ impl Parser {
             type_params,
             params,
             return_type,
+            effect_row,
+            span: Some(self.span_from_start(start)),
         })
     }
 
     fn parse_impl(&mut self) -> Option<ImplBlock> {
-        let first = self.expect_ident("Expected type or trait name after `impl`")?;
+        let start = self.previous_span_end();
+        let type_params = self.parse_optional_generic_params()?;
+        let first = self.parse_type()?;
         let mut trait_target = None;
-        let target = if self.match_kind(TokenKind::For) {
-            trait_target = Some(Type {
-                path: vec![first],
-                args: Vec::new(),
-                trait_bounds: Vec::new(),
-            });
-            self.expect_ident("Expected type name after `for` in impl block")?
+        let target_ty = if self.match_kind(TokenKind::For) {
+            trait_target = Some(first);
+            self.parse_type()?
         } else {
             first
         };
+        if target_ty.path.is_empty() {
+            self.error_current("Expected concrete nominal type after `impl`");
+            return None;
+        }
+        let target = target_ty.path.join("::");
+        let target_args = target_ty.args.clone();
         self.expect(TokenKind::LBrace, "Expected '{' to start impl block")?;
         let mut methods = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
@@ -350,17 +334,74 @@ impl Parser {
                 Visibility::Private
             };
             self.expect(TokenKind::Fn, "Expected `fn` in impl block")?;
-            methods.push(self.parse_function(method_visibility, Some(&target))?);
+            methods.push(self.parse_function(
+                method_visibility,
+                Some((&target, &target_args)),
+            )?);
         }
         self.expect(TokenKind::RBrace, "Expected '}' after impl block")?;
         Some(ImplBlock {
+            type_params,
             target,
+            target_args,
             trait_target,
             methods,
+            span: Some(self.span_from_start(start)),
         })
     }
 
+    fn parse_optional_generic_params(&mut self) -> Option<Vec<GenericParam>> {
+        let mut type_params = Vec::new();
+        if self.match_kind(TokenKind::Lt) {
+            while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
+                let param_name = self.expect_ident("Expected generic type parameter name")?;
+                let mut bounds = Vec::new();
+                if self.match_kind(TokenKind::Colon) {
+                    bounds.push(self.parse_type_bound()?);
+                    while self.match_kind(TokenKind::Plus) {
+                        bounds.push(self.parse_type_bound()?);
+                    }
+                }
+                type_params.push(GenericParam {
+                    name: param_name,
+                    bounds,
+                });
+                if !self.match_kind(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt, "Expected '>' after generic type parameters")?;
+        }
+        Some(type_params)
+    }
+
+    fn parse_optional_effect_row(&mut self) -> Option<Option<EffectRow>> {
+        if !self.match_kind(TokenKind::Bang) {
+            return Some(None);
+        }
+        self.expect(TokenKind::LBracket, "Expected '[' after '!' in effect row")?;
+        let mut caps = Vec::new();
+        let mut rest = None;
+        while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+            if self.match_kind(TokenKind::DotDot) {
+                rest = Some(self.expect_ident("Expected row tail variable after `..`")?);
+                if self.match_kind(TokenKind::Plus) {
+                    self.error_current("`..row` must be the last element in an effect row");
+                    return None;
+                }
+                break;
+            }
+            caps.push(self.parse_path("Expected effect capability path")?);
+            if !self.match_kind(TokenKind::Plus) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBracket, "Expected ']' after effect row")?;
+        Some(Some(EffectRow { caps, rest }))
+    }
+
     fn parse_const_item(&mut self, visibility: Visibility) -> Option<ConstDef> {
+        let start = self.previous_span_end();
         let name = self.expect_ident("Expected const name")?;
         let ty = if self.match_kind(TokenKind::Colon) {
             Some(self.parse_type()?)
@@ -376,10 +417,12 @@ impl Parser {
             ty,
             value,
             is_const: true,
+            span: Some(self.span_from_start(start)),
         })
     }
 
     fn parse_static_item(&mut self, visibility: Visibility) -> Option<StaticDef> {
+        let start = self.previous_span_end();
         let name = self.expect_ident("Expected static name")?;
         self.expect(TokenKind::Colon, "Expected ':' after static name")?;
         let ty = self.parse_type()?;
@@ -391,6 +434,7 @@ impl Parser {
             name,
             ty,
             value,
+            span: Some(self.span_from_start(start)),
         })
     }
 
@@ -493,6 +537,7 @@ impl Parser {
     }
 
     fn parse_local_binding_stmt(&mut self, is_const: bool) -> Option<Stmt> {
+        let start = self.previous_span_end();
         if self.match_kind(TokenKind::LParen) || self.match_kind(TokenKind::LBracket) {
             let pattern = if matches!(self.tokens[self.cursor - 1].kind, TokenKind::LParen) {
                 self.parse_destructure_pattern_tuple()?
@@ -536,6 +581,7 @@ impl Parser {
             ty,
             value,
             is_const,
+            span: Some(self.span_from_start(start)),
         }))
     }
 
@@ -1381,6 +1427,22 @@ impl Parser {
         }
     }
 
+    fn previous_span_end(&self) -> usize {
+        self.tokens
+            .get(self.cursor.saturating_sub(1))
+            .map(|token| token.span.start)
+            .unwrap_or_else(|| self.peek().span.start)
+    }
+
+    fn span_from_start(&self, start: usize) -> crate::diag::Span {
+        let end = self
+            .tokens
+            .get(self.cursor.saturating_sub(1))
+            .map(|token| token.span.end)
+            .unwrap_or(start);
+        crate::diag::Span::new(start, end.max(start))
+    }
+
     fn peek(&self) -> &Token {
         &self.tokens[self.cursor]
     }
@@ -2094,5 +2156,83 @@ world"#;
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_generic_type_params_on_struct_enum_and_impl() {
+        let source = r#"
+            struct Box<T> { value: T; }
+            enum Maybe<T> { Some(T); None; }
+            impl<T> Box<T> {
+                fn take(self) -> T { self.value }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 3);
+
+        let crate::ast::Item::Struct(def) = &module.items[0] else {
+            panic!("expected struct item");
+        };
+        assert_eq!(def.type_params.len(), 1);
+        assert_eq!(def.type_params[0].name, "T");
+
+        let crate::ast::Item::Enum(def) = &module.items[1] else {
+            panic!("expected enum item");
+        };
+        assert_eq!(def.type_params.len(), 1);
+        assert_eq!(def.type_params[0].name, "T");
+
+        let crate::ast::Item::Impl(def) = &module.items[2] else {
+            panic!("expected impl item");
+        };
+        assert_eq!(def.type_params.len(), 1);
+        assert_eq!(def.target, "Box");
+        assert_eq!(def.target_args.len(), 1);
+    }
+
+    #[test]
+    fn parse_effect_row_annotations() {
+        let source = r#"
+            trait Draw {
+                fn render(self: Self) -> String ![method::render + ..r];
+            }
+
+            fn run(value: i64) -> () ![call::std::mem::drop] {
+                std::mem::drop(value);
+                return;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
+
+        let crate::ast::Item::Trait(def) = &module.items[0] else {
+            panic!("expected trait item");
+        };
+        let row = def.methods[0]
+            .effect_row
+            .as_ref()
+            .expect("trait method should carry effect row");
+        assert_eq!(row.caps[0], vec!["method".to_string(), "render".to_string()]);
+        assert_eq!(row.rest.as_deref(), Some("r"));
+
+        let crate::ast::Item::Function(def) = &module.items[1] else {
+            panic!("expected function item");
+        };
+        let row = def
+            .effect_row
+            .as_ref()
+            .expect("function should carry effect row");
+        assert_eq!(
+            row.caps[0],
+            vec![
+                "call".to_string(),
+                "std".to_string(),
+                "mem".to_string(),
+                "drop".to_string()
+            ]
+        );
+        assert!(row.rest.is_none());
     }
 }

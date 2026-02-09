@@ -6,8 +6,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::DirectBorrowHint;
 use crate::ast::{
-    AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, Expr, Item, Module, Pattern, Stmt,
-    StructLiteralField, TraitMethodSig, Type, UnaryOp, Visibility,
+    AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, Expr, GenericParam, Item, Module,
+    Pattern, Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp, Visibility,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
@@ -54,7 +54,9 @@ struct FunctionSig {
 struct Context {
     functions: HashMap<String, FunctionSig>,
     structs: HashMap<String, HashMap<String, SemType>>,
+    struct_type_params: HashMap<String, Vec<String>>,
     enums: HashMap<String, HashMap<String, Vec<SemType>>>,
+    enum_type_params: HashMap<String, Vec<String>>,
     traits: HashMap<String, Vec<SemType>>,
     trait_impls: HashMap<String, HashSet<String>>,
     globals: HashMap<String, SemType>,
@@ -66,6 +68,7 @@ pub struct TypecheckOptions {
     pub numeric_coercion: bool,
     pub infer_local_bidi: bool,
     pub infer_principal_fallback: bool,
+    pub effect_rows_surface: bool,
     pub effect_rows_internal: bool,
 }
 
@@ -73,9 +76,11 @@ thread_local! {
     static NUMERIC_COERCION_ENABLED: Cell<bool> = Cell::new(false);
     static INFER_LOCAL_BIDI_ENABLED: Cell<bool> = Cell::new(false);
     static INFER_PRINCIPAL_FALLBACK_ENABLED: Cell<bool> = Cell::new(false);
+    static EFFECT_ROWS_SURFACE_ENABLED: Cell<bool> = Cell::new(false);
     static EFFECT_ROWS_INTERNAL_ENABLED: Cell<bool> = Cell::new(false);
     static STRICT_HOLE_REPORTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static STRICT_HOLE_EMITTED: Cell<bool> = Cell::new(false);
+    static CURRENT_DIAG_SPAN: Cell<Option<Span>> = Cell::new(None);
 }
 
 static RUSTDEX_BIN_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -89,6 +94,10 @@ fn with_typecheck_options_scope<T>(options: &TypecheckOptions, f: impl FnOnce() 
                 let previous_bidi = bidi_cell.replace(options.infer_local_bidi);
                 let previous_fallback =
                     fallback_cell.replace(options.infer_principal_fallback);
+                let previous_effect_rows_surface =
+                    EFFECT_ROWS_SURFACE_ENABLED.with(|effect_cell| {
+                        effect_cell.replace(options.effect_rows_surface)
+                    });
                 let previous_effect_rows =
                     EFFECT_ROWS_INTERNAL_ENABLED.with(|effect_cell| {
                         effect_cell.replace(options.effect_rows_internal)
@@ -102,6 +111,8 @@ fn with_typecheck_options_scope<T>(options: &TypecheckOptions, f: impl FnOnce() 
                     cell.set(previous_numeric);
                     bidi_cell.set(previous_bidi);
                     fallback_cell.set(previous_fallback);
+                    EFFECT_ROWS_SURFACE_ENABLED
+                        .with(|effect_cell| effect_cell.set(previous_effect_rows_surface));
                     EFFECT_ROWS_INTERNAL_ENABLED
                         .with(|effect_cell| effect_cell.set(previous_effect_rows));
                     out
@@ -123,12 +134,35 @@ fn infer_principal_fallback_enabled() -> bool {
     INFER_PRINCIPAL_FALLBACK_ENABLED.with(|cell| cell.get())
 }
 
+fn effect_rows_surface_enabled() -> bool {
+    EFFECT_ROWS_SURFACE_ENABLED.with(|cell| cell.get())
+}
+
 fn effect_rows_internal_enabled() -> bool {
     EFFECT_ROWS_INTERNAL_ENABLED.with(|cell| cell.get())
 }
 
+fn effect_rows_analysis_enabled() -> bool {
+    effect_rows_surface_enabled() || effect_rows_internal_enabled()
+}
+
 fn strict_mode_enabled() -> bool {
     !infer_local_bidi_enabled()
+}
+
+fn with_diag_span_scope<T>(span: Option<Span>, f: impl FnOnce() -> T) -> T {
+    CURRENT_DIAG_SPAN.with(|cell| {
+        let previous = cell.replace(span);
+        let out = f();
+        cell.set(previous);
+        out
+    })
+}
+
+fn default_diag_span() -> Span {
+    CURRENT_DIAG_SPAN
+        .with(|cell| cell.get())
+        .unwrap_or(Span::new(0, 0))
 }
 
 fn emit_strict_hole_once(key: String, message: String, diagnostics: &mut Vec<Diagnostic>) {
@@ -155,7 +189,7 @@ fn emit_strict_hole_once(key: String, message: String, diagnostics: &mut Vec<Dia
         }
     });
     if should_emit {
-        diagnostics.push(Diagnostic::new(message, Span::new(0, 0)));
+        diagnostics.push(Diagnostic::new(message, default_diag_span()));
     }
 }
 
@@ -206,7 +240,9 @@ pub fn lower_to_typed_with_options(
         let mut context = Context {
             functions: HashMap::new(),
             structs: HashMap::new(),
+            struct_type_params: HashMap::new(),
             enums: HashMap::new(),
+            enum_type_params: HashMap::new(),
             traits: HashMap::new(),
             trait_impls: HashMap::new(),
             globals: HashMap::new(),
@@ -221,7 +257,7 @@ pub fn lower_to_typed_with_options(
             .collect::<Vec<_>>();
 
         if diagnostics.is_empty() {
-            if effect_rows_internal_enabled() {
+            if effect_rows_analysis_enabled() {
                 let _ = analyze_effect_rows_internal(module, &items, &context, &mut diagnostics);
             }
             if !diagnostics.is_empty() {
@@ -241,11 +277,12 @@ struct EffectRow {
 }
 
 fn analyze_effect_rows_internal(
-    _module: &Module,
+    module: &Module,
     items: &[TypedItem],
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> HashMap<String, EffectRow> {
+    let declared_rows = collect_declared_effect_rows(module);
     let trait_methods = collect_trait_methods(items);
     let trait_caps = expand_trait_capabilities(context, &trait_methods);
     let mut rows = HashMap::<String, EffectRow>::new();
@@ -261,6 +298,11 @@ fn analyze_effect_rows_internal(
                     &trait_caps,
                     diagnostics,
                 );
+                if effect_rows_surface_enabled()
+                    && let Some(declared) = declared_rows.get(&def.name)
+                {
+                    validate_declared_effect_row(&def.name, &row, declared, diagnostics);
+                }
                 rows.insert(def.name.clone(), row);
             }
             TypedItem::Impl(def) => {
@@ -285,7 +327,13 @@ fn analyze_effect_rows_internal(
                         &trait_caps,
                         diagnostics,
                     );
-                    rows.insert(format!("{}::{}", def.target, method.name), row);
+                    let key = format!("{}::{}", def.target, method.name);
+                    if effect_rows_surface_enabled()
+                        && let Some(declared) = declared_rows.get(&key)
+                    {
+                        validate_declared_effect_row(&key, &row, declared, diagnostics);
+                    }
+                    rows.insert(key, row);
                 }
             }
             _ => {}
@@ -293,6 +341,66 @@ fn analyze_effect_rows_internal(
     }
 
     rows
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DeclaredEffectRow {
+    caps: BTreeSet<String>,
+    open: bool,
+}
+
+fn collect_declared_effect_rows(module: &Module) -> HashMap<String, DeclaredEffectRow> {
+    let mut out = HashMap::new();
+    for item in &module.items {
+        match item {
+            Item::Function(def) => {
+                if let Some(row) = def.effect_row.as_ref() {
+                    out.insert(def.name.clone(), declared_effect_row_from_ast(row));
+                }
+            }
+            Item::Impl(def) => {
+                for method in &def.methods {
+                    if let Some(row) = method.effect_row.as_ref() {
+                        out.insert(
+                            format!("{}::{}", def.target, method.name),
+                            declared_effect_row_from_ast(row),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn declared_effect_row_from_ast(row: &crate::ast::EffectRow) -> DeclaredEffectRow {
+    DeclaredEffectRow {
+        caps: row
+            .caps
+            .iter()
+            .map(|cap| cap.join("::"))
+            .collect::<BTreeSet<_>>(),
+        open: row.rest.is_some(),
+    }
+}
+
+fn validate_declared_effect_row(
+    fn_name: &str,
+    actual: &EffectRow,
+    declared: &DeclaredEffectRow,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for cap in &actual.caps {
+        if !declared.caps.contains(cap) && !declared.open {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Effect row for `{fn_name}` is missing capability `{cap}`. Add `{cap}` or use an open row (`..r`)."
+                ),
+                default_diag_span(),
+            ));
+        }
+    }
 }
 
 fn collect_trait_methods(items: &[TypedItem]) -> HashMap<String, BTreeSet<String>> {
@@ -485,7 +593,7 @@ fn validate_expr_method_capabilities(
                         format!(
                             "Type parameter `{type_param_name}` is missing capability `{required_cap}` for `{type_param_name}.{field}(...)`; {hint}"
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
             }
@@ -783,6 +891,14 @@ pub fn lower_to_rust_with_hints(
             TypedItem::Struct(def) => RustItem::Struct(RustStruct {
                 is_public: def.is_public,
                 name: def.name.clone(),
+                type_params: def
+                    .type_params
+                    .iter()
+                    .map(|param| RustTypeParam {
+                        name: param.name.clone(),
+                        bounds: param.bounds.clone(),
+                    })
+                    .collect(),
                 fields: def
                     .fields
                     .iter()
@@ -795,6 +911,14 @@ pub fn lower_to_rust_with_hints(
             TypedItem::Enum(def) => RustItem::Enum(RustEnum {
                 is_public: def.is_public,
                 name: def.name.clone(),
+                type_params: def
+                    .type_params
+                    .iter()
+                    .map(|param| RustTypeParam {
+                        name: param.name.clone(),
+                        bounds: param.bounds.clone(),
+                    })
+                    .collect(),
                 variants: def
                     .variants
                     .iter()
@@ -834,7 +958,16 @@ pub fn lower_to_rust_with_hints(
                     .collect(),
             }),
             TypedItem::Impl(def) => RustItem::Impl(RustImpl {
+                type_params: def
+                    .type_params
+                    .iter()
+                    .map(|param| RustTypeParam {
+                        name: param.name.clone(),
+                        bounds: param.bounds.clone(),
+                    })
+                    .collect(),
                 target: def.target.clone(),
+                target_args: def.target_args.clone(),
                 trait_target: def.trait_target.clone(),
                 methods: def
                     .methods
@@ -1473,6 +1606,13 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     })
                     .collect::<HashMap<_, _>>();
                 context.structs.insert(def.name.clone(), fields);
+                context.struct_type_params.insert(
+                    def.name.clone(),
+                    def.type_params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect(),
+                );
             }
             Item::Enum(def) => {
                 let variants = def
@@ -1490,6 +1630,13 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     })
                     .collect::<HashMap<_, _>>();
                 context.enums.insert(def.name.clone(), variants);
+                context.enum_type_params.insert(
+                    def.name.clone(),
+                    def.type_params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect(),
+                );
             }
             Item::Trait(def) => {
                 context.traits.insert(
@@ -1533,20 +1680,20 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     if let Some(trait_name) = trait_name_from_type(&trait_ty) {
                         context
                             .trait_impls
-                            .entry(def.target.clone())
+                            .entry(impl_lookup_name(&def.target))
                             .or_default()
                             .insert(trait_name.to_string());
                     }
                 }
                 for method in &def.methods {
+                    let all_type_params =
+                        merged_impl_and_method_type_params(&def.type_params, &method.type_params);
                     let sig = FunctionSig {
-                        type_params: method
-                            .type_params
+                        type_params: all_type_params
                             .iter()
                             .map(|param| param.name.clone())
                             .collect(),
-                        type_param_bounds: method
-                            .type_params
+                        type_param_bounds: all_type_params
                             .iter()
                             .map(|param| {
                                 (
@@ -1555,7 +1702,11 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                                         .bounds
                                         .iter()
                                         .map(|bound| {
-                                            type_from_ast_with_impl_self(bound, &def.target)
+                                            type_from_ast_with_impl_self(
+                                                bound,
+                                                &def.target,
+                                                &def.target_args,
+                                            )
                                         })
                                         .collect::<Vec<_>>(),
                                 )
@@ -1572,6 +1723,7 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                                 type_from_ast_with_impl_self_in_context(
                                     &param.ty,
                                     &def.target,
+                                    &def.target_args,
                                     context,
                                 )
                             })
@@ -1580,13 +1732,18 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                             .return_type
                             .as_ref()
                             .map(|ty| {
-                                type_from_ast_with_impl_self_in_context(ty, &def.target, context)
+                                type_from_ast_with_impl_self_in_context(
+                                    ty,
+                                    &def.target,
+                                    &def.target_args,
+                                    context,
+                                )
                             })
                             .unwrap_or(SemType::Unknown),
                     };
                     context
                         .functions
-                        .insert(format!("{}::{}", def.target, method.name), sig);
+                        .insert(format!("{}::{}", impl_lookup_name(&def.target), method.name), sig);
                 }
             }
             Item::Const(def) => {
@@ -1650,6 +1807,18 @@ fn lower_item(
         Item::Struct(def) => Some(TypedItem::Struct(TypedStruct {
             is_public: def.visibility == Visibility::Public,
             name: def.name.clone(),
+            type_params: def
+                .type_params
+                .iter()
+                .map(|param| TypedTypeParam {
+                    name: param.name.clone(),
+                    bounds: param
+                        .bounds
+                        .iter()
+                        .map(|bound| rust_trait_bound_string(&type_from_ast_in_context(bound, context)))
+                        .collect(),
+                })
+                .collect(),
             fields: def
                 .fields
                 .iter()
@@ -1662,6 +1831,18 @@ fn lower_item(
         Item::Enum(def) => Some(TypedItem::Enum(TypedEnum {
             is_public: def.visibility == Visibility::Public,
             name: def.name.clone(),
+            type_params: def
+                .type_params
+                .iter()
+                .map(|param| TypedTypeParam {
+                    name: param.name.clone(),
+                    bounds: param
+                        .bounds
+                        .iter()
+                        .map(|bound| rust_trait_bound_string(&type_from_ast_in_context(bound, context)))
+                        .collect(),
+                })
+                .collect(),
             variants: def
                 .variants
                 .iter()
@@ -1694,92 +1875,106 @@ fn lower_item(
         Item::Impl(def) => {
             let mut methods = Vec::new();
             for method in &def.methods {
-                let mut locals = HashMap::new();
-                let mut immutable_locals = HashSet::new();
-                for (index, param) in method.params.iter().enumerate() {
-                    if is_redundant_impl_self_param(&method.params, index) {
-                        continue;
+                let typed_method = with_diag_span_scope(method.span, || {
+                    let mut locals = HashMap::new();
+                    let mut immutable_locals = HashSet::new();
+                    for (index, param) in method.params.iter().enumerate() {
+                        if is_redundant_impl_self_param(&method.params, index) {
+                            continue;
+                        }
+                        locals.insert(
+                            param.name.clone(),
+                            type_from_ast_with_impl_self_in_context(
+                                &param.ty,
+                                &def.target,
+                                &def.target_args,
+                                context,
+                            ),
+                        );
                     }
-                    locals.insert(
-                        param.name.clone(),
-                        type_from_ast_with_impl_self_in_context(&param.ty, &def.target, context),
-                    );
-                }
-                let declared_return_ty = method
-                    .return_type
-                    .as_ref()
-                    .map(|ty| type_from_ast_with_impl_self_in_context(ty, &def.target, context));
-                let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
-                let mut body = Vec::new();
-                let mut inferred_returns = Vec::new();
-                for (index, statement) in method.body.statements.iter().enumerate() {
-                    let is_last = index + 1 == method.body.statements.len();
-                    if is_last && let Stmt::TailExpr(expr) = statement {
-                        let (typed_expr, inferred) = infer_expr(
-                            expr,
+                    let declared_return_ty = method
+                        .return_type
+                        .as_ref()
+                        .map(|ty| {
+                            type_from_ast_with_impl_self_in_context(
+                                ty,
+                                &def.target,
+                                &def.target_args,
+                                context,
+                            )
+                        });
+                    let provisional_return_ty =
+                        declared_return_ty.clone().unwrap_or(SemType::Unknown);
+                    let mut body = Vec::new();
+                    let mut inferred_returns = Vec::new();
+                    for (index, statement) in method.body.statements.iter().enumerate() {
+                        let is_last = index + 1 == method.body.statements.len();
+                        if is_last && let Stmt::TailExpr(expr) = statement {
+                            let (typed_expr, inferred) = infer_expr(
+                                expr,
+                                context,
+                                &mut locals,
+                                &provisional_return_ty,
+                                diagnostics,
+                            );
+                            inferred_returns.push(inferred.clone());
+                            if provisional_return_ty != SemType::Unknown
+                                && !is_compatible(&inferred, &provisional_return_ty)
+                            {
+                                diagnostics.push(Diagnostic::new(
+                                    format!(
+                                        "Return type mismatch: expected `{}`, got `{}`",
+                                        type_to_string(&provisional_return_ty),
+                                        type_to_string(&inferred)
+                                    ),
+                                    default_diag_span(),
+                                ));
+                            }
+                            body.push(TypedStmt::Return(Some(typed_expr)));
+                            continue;
+                        }
+                        if let Some(stmt) = lower_stmt_with_types(
+                            statement,
                             context,
                             &mut locals,
+                            &mut immutable_locals,
                             &provisional_return_ty,
+                            &mut inferred_returns,
                             diagnostics,
-                        );
-                        inferred_returns.push(inferred.clone());
-                        if provisional_return_ty != SemType::Unknown
-                            && !is_compatible(&inferred, &provisional_return_ty)
-                        {
-                            diagnostics.push(Diagnostic::new(
-                                format!(
-                                    "Return type mismatch: expected `{}`, got `{}`",
-                                    type_to_string(&provisional_return_ty),
-                                    type_to_string(&inferred)
-                                ),
-                                Span::new(0, 0),
-                            ));
+                        ) {
+                            body.push(stmt);
                         }
-                        body.push(TypedStmt::Return(Some(typed_expr)));
-                        continue;
                     }
-                    if let Some(stmt) = lower_stmt_with_types(
-                        statement,
-                        context,
-                        &mut locals,
-                        &mut immutable_locals,
-                        &provisional_return_ty,
-                        &mut inferred_returns,
-                        diagnostics,
-                    ) {
-                        body.push(stmt);
-                    }
-                }
-                let final_return_ty = declared_return_ty.unwrap_or_else(|| {
-                    infer_return_type(&inferred_returns, diagnostics, &method.name)
-                });
-                if contains_unknown(&final_return_ty) {
-                    diagnostics.push(Diagnostic::new(
-                        inference_hole_message(
-                            format!(
-                                "Method `{}` return type could not be fully inferred; add an explicit return type",
-                                method.name
+                    let final_return_ty = declared_return_ty.unwrap_or_else(|| {
+                        infer_return_type(&inferred_returns, diagnostics, &method.name)
+                    });
+                    if contains_unknown(&final_return_ty) {
+                        diagnostics.push(Diagnostic::new(
+                            inference_hole_message(
+                                format!(
+                                    "Method `{}` return type could not be fully inferred; add an explicit return type",
+                                    method.name
+                                ),
+                                &format!("method `{}`", method.name),
+                                "an explicit return type",
                             ),
-                            &format!("method `{}`", method.name),
-                            "an explicit return type",
-                        ),
-                        Span::new(0, 0),
-                    ));
-                }
-                if final_return_ty != SemType::Unit && inferred_returns.is_empty() {
-                    diagnostics.push(Diagnostic::new(
-                        format!(
-                            "Method `{}` must explicitly return `{}`",
-                            method.name,
-                            type_to_string(&final_return_ty)
-                        ),
-                        Span::new(0, 0),
-                    ));
-                }
-                methods.push(TypedFunction {
-                    is_public: method.visibility == Visibility::Public,
-                    name: method.name.clone(),
-                    type_params: method
+                            default_diag_span(),
+                        ));
+                    }
+                    if final_return_ty != SemType::Unit && inferred_returns.is_empty() {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Method `{}` must explicitly return `{}`",
+                                method.name,
+                                type_to_string(&final_return_ty)
+                            ),
+                            default_diag_span(),
+                        ));
+                    }
+                    TypedFunction {
+                        is_public: method.visibility == Visibility::Public,
+                        name: method.name.clone(),
+                        type_params: method
                         .type_params
                         .iter()
                         .map(|param| TypedTypeParam {
@@ -1791,6 +1986,7 @@ fn lower_item(
                                     rust_trait_bound_string(&type_from_ast_with_impl_self(
                                         bound,
                                         &def.target,
+                                        &def.target_args,
                                     ))
                                 })
                                 .collect(),
@@ -1806,16 +2002,36 @@ fn lower_item(
                             ty: rust_param_type_string(&type_from_ast_with_impl_self_in_context(
                                 &param.ty,
                                 &def.target,
+                                &def.target_args,
                                 context,
                             )),
                         })
                         .collect(),
                     return_type: rust_owned_type_string(&final_return_ty),
                     body,
+                    }
                 });
+                methods.push(typed_method);
             }
             Some(TypedItem::Impl(TypedImpl {
+                type_params: def
+                    .type_params
+                    .iter()
+                    .map(|param| TypedTypeParam {
+                        name: param.name.clone(),
+                        bounds: param
+                            .bounds
+                            .iter()
+                            .map(|bound| rust_trait_bound_string(&type_from_ast_in_context(bound, context)))
+                            .collect(),
+                    })
+                    .collect(),
                 target: def.target.clone(),
+                target_args: def
+                    .target_args
+                    .iter()
+                    .map(|arg| rust_owned_type_string(&type_from_ast_in_context(arg, context)))
+                    .collect(),
                 trait_target: def
                     .trait_target
                     .as_ref()
@@ -1845,7 +2061,7 @@ fn lower_item(
                             type_to_string(&declared_ty),
                             type_to_string(&inferred)
                         ),
-                        Span::new(0, 0),
+                        def.span.unwrap_or(default_diag_span()),
                     ));
                 }
                 declared_ty
@@ -1862,7 +2078,7 @@ fn lower_item(
                         &format!("const `{}`", def.name),
                         "an explicit type",
                     ),
-                    Span::new(0, 0),
+                    def.span.unwrap_or(default_diag_span()),
                 ));
             }
             Some(TypedItem::Const(TypedConst {
@@ -1891,7 +2107,7 @@ fn lower_item(
                         type_to_string(&declared),
                         type_to_string(&inferred)
                     ),
-                    Span::new(0, 0),
+                    def.span.unwrap_or(default_diag_span()),
                 ));
             }
             if contains_unknown(&declared) {
@@ -1900,7 +2116,7 @@ fn lower_item(
                         "Static `{}` type must be concrete and cannot include `_`",
                         def.name
                     ),
-                    Span::new(0, 0),
+                    def.span.unwrap_or(default_diag_span()),
                 ));
             }
             Some(TypedItem::Static(TypedStatic {
@@ -1911,6 +2127,7 @@ fn lower_item(
             }))
         }
         Item::Function(def) => {
+            with_diag_span_scope(def.span, || {
             let mut locals = HashMap::new();
             let mut immutable_locals = HashSet::new();
             for param in &def.params {
@@ -1946,7 +2163,7 @@ fn lower_item(
                                 type_to_string(&provisional_return_ty),
                                 type_to_string(&inferred)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                     body.push(TypedStmt::Return(Some(typed_expr)));
@@ -1976,7 +2193,7 @@ fn lower_item(
                         &format!("function `{}`", def.name),
                         "an explicit return type",
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             if final_return_ty != SemType::Unit && inferred_returns.is_empty() {
@@ -1986,7 +2203,7 @@ fn lower_item(
                         def.name,
                         type_to_string(&final_return_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
 
@@ -2028,6 +2245,7 @@ fn lower_item(
                 return_type: rust_owned_type_string(&final_return_ty),
                 body,
             }))
+            })
         }
     }
 }
@@ -2104,7 +2322,7 @@ fn lower_stmt_with_types(
                             type_to_string(&declared_ty),
                             type_to_string(&inferred)
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
                 declared_ty
@@ -2117,7 +2335,7 @@ fn lower_stmt_with_types(
                         "Cannot redeclare `{}` because it is an immutable const in scope",
                         def.name
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             } else {
                 locals.insert(def.name.clone(), final_ty.clone());
@@ -2152,7 +2370,7 @@ fn lower_stmt_with_types(
                             "Cannot redeclare `{}` because it is an immutable const in scope",
                             name
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
             }
@@ -2178,7 +2396,7 @@ fn lower_stmt_with_types(
                 if immutable_locals.contains(name) {
                     diagnostics.push(Diagnostic::new(
                         format!("Cannot assign to immutable const `{name}`"),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     return None;
                 }
@@ -2214,7 +2432,7 @@ fn lower_stmt_with_types(
                                 type_to_string(&target_ty),
                                 type_to_string(&value_ty)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                 }
@@ -2222,7 +2440,7 @@ fn lower_stmt_with_types(
                     if matches!(typed_target, TypedAssignTarget::Tuple(_)) {
                         diagnostics.push(Diagnostic::new(
                             "`+=` is not supported on tuple assignment targets",
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                     let sum_ty = resolve_add_type(&target_ty, &value_ty, diagnostics);
@@ -2233,7 +2451,7 @@ fn lower_stmt_with_types(
                                 type_to_string(&sum_ty),
                                 type_to_string(&target_ty)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                 }
@@ -2260,7 +2478,7 @@ fn lower_stmt_with_types(
                             type_to_string(return_ty),
                             type_to_string(&inferred)
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
                 Some(TypedStmt::Return(Some(typed_expr)))
@@ -2272,7 +2490,7 @@ fn lower_stmt_with_types(
                             "Return type mismatch: expected `{}`, got `()`",
                             type_to_string(return_ty)
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
                 Some(TypedStmt::Return(None))
@@ -2306,7 +2524,7 @@ fn lower_stmt_with_types(
                         "`if` condition must be `bool`, got `{}`",
                         type_to_string(&condition_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
 
@@ -2347,7 +2565,7 @@ fn lower_stmt_with_types(
                         "`while` condition must be `bool`, got `{}`",
                         type_to_string(&condition_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             let typed_body = lower_block_with_types(
@@ -2422,13 +2640,13 @@ fn infer_assign_target(
             if immutable_locals.contains(name) {
                 diagnostics.push(Diagnostic::new(
                     format!("Cannot assign to immutable const `{name}`"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             if context.globals.contains_key(name) {
                 diagnostics.push(Diagnostic::new(
                     format!("Cannot assign to global item `{name}`"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             let ty = locals
@@ -2440,7 +2658,7 @@ fn infer_assign_target(
             } else {
                 diagnostics.push(Diagnostic::new(
                     format!("Unknown assignment target `{name}`"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 None
             }
@@ -2452,7 +2670,7 @@ fn infer_assign_target(
             {
                 diagnostics.push(Diagnostic::new(
                     format!("Cannot assign through immutable const `{root}`"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             let resolved_ty = resolve_field_type(&base_ty, field, context, diagnostics);
@@ -2471,7 +2689,7 @@ fn infer_assign_target(
             {
                 diagnostics.push(Diagnostic::new(
                     format!("Cannot assign through immutable const `{root}`"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             let (typed_index, index_ty) =
@@ -2488,7 +2706,7 @@ fn infer_assign_target(
                                 "Vector index assignment expects `i64` or `usize` index, got `{}`",
                                 type_to_string(&index_ty)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                         SemType::Unknown
                     }
@@ -2499,7 +2717,7 @@ fn infer_assign_target(
                             "Index assignment target expects `Vec<T>`, got `{}`",
                             type_to_string(&base_ty)
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     SemType::Unknown
                 }
@@ -2595,10 +2813,17 @@ fn infer_expr(
                 args: Vec::new(),
             };
             let mut expected_fields: Option<&HashMap<String, SemType>> = None;
+            let mut type_param_names: Vec<String> = Vec::new();
+            let mut generic_bindings = HashMap::new();
+            let mut type_param_set = HashSet::new();
 
             if let Some(struct_name) = path.last() {
                 if let Some(struct_fields) = context.structs.get(struct_name) {
                     expected_fields = Some(struct_fields);
+                }
+                if let Some(params) = context.struct_type_params.get(struct_name) {
+                    type_param_names = params.clone();
+                    type_param_set = type_param_names.iter().cloned().collect();
                 }
             } else {
                 resolved_ty = SemType::Unknown;
@@ -2610,24 +2835,30 @@ fn infer_expr(
                 if !seen.insert(name.clone()) {
                     diagnostics.push(Diagnostic::new(
                         format!("Duplicate struct literal field `{name}`"),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
                 if let Some(expected) = expected_fields.and_then(|map| map.get(name)) {
-                    if !is_compatible(&value_ty, expected) {
+                    let bound = bind_generic_params(
+                        expected,
+                        &value_ty,
+                        &type_param_set,
+                        &mut generic_bindings,
+                    );
+                    if !bound && !is_compatible(&value_ty, expected) {
                         diagnostics.push(Diagnostic::new(
                             format!(
                                 "Struct field `{name}` expected `{}`, got `{}`",
                                 type_to_string(expected),
                                 type_to_string(&value_ty)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                 } else if expected_fields.is_some() {
                     diagnostics.push(Diagnostic::new(
                         format!("Unknown struct field `{name}` in literal"),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
                 typed_fields.push(TypedStructLiteralField {
@@ -2641,10 +2872,25 @@ fn infer_expr(
                     if !seen.contains(field_name) {
                         diagnostics.push(Diagnostic::new(
                             format!("Missing struct literal field `{field_name}`"),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                 }
+            }
+
+            if !type_param_names.is_empty() {
+                resolved_ty = SemType::Path {
+                    path: path.clone(),
+                    args: type_param_names
+                        .iter()
+                        .map(|name| {
+                            generic_bindings
+                                .get(name)
+                                .cloned()
+                                .unwrap_or(SemType::Unknown)
+                        })
+                        .collect(),
+                };
             }
 
             (
@@ -2788,7 +3034,7 @@ fn infer_expr(
                                 "Vector indexing expects `i64` or `usize` index (or range), got `{}`",
                                 type_to_string(&index_ty)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                         SemType::Unknown
                     }
@@ -2800,7 +3046,7 @@ fn infer_expr(
                             "Indexing requires `Vec<T>` value, got `{}`",
                             type_to_string(&base_ty)
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     SemType::Unknown
                 }
@@ -2840,7 +3086,7 @@ fn infer_expr(
                                 "Match guard must be `bool`, got `{}`",
                                 type_to_string(&guard_ty)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                     typed_guard
@@ -2862,7 +3108,7 @@ fn infer_expr(
             let final_ty = resolved_arm_ty.unwrap_or_else(|| {
                 diagnostics.push(Diagnostic::new(
                     "Match expression must have at least one arm",
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 SemType::Unknown
             });
@@ -2885,7 +3131,7 @@ fn infer_expr(
                     if !is_compatible(&expr_ty, &named_type("bool")) {
                         diagnostics.push(Diagnostic::new(
                             format!("`not` expects `bool`, got `{}`", type_to_string(&expr_ty)),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                     let out_ty = named_type("bool");
@@ -3011,7 +3257,7 @@ fn infer_expr(
                                 type_to_string(&left_ty),
                                 type_to_string(&right_ty)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                     (
@@ -3039,7 +3285,7 @@ fn infer_expr(
                                 type_to_string(&left_ty),
                                 type_to_string(&right_ty)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                     (
@@ -3099,7 +3345,7 @@ fn infer_expr(
                             type_to_string(&elem_ty),
                             type_to_string(ty)
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
             }
@@ -3179,7 +3425,7 @@ fn infer_expr(
                                     type_to_string(&provisional_return_ty),
                                     type_to_string(&inferred)
                                 ),
-                                Span::new(0, 0),
+                                default_diag_span(),
                             ));
                         }
                         typed_body.push(TypedStmt::Return(Some(typed_expr)));
@@ -3206,7 +3452,7 @@ fn infer_expr(
                         "Closure must explicitly return `{}`",
                         type_to_string(&final_return_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
 
@@ -3345,7 +3591,7 @@ fn diagnose_const_mutations_in_expr(
             {
                 diagnostics.push(Diagnostic::new(
                     format!("Cannot mutate immutable const `{root}` via method `{field}`"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             diagnose_const_mutations_in_expr(callee, immutable_locals, diagnostics);
@@ -3494,7 +3740,7 @@ fn diagnose_const_mutations_in_assign_target(
             if immutable_locals.contains(name) {
                 diagnostics.push(Diagnostic::new(
                     format!("Cannot assign to immutable const `{name}`"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
         }
@@ -3504,7 +3750,7 @@ fn diagnose_const_mutations_in_assign_target(
             {
                 diagnostics.push(Diagnostic::new(
                     format!("Cannot assign through immutable const `{root}`"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
         }
@@ -3552,7 +3798,7 @@ fn check_match_exhaustiveness(
         if !(has_true && has_false) {
             diagnostics.push(Diagnostic::new(
                 "Non-exhaustive match on `bool` (missing `true` or `false`)",
-                Span::new(0, 0),
+                default_diag_span(),
             ));
         }
         return;
@@ -3579,7 +3825,7 @@ fn check_match_exhaustiveness(
                     "Non-exhaustive match on tuple bool pattern; missing: {}",
                     missing.join(", ")
                 ),
-                Span::new(0, 0),
+                default_diag_span(),
             ));
         }
         return;
@@ -3616,7 +3862,7 @@ fn check_match_exhaustiveness(
                     "Non-exhaustive match on finite tuple domain; missing: {}",
                     missing.join(", ")
                 ),
-                Span::new(0, 0),
+                default_diag_span(),
             ));
         }
         return;
@@ -3651,7 +3897,7 @@ fn check_match_exhaustiveness(
             .join(", ");
         diagnostics.push(Diagnostic::new(
             format!("Non-exhaustive match on `{enum_name}`; missing variants: {missing}"),
-            Span::new(0, 0),
+            default_diag_span(),
         ));
     }
 }
@@ -4019,7 +4265,7 @@ fn resolve_field_type(
                 }
                 diagnostics.push(Diagnostic::new(
                     format!("Struct `{}` has no field `{field}`", struct_name),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 return SemType::Unknown;
             }
@@ -4031,7 +4277,7 @@ fn resolve_field_type(
 
     diagnostics.push(Diagnostic::new(
         "Field access requires a known struct type",
-        Span::new(0, 0),
+        default_diag_span(),
     ));
     SemType::Unknown
 }
@@ -4052,7 +4298,7 @@ fn resolve_call_type(
                     params.len(),
                     args.len()
                 ),
-                Span::new(0, 0),
+                default_diag_span(),
             ));
             return *ret.clone();
         }
@@ -4065,7 +4311,7 @@ fn resolve_call_type(
                         type_to_string(expected),
                         type_to_string(actual)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
         }
@@ -4094,14 +4340,14 @@ fn resolve_call_type(
             if !locals.contains_key(name) && !context.rust_block_functions.contains(name) {
                 diagnostics.push(Diagnostic::new(
                     format!("Unknown function `{name}`"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
         }
         return SemType::Unknown;
     }
 
-    diagnostics.push(Diagnostic::new("Unsupported call target", Span::new(0, 0)));
+    diagnostics.push(Diagnostic::new("Unsupported call target", default_diag_span()));
     SemType::Unknown
 }
 
@@ -4158,7 +4404,7 @@ fn resolve_trait_associated_call(
                     "`{type_name}::default` expects 0 arg(s), got {}",
                     args.len()
                 ),
-                Span::new(0, 0),
+                default_diag_span(),
             ));
         }
         return Some(SemType::Unknown);
@@ -4167,7 +4413,7 @@ fn resolve_trait_associated_call(
         if args.len() != 1 {
             diagnostics.push(Diagnostic::new(
                 format!("`{type_name}::from` expects 1 arg(s), got {}", args.len()),
-                Span::new(0, 0),
+                default_diag_span(),
             ));
         }
         return Some(SemType::Unknown);
@@ -4186,7 +4432,7 @@ fn resolve_from_iter_associated_type(
                 "`{type_name}::from_iter` expects 1 arg(s), got {}",
                 args.len()
             ),
-            Span::new(0, 0),
+            default_diag_span(),
         ));
         return SemType::Unknown;
     }
@@ -4351,7 +4597,7 @@ fn resolve_named_function_call(
                 sig.params.len(),
                 args.len()
             ),
-            Span::new(0, 0),
+            default_diag_span(),
         ));
         return sig.return_type.clone();
     }
@@ -4370,7 +4616,7 @@ fn resolve_named_function_call(
                     type_to_string(expected),
                     type_to_string(actual)
                 ),
-                Span::new(0, 0),
+                default_diag_span(),
             ));
         }
     }
@@ -4392,7 +4638,7 @@ fn resolve_named_function_call(
                         type_param,
                         name
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
         }
@@ -4415,7 +4661,7 @@ fn resolve_builtin_assert_call(
             if args.len() != 1 {
                 diagnostics.push(Diagnostic::new(
                     "view(...) expects exactly one argument",
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 return Some(SemType::Unknown);
             }
@@ -4425,7 +4671,7 @@ fn resolve_builtin_assert_call(
             if args.len() != 1 {
                 diagnostics.push(Diagnostic::new(
                     "assert(...) expects exactly one boolean argument",
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 return Some(SemType::Unit);
             }
@@ -4435,7 +4681,7 @@ fn resolve_builtin_assert_call(
                         "assert(...) expects `bool`, got `{}`",
                         type_to_string(&args[0])
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             Some(SemType::Unit)
@@ -4444,7 +4690,7 @@ fn resolve_builtin_assert_call(
             if args.len() != 2 {
                 diagnostics.push(Diagnostic::new(
                     format!("{name}(...) expects exactly two arguments"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 return Some(SemType::Unit);
             }
@@ -4455,7 +4701,7 @@ fn resolve_builtin_assert_call(
                         type_to_string(&args[0]),
                         type_to_string(&args[1])
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             Some(SemType::Unit)
@@ -4505,7 +4751,7 @@ fn resolve_method_call_type(
                                 "Method `String::push_str` expects `String`, got `{}`",
                                 type_to_string(&args[0])
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                     return SemType::Unit;
@@ -4554,7 +4800,7 @@ fn resolve_method_call_type(
                                 type_to_string(item_ty),
                                 type_to_string(arg_ty)
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                     return SemType::Unit;
@@ -4576,7 +4822,7 @@ fn resolve_method_call_type(
                                 "Method `Vec::get` expects `i64` or `usize` index, got `{}`",
                                 type_to_string(&args[0])
                             ),
-                            Span::new(0, 0),
+                            default_diag_span(),
                         ));
                     }
                     if let SemType::Path { args, .. } = base_ty
@@ -4768,48 +5014,13 @@ fn resolve_method_call_type(
         let lookup = format!("{type_name}::{method}");
         if let Some(sig) = context.functions.get(&lookup) {
             if sig.params.len() == args.len() + 1 {
-                if !is_compatible(base_ty, &sig.params[0]) {
-                    diagnostics.push(Diagnostic::new(
-                        format!(
-                            "Method `{lookup}` receiver mismatch: expected `{}`, got `{}`",
-                            type_to_string(&sig.params[0]),
-                            type_to_string(base_ty)
-                        ),
-                        Span::new(0, 0),
-                    ));
-                }
-                for (index, (actual, expected)) in
-                    args.iter().zip(sig.params.iter().skip(1)).enumerate()
-                {
-                    if !is_compatible(actual, expected) {
-                        diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Arg {} for method `{lookup}`: expected `{}`, got `{}`",
-                                index + 1,
-                                type_to_string(expected),
-                                type_to_string(actual)
-                            ),
-                            Span::new(0, 0),
-                        ));
-                    }
-                }
-                return sig.return_type.clone();
+                let mut call_args = Vec::with_capacity(args.len() + 1);
+                call_args.push(base_ty.clone());
+                call_args.extend(args.iter().cloned());
+                return resolve_named_function_call(sig, &lookup, &call_args, context, diagnostics);
             }
             if sig.params.len() == args.len() {
-                for (index, (actual, expected)) in args.iter().zip(&sig.params).enumerate() {
-                    if !is_compatible(actual, expected) {
-                        diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Arg {} for method `{lookup}`: expected `{}`, got `{}`",
-                                index + 1,
-                                type_to_string(expected),
-                                type_to_string(actual)
-                            ),
-                            Span::new(0, 0),
-                        ));
-                    }
-                }
-                return sig.return_type.clone();
+                return resolve_named_function_call(sig, &lookup, args, context, diagnostics);
             }
             diagnostics.push(Diagnostic::new(
                 format!(
@@ -4817,7 +5028,7 @@ fn resolve_method_call_type(
                     sig.params.len().saturating_sub(1),
                     args.len()
                 ),
-                Span::new(0, 0),
+                default_diag_span(),
             ));
             return sig.return_type.clone();
         }
@@ -4833,7 +5044,7 @@ fn resolve_method_call_type(
             method,
             type_to_string(base_ty)
         ),
-        Span::new(0, 0),
+        default_diag_span(),
     ));
     SemType::Unknown
 }
@@ -4913,7 +5124,7 @@ fn expect_method_arity(
                 "Method `{}::{}` expects {} args, got {}",
                 type_name, method, expected, actual
             ),
-            Span::new(0, 0),
+            default_diag_span(),
         ));
     }
 }
@@ -4929,7 +5140,7 @@ fn resolve_constructor_call(
             if args.len() != 1 {
                 diagnostics.push(Diagnostic::new(
                     "Some(...) expects exactly one argument",
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 return Some(option_type(SemType::Unknown));
             }
@@ -4939,7 +5150,7 @@ fn resolve_constructor_call(
             if args.len() != 1 {
                 diagnostics.push(Diagnostic::new(
                     "Ok(...) expects exactly one argument",
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 return Some(result_type(SemType::Unknown, SemType::Unknown));
             }
@@ -4949,7 +5160,7 @@ fn resolve_constructor_call(
             if args.len() != 1 {
                 diagnostics.push(Diagnostic::new(
                     "Err(...) expects exactly one argument",
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 return Some(result_type(SemType::Unknown, SemType::Unknown));
             }
@@ -4966,7 +5177,7 @@ fn resolve_constructor_call(
                 if args.len() != 1 {
                     diagnostics.push(Diagnostic::new(
                         "Option::Some(...) expects one argument",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     return Some(option_type(SemType::Unknown));
                 }
@@ -4976,7 +5187,7 @@ fn resolve_constructor_call(
                 if !args.is_empty() {
                     diagnostics.push(Diagnostic::new(
                         "Option::None expects no arguments",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
                 return Some(option_type(SemType::Unknown));
@@ -4987,7 +5198,7 @@ fn resolve_constructor_call(
                 if args.len() != 1 {
                     diagnostics.push(Diagnostic::new(
                         "Result::Ok(...) expects one argument",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     return Some(result_type(SemType::Unknown, SemType::Unknown));
                 }
@@ -4997,7 +5208,7 @@ fn resolve_constructor_call(
                 if args.len() != 1 {
                     diagnostics.push(Diagnostic::new(
                         "Result::Err(...) expects one argument",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     return Some(result_type(SemType::Unknown, SemType::Unknown));
                 }
@@ -5007,6 +5218,13 @@ fn resolve_constructor_call(
 
         if let Some(variants) = context.enums.get(enum_name) {
             if let Some(expected_payload) = variants.get(variant_name) {
+                let type_param_names = context
+                    .enum_type_params
+                    .get(enum_name)
+                    .cloned()
+                    .unwrap_or_default();
+                let type_param_set = type_param_names.iter().cloned().collect::<HashSet<_>>();
+                let mut generic_bindings = HashMap::new();
                 if args.len() != expected_payload.len() {
                     diagnostics.push(Diagnostic::new(
                         format!(
@@ -5014,12 +5232,18 @@ fn resolve_constructor_call(
                             expected_payload.len(),
                             args.len()
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 } else {
                     for (index, (actual, expected)) in args.iter().zip(expected_payload).enumerate()
                     {
-                        if !is_compatible(actual, expected) {
+                        let bound = bind_generic_params(
+                            expected,
+                            actual,
+                            &type_param_set,
+                            &mut generic_bindings,
+                        );
+                        if !bound && !is_compatible(actual, expected) {
                             diagnostics.push(Diagnostic::new(
                                 format!(
                                     "Enum variant `{enum_name}::{variant_name}` arg {} expected `{}`, got `{}`",
@@ -5027,12 +5251,23 @@ fn resolve_constructor_call(
                                     type_to_string(expected),
                                     type_to_string(actual)
                                 ),
-                                Span::new(0, 0),
+                                default_diag_span(),
                             ));
                         }
                     }
                 }
-                return Some(named_type(enum_name));
+                return Some(SemType::Path {
+                    path: vec![enum_name.clone()],
+                    args: type_param_names
+                        .iter()
+                        .map(|name| {
+                            generic_bindings
+                                .get(name)
+                                .cloned()
+                                .unwrap_or(SemType::Unknown)
+                        })
+                        .collect(),
+                });
             }
         }
     }
@@ -5049,14 +5284,14 @@ fn resolve_try_type(
         if *return_ty == SemType::Unknown {
             diagnostics.push(Diagnostic::new(
                 "Functions using `?` must declare an Option/Result return type",
-                Span::new(0, 0),
+                default_diag_span(),
             ));
             return inner_value.clone();
         }
         if option_inner(return_ty).is_none() {
             diagnostics.push(Diagnostic::new(
                 "The `?` operator on Option requires the function to return Option",
-                Span::new(0, 0),
+                default_diag_span(),
             ));
         }
         return inner_value.clone();
@@ -5065,7 +5300,7 @@ fn resolve_try_type(
         if *return_ty == SemType::Unknown {
             diagnostics.push(Diagnostic::new(
                 "Functions using `?` must declare an Option/Result return type",
-                Span::new(0, 0),
+                default_diag_span(),
             ));
             return ok_ty.clone();
         }
@@ -5077,13 +5312,13 @@ fn resolve_try_type(
                         type_to_string(err_ty),
                         type_to_string(fn_err_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
         } else {
             diagnostics.push(Diagnostic::new(
                 "The `?` operator on Result requires the function to return Result",
-                Span::new(0, 0),
+                default_diag_span(),
             ));
         }
         return ok_ty.clone();
@@ -5091,7 +5326,7 @@ fn resolve_try_type(
 
     diagnostics.push(Diagnostic::new(
         "The `?` operator requires Option<T> or Result<T, E>",
-        Span::new(0, 0),
+        default_diag_span(),
     ));
     SemType::Unknown
 }
@@ -5217,7 +5452,7 @@ fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagn
             type_to_string(left),
             type_to_string(right)
         ),
-        Span::new(0, 0),
+        default_diag_span(),
     ));
     SemType::Unknown
 }
@@ -5250,7 +5485,7 @@ fn resolve_unary_neg_type(expr: &SemType, diagnostics: &mut Vec<Diagnostic>) -> 
             "unary `-` expects a numeric operand, got `{}`",
             type_to_string(expr)
         ),
-        Span::new(0, 0),
+        default_diag_span(),
     ));
     SemType::Unknown
 }
@@ -5273,7 +5508,7 @@ fn resolve_numeric_binary_type(
             type_to_string(left),
             type_to_string(right)
         ),
-        Span::new(0, 0),
+        default_diag_span(),
     ));
     SemType::Unknown
 }
@@ -7216,9 +7451,13 @@ fn type_from_ast_in_context(ty: &Type, context: &Context) -> SemType {
 fn type_from_ast_with_impl_self_in_context(
     ty: &Type,
     impl_target: &str,
+    impl_target_args: &[Type],
     context: &Context,
 ) -> SemType {
-    promote_trait_shorthand(type_from_ast_with_impl_self(ty, impl_target), context)
+    promote_trait_shorthand(
+        type_from_ast_with_impl_self(ty, impl_target, impl_target_args),
+        context,
+    )
 }
 
 fn promote_trait_shorthand(ty: SemType, context: &Context) -> SemType {
@@ -7274,6 +7513,23 @@ fn quiche_macro_target_type(expr: &Expr, context: &Context) -> SemType {
     }
 }
 
+fn merged_impl_and_method_type_params(
+    impl_params: &[GenericParam],
+    method_params: &[GenericParam],
+) -> Vec<GenericParam> {
+    let mut merged = impl_params.to_vec();
+    for param in method_params {
+        if merged.iter().all(|existing| existing.name != param.name) {
+            merged.push(param.clone());
+        }
+    }
+    merged
+}
+
+fn impl_lookup_name(target: &str) -> String {
+    target.rsplit("::").next().unwrap_or(target).to_string()
+}
+
 fn is_redundant_impl_self_param(params: &[crate::ast::Param], index: usize) -> bool {
     if index == 0 {
         return false;
@@ -7306,7 +7562,7 @@ fn type_from_ast(ty: &Type) -> SemType {
     }
 }
 
-fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str) -> SemType {
+fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str, impl_target_args: &[Type]) -> SemType {
     if ty.path.len() == 1 && ty.path[0] == "_" && ty.args.is_empty() && ty.trait_bounds.is_empty() {
         return SemType::Unknown;
     }
@@ -7317,11 +7573,15 @@ fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str) -> SemType {
             args: ty.args.clone(),
             trait_bounds: Vec::new(),
         };
-        bounds.push(type_from_ast_with_impl_self(&base, impl_target));
+        bounds.push(type_from_ast_with_impl_self(
+            &base,
+            impl_target,
+            impl_target_args,
+        ));
         bounds.extend(
             ty.trait_bounds
                 .iter()
-                .map(|arg| type_from_ast_with_impl_self(arg, impl_target)),
+                .map(|arg| type_from_ast_with_impl_self(arg, impl_target, impl_target_args)),
         );
         return SemType::TraitObject(bounds);
     }
@@ -7329,7 +7589,7 @@ fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str) -> SemType {
         return SemType::Tuple(
             ty.args
                 .iter()
-                .map(|arg| type_from_ast_with_impl_self(arg, impl_target))
+                .map(|arg| type_from_ast_with_impl_self(arg, impl_target, impl_target_args))
                 .collect(),
         );
     }
@@ -7337,7 +7597,7 @@ fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str) -> SemType {
     if ty.path.len() == 1 && head == Some("Self") {
         return SemType::Path {
             path: vec![impl_target.to_string()],
-            args: Vec::new(),
+            args: impl_target_args.iter().map(type_from_ast).collect(),
         };
     }
     SemType::Path {
@@ -7345,7 +7605,7 @@ fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str) -> SemType {
         args: ty
             .args
             .iter()
-            .map(|arg| type_from_ast_with_impl_self(arg, impl_target))
+            .map(|arg| type_from_ast_with_impl_self(arg, impl_target, impl_target_args))
             .collect(),
     }
 }
@@ -8217,7 +8477,7 @@ fn lower_pattern(
                             items.len(),
                             scrutinee_items.len()
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     return TypedPattern::Tuple(
                         items
@@ -8243,7 +8503,7 @@ fn lower_pattern(
                         "Tuple pattern requires tuple scrutinee, got `{}`",
                         type_to_string(scrutinee_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 TypedPattern::Tuple(
                     items
@@ -8269,7 +8529,7 @@ fn lower_pattern(
                             "Slice pattern requires `Vec<T>` scrutinee, got `{}`",
                             type_to_string(scrutinee_ty)
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
                 SemType::Unknown
@@ -8316,7 +8576,7 @@ fn lower_pattern(
                 } else if binding_sets.iter().any(|set| !set.is_empty()) {
                     diagnostics.push(Diagnostic::new(
                         "Or-pattern alternatives must bind the same names with the same types",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
             }
@@ -8341,7 +8601,7 @@ fn lower_pattern(
             if struct_fields.is_none() {
                 diagnostics.push(Diagnostic::new(
                     format!("Unknown struct `{}` in pattern", path.join("::")),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             } else if let SemType::Path {
                 path: scrutinee_path,
@@ -8356,7 +8616,7 @@ fn lower_pattern(
                             struct_name,
                             type_to_string(scrutinee_ty)
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
             } else if *scrutinee_ty != SemType::Unknown {
@@ -8365,7 +8625,7 @@ fn lower_pattern(
                         "Struct pattern requires struct scrutinee, got `{}`",
                         type_to_string(scrutinee_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
 
@@ -8388,7 +8648,7 @@ fn lower_pattern(
                             struct_name,
                             missing.join(", ")
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
             }
@@ -8405,7 +8665,7 @@ fn lower_pattern(
                                     "Unknown field `{}` in struct pattern `{}`",
                                     field.name, struct_name
                                 ),
-                                Span::new(0, 0),
+                                default_diag_span(),
                             ));
                             SemType::Unknown
                         });
@@ -8459,7 +8719,7 @@ fn lower_pattern(
                 _ => {
                     diagnostics.push(Diagnostic::new(
                         "Variant pattern must be `Enum::Variant` or inferable from enum scrutinee",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     return TypedPattern::Variant {
                         path: path.clone(),
@@ -8498,7 +8758,7 @@ fn lower_pattern(
                         enum_name,
                         type_to_string(scrutinee_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
 
@@ -8508,7 +8768,7 @@ fn lower_pattern(
                         if payload.is_some() {
                             diagnostics.push(Diagnostic::new(
                                 format!("Pattern `{enum_name}::{variant_name}` has no payload"),
-                                Span::new(0, 0),
+                                default_diag_span(),
                             ));
                         }
                         None
@@ -8526,7 +8786,7 @@ fn lower_pattern(
                                     format!(
                                         "Pattern `{enum_name}::{variant_name}` requires payload pattern"
                                     ),
-                                    Span::new(0, 0),
+                                    default_diag_span(),
                                 ));
                                 None
                             }
@@ -8542,7 +8802,7 @@ fn lower_pattern(
                                                 expected_payload.len(),
                                                 items.len()
                                             ),
-                                            Span::new(0, 0),
+                                            default_diag_span(),
                                         ));
                                     }
                                     let lowered = items
@@ -8564,7 +8824,7 @@ fn lower_pattern(
                                         format!(
                                             "Pattern `{enum_name}::{variant_name}` with multiple payload fields requires tuple syntax"
                                         ),
-                                        Span::new(0, 0),
+                                        default_diag_span(),
                                     ));
                                     None
                                 }
@@ -8574,7 +8834,7 @@ fn lower_pattern(
                                     format!(
                                         "Pattern `{enum_name}::{variant_name}` requires payload pattern"
                                     ),
-                                    Span::new(0, 0),
+                                    default_diag_span(),
                                 ));
                                 None
                             }
@@ -8583,7 +8843,7 @@ fn lower_pattern(
                 } else {
                     diagnostics.push(Diagnostic::new(
                         format!("Unknown variant `{enum_name}::{variant_name}` in pattern"),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     payload.as_ref().map(|p| {
                         Box::new(lower_pattern(
@@ -8612,7 +8872,7 @@ fn lower_pattern(
                 } else {
                     diagnostics.push(Diagnostic::new(
                         format!("Unknown enum `{enum_name}` in pattern"),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     payload.as_ref().map(|p| {
                         Box::new(lower_pattern(
@@ -8657,7 +8917,7 @@ fn lower_builtin_variant_pattern(
                         "Pattern enum `Option` does not match scrutinee type `{}`",
                         type_to_string(scrutinee_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             SemType::Unknown
@@ -8674,7 +8934,7 @@ fn lower_builtin_variant_pattern(
                 None => {
                     diagnostics.push(Diagnostic::new(
                         "Pattern `Option::Some` requires payload pattern",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     None
                 }
@@ -8683,7 +8943,7 @@ fn lower_builtin_variant_pattern(
                 if payload.is_some() {
                     diagnostics.push(Diagnostic::new(
                         "Pattern `Option::None` has no payload",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
                 None
@@ -8691,7 +8951,7 @@ fn lower_builtin_variant_pattern(
             _ => {
                 diagnostics.push(Diagnostic::new(
                     format!("Unknown variant `Option::{variant_name}` in pattern"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 payload.map(|payload_pattern| {
                     Box::new(lower_pattern(
@@ -8720,7 +8980,7 @@ fn lower_builtin_variant_pattern(
                         "Pattern enum `Result` does not match scrutinee type `{}`",
                         type_to_string(scrutinee_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
             (SemType::Unknown, SemType::Unknown)
@@ -8737,7 +8997,7 @@ fn lower_builtin_variant_pattern(
                 None => {
                     diagnostics.push(Diagnostic::new(
                         "Pattern `Result::Ok` requires payload pattern",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     None
                 }
@@ -8753,7 +9013,7 @@ fn lower_builtin_variant_pattern(
                 None => {
                     diagnostics.push(Diagnostic::new(
                         "Pattern `Result::Err` requires payload pattern",
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     None
                 }
@@ -8761,7 +9021,7 @@ fn lower_builtin_variant_pattern(
             _ => {
                 diagnostics.push(Diagnostic::new(
                     format!("Unknown variant `Result::{variant_name}` in pattern"),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
                 payload.map(|payload_pattern| {
                     Box::new(lower_pattern(
@@ -8929,7 +9189,7 @@ fn bind_destructure_pattern(
                             items.len(),
                             value_items.len()
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                     return;
                 }
@@ -8942,7 +9202,7 @@ fn bind_destructure_pattern(
                         "Tuple destructure requires tuple value, got `{}`",
                         type_to_string(value_ty)
                     ),
-                    Span::new(0, 0),
+                    default_diag_span(),
                 ));
             }
         }
@@ -8960,7 +9220,7 @@ fn bind_destructure_pattern(
                             "Slice destructure requires Vec value, got `{}`",
                             type_to_string(value_ty)
                         ),
-                        Span::new(0, 0),
+                        default_diag_span(),
                     ));
                 }
                 SemType::Unknown
@@ -9026,7 +9286,7 @@ fn ensure_pattern_type(
                 type_to_string(expected),
                 type_to_string(actual)
             ),
-            Span::new(0, 0),
+            default_diag_span(),
         ));
     }
 }
@@ -9052,7 +9312,7 @@ fn unify_types(existing: SemType, next: SemType, diagnostics: &mut Vec<Diagnosti
             type_to_string(&existing),
             type_to_string(&next)
         ),
-        Span::new(0, 0),
+        default_diag_span(),
     ));
     SemType::Unknown
 }
@@ -9071,7 +9331,15 @@ fn resolve_path_value(path: &[String], context: &Context) -> Option<SemType> {
             && let Some(payload) = variants.get(variant_name)
             && payload.is_empty()
         {
-            return Some(named_type(enum_name));
+            let args = context
+                .enum_type_params
+                .get(enum_name)
+                .map(|params| params.iter().map(|_| SemType::Unknown).collect())
+                .unwrap_or_default();
+            return Some(SemType::Path {
+                path: vec![enum_name.clone()],
+                args,
+            });
         }
     }
     None
@@ -9108,7 +9376,7 @@ fn infer_return_type(
                     type_to_string(&current),
                     type_to_string(ty)
                 ),
-                Span::new(0, 0),
+                default_diag_span(),
             ));
             return SemType::Unknown;
         }
@@ -9165,7 +9433,9 @@ mod tests {
         let mut context = Context {
             functions: HashMap::new(),
             structs: HashMap::new(),
+            struct_type_params: HashMap::new(),
             enums: HashMap::new(),
+            enum_type_params: HashMap::new(),
             traits: HashMap::new(),
             trait_impls: HashMap::new(),
             globals: HashMap::new(),

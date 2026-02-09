@@ -1,3 +1,5 @@
+use crate::diag::Span;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub items: Vec<Item>,
@@ -31,14 +33,18 @@ pub struct RustUse {
 pub struct StructDef {
     pub visibility: Visibility,
     pub name: String,
+    pub type_params: Vec<GenericParam>,
     pub fields: Vec<Field>,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDef {
     pub visibility: Visibility,
     pub name: String,
+    pub type_params: Vec<GenericParam>,
     pub variants: Vec<EnumVariant>,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +59,7 @@ pub struct TraitDef {
     pub name: String,
     pub supertraits: Vec<Type>,
     pub methods: Vec<TraitMethodSig>,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +68,8 @@ pub struct TraitMethodSig {
     pub type_params: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
+    pub effect_row: Option<EffectRow>,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +85,15 @@ pub struct FunctionDef {
     pub type_params: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
+    pub effect_row: Option<EffectRow>,
     pub body: Block,
+    pub span: Option<Span>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectRow {
+    pub caps: Vec<Vec<String>>,
+    pub rest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,9 +104,12 @@ pub struct GenericParam {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImplBlock {
+    pub type_params: Vec<GenericParam>,
     pub target: String,
+    pub target_args: Vec<Type>,
     pub trait_target: Option<Type>,
     pub methods: Vec<FunctionDef>,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +168,7 @@ pub struct ConstDef {
     pub ty: Option<Type>,
     pub value: Expr,
     pub is_const: bool,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +177,7 @@ pub struct StaticDef {
     pub name: String,
     pub ty: Type,
     pub value: Expr,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

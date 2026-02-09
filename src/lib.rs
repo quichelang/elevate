@@ -22,6 +22,7 @@ use ir::typed::TypedModule;
 pub struct ExperimentFlags {
     pub move_mut_args: bool,
     pub infer_local_bidi: bool,
+    pub effect_rows: bool,
     pub effect_rows_internal: bool,
     pub infer_principal_fallback: bool,
     pub numeric_coercion: bool,
@@ -35,6 +36,9 @@ impl ExperimentFlags {
         }
         if self.infer_local_bidi {
             out.push("exp_infer_local_bidi");
+        }
+        if self.effect_rows {
+            out.push("exp_effect_rows");
         }
         if self.effect_rows_internal {
             out.push("exp_effect_rows_internal");
@@ -155,6 +159,7 @@ pub fn compile_ast_with_options(
             numeric_coercion: options.experiments.numeric_coercion,
             infer_local_bidi: options.experiments.infer_local_bidi,
             infer_principal_fallback: options.experiments.infer_principal_fallback,
+            effect_rows_surface: options.experiments.effect_rows,
             effect_rows_internal: options.experiments.effect_rows_internal,
         },
     )
@@ -294,7 +299,7 @@ mod tests {
         options.source_name = Some("examples/missing.ers".to_string());
         let error = compile_source_with_options(source, &options).expect_err("expected unknown function");
         let rendered = error.to_string();
-        assert!(rendered.contains("examples/missing.ers:location unavailable"));
+        assert!(rendered.contains("examples/missing.ers:"));
         assert!(rendered.contains("Unknown function `missing_call`"));
     }
 
@@ -1927,6 +1932,93 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_generic_struct_and_enum_definitions() {
+        let source = r#"
+            struct Wrapper<T> {
+                value: T;
+            }
+
+            enum Maybe<T> {
+                Some(T);
+                None;
+            }
+
+            fn wrap(v: i64) -> Wrapper<i64> {
+                Wrapper { value: v }
+            }
+
+            fn choose(flag: bool, value: i64) -> Maybe<i64> {
+                if flag {
+                    return Maybe::Some(value);
+                }
+                Maybe::None
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected generic type defs support");
+        assert!(output.rust_code.contains("struct Wrapper<T>"));
+        assert!(output.rust_code.contains("enum Maybe<T>"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_generic_impl_block_methods() {
+        let source = r#"
+            struct Wrapper<T> {
+                value: T;
+            }
+
+            impl<T> Wrapper<T> {
+                fn new(value: T) -> Self {
+                    Wrapper { value: value }
+                }
+
+                fn get(self) -> T {
+                    self.value
+                }
+            }
+
+            fn run() -> i64 {
+                Wrapper::new(7).get()
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected generic impl support");
+        assert!(output.rust_code.contains("impl<T> Wrapper<T>"));
+        assert!(output.rust_code.contains("fn get(self: Wrapper<T>) -> T"));
+        assert!(output.rust_code.contains("fn run() -> i64"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_generic_trait_impl_block_targets() {
+        let source = r#"
+            trait Named {
+                fn name(self: Self) -> String;
+            }
+
+            struct Wrapper<T> {
+                value: T;
+            }
+
+            impl<T> Named for Wrapper<T> {
+                fn name(self) -> String {
+                    "wrapped"
+                }
+            }
+
+            fn run(v: Wrapper<i64>) -> String {
+                v.name()
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected generic trait impl target support");
+        assert!(output.rust_code.contains("impl<T> Named for Wrapper<T>"));
+        assert!(output.rust_code.contains("fn name(self: Wrapper<T>) -> String"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_reports_generic_reuse_mismatch() {
         let source = r#"
             fn same<T>(left: T, right: T) -> T {
@@ -2203,6 +2295,55 @@ mod tests {
 
         let output = compile_source(source).expect("expected gated behavior");
         assert!(output.rust_code.contains("fn maybe<T>(value: T) -> String"));
+    }
+
+    #[test]
+    fn compile_effect_rows_surface_accepts_declared_capabilities() {
+        let source = r#"
+            fn run(value: i64) ![call::std::mem::drop] {
+                std::mem::drop(value);
+                return;
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.effect_rows = true;
+        let output =
+            compile_source_with_options(source, &options).expect("expected effect row acceptance");
+        assert!(output.rust_code.contains("fn run(value: i64) -> ()"));
+    }
+
+    #[test]
+    fn compile_effect_rows_surface_rejects_missing_declared_capabilities() {
+        let source = r#"
+            fn run(value: i64) ![] {
+                std::mem::drop(value);
+                return;
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.effect_rows = true;
+        let error =
+            compile_source_with_options(source, &options).expect_err("expected effect row mismatch");
+        let rendered = error.to_string();
+        assert!(rendered.contains("missing capability `call::std::mem::drop`"));
+    }
+
+    #[test]
+    fn compile_effect_rows_surface_allows_open_rows() {
+        let source = r#"
+            fn run(value: i64) ![..r] {
+                std::mem::drop(value);
+                return;
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.effect_rows = true;
+        let output =
+            compile_source_with_options(source, &options).expect("expected open effect row");
+        assert!(output.rust_code.contains("fn run(value: i64) -> ()"));
     }
 
     #[test]
@@ -3506,6 +3647,8 @@ world"#;
                     args: vec![],
                     trait_bounds: vec![],
                 }),
+                effect_row: None,
+                span: None,
                 body: ast::Block {
                     statements: vec![ast::Stmt::Return(Some(ast::Expr::Cast {
                         expr: Box::new(ast::Expr::Int(7)),
@@ -3546,6 +3689,8 @@ world"#;
                     args: vec![],
                     trait_bounds: vec![],
                 }),
+                effect_row: None,
+                span: None,
                 body: ast::Block {
                     statements: vec![ast::Stmt::Return(Some(ast::Expr::MacroCall {
                         path: vec!["__quiche_as".to_string()],
@@ -3578,6 +3723,8 @@ world"#;
                     args: vec![],
                     trait_bounds: vec![],
                 }),
+                effect_row: None,
+                span: None,
                 body: ast::Block {
                     statements: vec![
                         ast::Stmt::Const(ast::ConstDef {
@@ -3607,6 +3754,7 @@ world"#;
                                 },
                             },
                             is_const: false,
+                            span: None,
                         }),
                         ast::Stmt::Return(Some(ast::Expr::Call {
                             callee: Box::new(ast::Expr::Path(vec!["inc".to_string()])),
@@ -3638,6 +3786,8 @@ world"#;
                 ast::Item::Struct(ast::StructDef {
                     visibility: ast::Visibility::Public,
                     name: "Counter".to_string(),
+                    type_params: vec![],
+                    span: None,
                     fields: vec![ast::Field {
                         name: "value".to_string(),
                         ty: ast::Type {
@@ -3648,8 +3798,11 @@ world"#;
                     }],
                 }),
                 ast::Item::Impl(ast::ImplBlock {
+                    type_params: vec![],
                     target: "Counter".to_string(),
+                    target_args: vec![],
                     trait_target: None,
+                    span: None,
                     methods: vec![ast::FunctionDef {
                         visibility: ast::Visibility::Public,
                         name: "get".to_string(),
@@ -3669,6 +3822,8 @@ world"#;
                             args: vec![],
                             trait_bounds: vec![],
                         }),
+                        effect_row: None,
+                        span: None,
                         body: ast::Block {
                             statements: vec![ast::Stmt::Return(Some(ast::Expr::Field {
                                 base: Box::new(ast::Expr::Path(vec!["self".to_string()])),
@@ -3694,6 +3849,8 @@ world"#;
                         args: vec![],
                         trait_bounds: vec![],
                     }),
+                    effect_row: None,
+                    span: None,
                     body: ast::Block {
                         statements: vec![ast::Stmt::Return(Some(ast::Expr::Call {
                             callee: Box::new(ast::Expr::Field {
@@ -3739,6 +3896,8 @@ world"#;
                     args: vec![],
                     trait_bounds: vec![],
                 }),
+                effect_row: None,
+                span: None,
                 body: ast::Block {
                     statements: vec![ast::Stmt::Return(Some(ast::Expr::Index {
                         base: Box::new(ast::Expr::Path(vec!["values".to_string()])),
