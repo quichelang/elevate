@@ -13,8 +13,8 @@ struct Point {
 }
 
 fn manhattan(a: Point, b: Point) -> i64 {
-    const dx = a.x - b.x;
-    const dy = a.y - b.y;
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
     if dx < 0 { -dx } else { dx } + if dy < 0 { -dy } else { dy }
 }
 ```
@@ -155,9 +155,9 @@ impl Counter {
 }
 
 fn main() {
-    const c = Counter::new();
-    const c2 = Counter::increment(c);
-    println!("{}", Counter::get(c2));
+    let c = Counter::new();
+    c = c.increment();
+    println!("{}", c.get());
 }
 ```
 
@@ -169,7 +169,7 @@ Instance method-call syntax (`value.method(...)`) also works, resolving against 
 use std::num::ParseIntError;
 
 fn parse_value(input: String) -> Result<i64, ParseIntError> {
-    const parsed = parse_i64(input)?;
+    let parsed = parse_i64(input)?;
     Result::Ok(parsed * 2)
 }
 ```
@@ -178,8 +178,8 @@ fn parse_value(input: String) -> Result<i64, ParseIntError> {
 
 ```rust
 fn process(values: Vec<i64>) -> i64 {
-    const [head, ..tail] = values;
-    const (a, b) = (head, tail.len());
+    let [head, ..tail] = values;
+    let (a, b) = (head, tail.len());
     a + b
 }
 ```
@@ -310,6 +310,21 @@ Elevate exposes its internal IR as a reusable compilation target. The EIR has tw
 Any language that can produce a `TypedModule` gets Elevate's full ownership inference, specialization, and Rust code generation for free. This is exactly how [Quiche](https://github.com/quichelang/quiche) works — its compiler desugars Python-style syntax into EIR's Typed Core IR, then Elevate handles the rest of the pipeline from ownership decisions through Rust emission.
 
 The IR is fully defined in [`src/ir/typed.rs`](src/ir/typed.rs) and [`src/ir/lowered.rs`](src/ir/lowered.rs).
+
+### Frontend Diagnostics Contract
+
+For external frontends, pass source identity into compile options so diagnostics can point to frontend source instead of opaque byte ranges:
+
+```rust
+let options = CompileOptions {
+    source_name: Some("examples/demo.q".to_string()),
+    ..Default::default()
+};
+```
+
+When source text is available (`compile_source_with_options`), Elevate reports `file:line:col` locations. For internal diagnostics without precise spans, Elevate now reports `location unavailable` explicitly instead of ambiguous `0..0` byte ranges.
+
+Source-location math and rendering are centralized in [`src/source_map.rs`](src/source_map.rs), which is the extension point for richer frontend/backend source-map correlation.
 
 ---
 
@@ -450,6 +465,7 @@ Requires **Rust 2024 edition** (rustc 1.85+).
 - [Language Design](docs/language-design.md) — Full specification, contracts, and implementation status
 - [Type Inference Plan](docs/type-inference-plan.md) — HM-style inference + bidirectional extensions roadmap
 - [AST Reference](docs/ast.md) — Node structure documentation
+- [External Frontend Path](docs/external-frontend-path.md) — Binary AST/EIR integration, terminology, and diagnostics metadata guidance
 - [Editor Extensions](docs/editor-extensions.md) — VSCode and Zed setup
 
 ---

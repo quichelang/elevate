@@ -46,8 +46,8 @@ You are right: these are AST/codegen shape problems, not inference problems.
 1. Closure final expression returns value:
    - closure body with last `Stmt::Expr(x + 1)` infers non-`Unit` return and emits valid Rust without forced explicit `return`.
 2. `Expr::Block` as call argument:
-   - `foo({ const x = 1; x + 2 })` typechecks and emits inline block.
+   - `foo({ let x = 1; x + 2 })` typechecks and emits inline block.
 3. `Expr::Block` in assignment:
-   - `const y = { const a = 3; a * 2 };` infers `i64`.
+   - `let y = { let a = 3; a * 2 };` infers `i64`.
 4. No IIFE needed:
    - generated Rust contains block expression and no synthetic closure call for this case.

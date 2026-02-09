@@ -63,14 +63,15 @@ Guiding principles:
 2. Source-level `dyn` prefix/operator is not supported; trait-object form is inferred by compiler type/lowering.
 3. No references in user language (`&`, `&mut` not exposed).
 4. No user-provided mutability hints.
-5. `const` provides explicit immutable bindings.
-6. `static` provides static-lifetime/storage-duration declarations (not a mutability feature).
-7. `struct` and `enum` are first-class and Rust-aligned in naming.
-8. Static typing with local type inference.
-9. Compiler makes automatic ownership/memory decisions in lowered Rust.
-10. Generics compile by monomorphization with explicit safety limits.
-11. Closures are MVP+1 scope and currently available in compiler preview form.
-12. To support substantial real-world verification and validation, MVP must include:
+5. `let` is the default local-binding form; compiler infers mutability from usage.
+6. `const` is optional and reserved for explicitly immutable bindings.
+7. `static` provides static-lifetime/storage-duration declarations (not a mutability feature).
+8. `struct` and `enum` are first-class and Rust-aligned in naming.
+9. Static typing with local type inference.
+10. Compiler makes automatic ownership/memory decisions in lowered Rust.
+11. Generics compile by monomorphization with explicit safety limits.
+12. Closures are MVP+1 scope and currently available in compiler preview form.
+13. To support substantial real-world verification and validation, MVP must include:
 - Conditional blocks (`if` / `else`).
 - Loop constructs.
 - Struct functions (associated functions/methods).
@@ -88,11 +89,11 @@ Guiding principles:
 ### Language Contract (Current)
 
 Declarations:
-- `const`, `static`, `struct`, `enum`, `fn`, `use`.
+- `let`, `const`, `static`, `struct`, `enum`, `fn`, `use`.
 - `static` is source-level static-lifetime storage; mutable statics (`static mut`) are not exposed in Elevate syntax.
 
 Expressions/statements:
-- Literals, path refs/calls, field access, `match`, postfix `?`, local `const`, `return`.
+- Literals, path refs/calls, field access, `match`, postfix `?`, local `let`/`const`, `return`.
 - Conditionals and loops are required MVP features.
 - Required operator/features for substantial programs:
 - Ranges (`..`).
@@ -204,6 +205,7 @@ Implemented:
 - String interop shims for owned-return helpers (`str::strip_prefix_known`, `str::split_once_known`) with borrow-safe lowering.
 - Crate build flow for `.ers` projects that transpiles into `target/elevate-gen`.
 - Crate build diagnostics now include line/column output (plus symbol declaration hints when span data is coarse).
+- Core diagnostic rendering now uses centralized source mapping utilities (`src/source_map.rs`) and supports source-name aware `file:line:col` output for frontend integrations.
 - Crate build loop now includes adaptive borrow/clone feedback from Rust diagnostics (retrying transpile/build with inferred interop borrow hints and forced-clone places).
 - Interop contract preview via crate-level `elevate.interop` file:
 - allow-list validation for `use` imports.

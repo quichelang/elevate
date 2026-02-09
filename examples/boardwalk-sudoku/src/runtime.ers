@@ -122,13 +122,13 @@ impl Board {
     }
 
     pub fn has_conflict(self: Self, row: i64, col: i64) -> (Self, bool) {
-        const (next_board, value) = Board::get(self, row, col);
+        let (next_board, value) = Board::get(self, row, col);
         self = next_board;
         if value == 0 {
             return (self, false);
         }
 
-        const (row_board, row_values) = Board::row_values(self, row);
+        let (row_board, row_values) = Board::row_values(self, row);
         self = row_board;
         for c in 0..9 {
             if c != col {
@@ -138,7 +138,7 @@ impl Board {
             }
         }
 
-        const (col_board, col_values) = Board::col_values(self, col);
+        let (col_board, col_values) = Board::col_values(self, col);
         self = col_board;
         for r in 0..9 {
             if r != row {
@@ -155,7 +155,7 @@ impl Board {
                 if r == row and c == col {
                     ()
                 } else {
-                    const (loop_board, candidate) = Board::get(self, r, c);
+                    let (loop_board, candidate) = Board::get(self, r, c);
                     self = loop_board;
                     if candidate == value {
                         return (self, true);
@@ -169,7 +169,7 @@ impl Board {
 
     pub fn is_complete(self: Self) -> (Self, bool) {
         for row in 0..9 {
-            const (row_board, row_values) = Board::row_values(self, row);
+            let (row_board, row_values) = Board::row_values(self, row);
             self = row_board;
             for value in row_values {
                 if value == 0 {
@@ -178,7 +178,7 @@ impl Board {
             }
 
             for col in 0..9 {
-                const (conflict_board, conflict) = Board::has_conflict(self, row, col);
+                let (conflict_board, conflict) = Board::has_conflict(self, row, col);
                 self = conflict_board;
                 if conflict {
                     return (self, false);
@@ -365,9 +365,9 @@ fn render_frame(
     const width = 120;
     const height = 42;
     const vga = mode_is_vga(mode);
-    const canvas0 = Canvas::new(width, height, gamekit::palette_text(vga), gamekit::palette_bg(vga));
-    const canvas1 = gamekit::draw_scene_shell(
-        canvas0,
+    let canvas = Canvas::new(width, height, gamekit::palette_text(vga), gamekit::palette_bg(vga));
+    canvas = gamekit::draw_scene_shell(
+        canvas,
         render_mode_name(mode),
         format!("{}", message),
         debug_enabled,
@@ -378,8 +378,8 @@ fn render_frame(
     const board_top = gamekit::board_top();
     const board_width = gamekit::board_width();
     const board_height = gamekit::board_height();
-    const canvas2 = Canvas::fill_rect(
-        canvas1,
+    canvas = Canvas::fill_rect(
+        canvas,
         board_left,
         board_top,
         board_width,
@@ -389,8 +389,8 @@ fn render_frame(
         gamekit::palette_board_bg(vga),
         false,
     );
-    const (canvas3, next_board) = draw_board_rows(
-        canvas2,
+    let (next_canvas, next_board) = draw_board_rows(
+        canvas,
         board,
         cursor_row,
         cursor_col,
@@ -399,12 +399,13 @@ fn render_frame(
         mode,
         0,
     );
-    const canvas4 = draw_debug_overlay(canvas3, mode, debug_enabled, fps);
-    const canvas5 = draw_terminal_hud(canvas4, mode, player_name, level_label, elapsed_secs, show_player_two);
-    const canvas6 = gamekit::draw_gameplay_hints(canvas5, vga);
-    const canvas7 = gamekit::draw_footer_status(canvas6, message, vga);
-    const canvas8 = draw_quit_prompt(canvas7, mode, quit_armed);
-    const frame = Canvas::to_ansi(canvas8);
+    canvas = next_canvas;
+    canvas = draw_debug_overlay(canvas, mode, debug_enabled, fps);
+    canvas = draw_terminal_hud(canvas, mode, player_name, level_label, elapsed_secs, show_player_two);
+    canvas = gamekit::draw_gameplay_hints(canvas, vga);
+    canvas = draw_footer_status(canvas, message, vga);
+    canvas = draw_quit_prompt(canvas, mode, quit_armed);
+    const frame = Canvas::to_ansi(canvas);
     (next_board, frame)
 }
 
@@ -675,9 +676,9 @@ fn draw_cell_triplet(canvas: Canvas, x: i64, y: i64, value: i64, is_cursor: bool
     const fg = cell_fg(mode, value, is_cursor, is_fixed, has_conflict);
     const bg = cell_bg(mode, value, is_cursor, is_fixed, has_conflict);
     const bold = is_cursor or is_fixed;
-    const canvas0 = Canvas::put(canvas, x, y, ' ', fg, bg, bold);
-    const canvas1 = Canvas::put(canvas0, x + 1, y, cell_ch, fg, bg, bold);
-    Canvas::put(canvas1, x + 2, y, ' ', fg, bg, bold)
+    let next_canvas = Canvas::put(canvas, x, y, ' ', fg, bg, bold);
+    next_canvas = Canvas::put(next_canvas, x + 1, y, cell_ch, fg, bg, bold);
+    Canvas::put(next_canvas, x + 2, y, ' ', fg, bg, bold)
 }
 
 fn is_major_boundary(boundary_index: i64) -> bool {

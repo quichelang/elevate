@@ -138,10 +138,11 @@ fn run_compile(args: &[String]) {
         options_args.push(args[idx].clone());
         idx += 1;
     }
-    let options = parse_compile_options(&options_args).unwrap_or_else(|error| {
+    let mut options = parse_compile_options(&options_args).unwrap_or_else(|error| {
         eprintln!("error: {error}");
         process::exit(2);
     });
+    options.source_name = Some(input_path.display().to_string());
 
     let source = match elevate::source::load_file(&input_path) {
         Ok(source) => source,

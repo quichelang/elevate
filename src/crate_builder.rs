@@ -846,13 +846,23 @@ fn compile_source_with_interop_contract(
     }
 
     let tokens =
-        crate::lexer::lex(source).map_err(|diagnostics| crate::CompileError { diagnostics })?;
+        crate::lexer::lex(source).map_err(|diagnostics| crate::CompileError {
+            diagnostics,
+            source_name: options.source_name.clone(),
+            source_text: Some(source.to_string()),
+        })?;
     let mut module = crate::parser::parse_module(tokens)
-        .map_err(|diagnostics| crate::CompileError { diagnostics })?;
+        .map_err(|diagnostics| crate::CompileError {
+            diagnostics,
+            source_name: options.source_name.clone(),
+            source_text: Some(source.to_string()),
+        })?;
     let validation = validate_adapter_callsites(&module, contract);
     if !validation.is_empty() {
         return Err(crate::CompileError {
             diagnostics: validation,
+            source_name: options.source_name.clone(),
+            source_text: Some(source.to_string()),
         });
     }
     rewrite_module_adapter_calls(&mut module, contract);
@@ -1829,7 +1839,7 @@ fn format_compile_error_with_context(
 ) -> String {
     let mut out = format!("failed to compile {}:", path.display());
     for diagnostic in &error.diagnostics {
-        let (line, col) = byte_to_line_col(source, diagnostic.span.start);
+        let (line, col) = crate::source_map::byte_to_line_col_clamped(source, diagnostic.span.start);
         out.push_str(&format!(
             "\n  - {} (line {}, col {}, bytes {}..{})",
             diagnostic.message, line, col, diagnostic.span.start, diagnostic.span.end
@@ -1844,23 +1854,6 @@ fn format_compile_error_with_context(
         }
     }
     out
-}
-
-fn byte_to_line_col(source: &str, byte_offset: usize) -> (usize, usize) {
-    let clamped = byte_offset.min(source.len());
-    let mut line = 1usize;
-    let mut line_start = 0usize;
-    for (idx, ch) in source.char_indices() {
-        if idx >= clamped {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            line_start = idx + 1;
-        }
-    }
-    let col = source[line_start..clamped].chars().count() + 1;
-    (line, col)
 }
 
 fn extract_function_name(message: &str) -> Option<String> {

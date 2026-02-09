@@ -8,6 +8,7 @@ pub mod ownership_planner;
 pub mod parser;
 pub mod passes;
 pub mod source;
+pub mod source_map;
 pub mod test_runner;
 
 use std::fmt;
@@ -55,6 +56,7 @@ pub struct CompileOptions {
     pub forced_clone_places: Vec<String>,
     pub fail_on_hot_clone: bool,
     pub allow_hot_clone_places: Vec<String>,
+    pub source_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -74,6 +76,8 @@ pub struct CompilerOutput {
 #[derive(Debug, Clone)]
 pub struct CompileError {
     pub diagnostics: Vec<Diagnostic>,
+    pub source_name: Option<String>,
+    pub source_text: Option<String>,
 }
 
 impl fmt::Display for CompileError {
@@ -82,9 +86,31 @@ impl fmt::Display for CompileError {
             if index > 0 {
                 writeln!(f)?;
             }
-            write!(f, "{diagnostic}")?;
+            write!(
+                f,
+                "{}",
+                source_map::render_diagnostic(
+                    diagnostic,
+                    self.source_name.as_deref(),
+                    self.source_text.as_deref()
+                )
+            )?;
         }
         Ok(())
+    }
+}
+
+impl CompileError {
+    fn from_diagnostics(
+        diagnostics: Vec<Diagnostic>,
+        source_name: Option<String>,
+        source_text: Option<String>,
+    ) -> Self {
+        Self {
+            diagnostics,
+            source_name,
+            source_text,
+        }
     }
 }
 
@@ -96,10 +122,23 @@ pub fn compile_source_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> Result<CompilerOutput, CompileError> {
-    let tokens = lexer::lex(source).map_err(|diagnostics| CompileError { diagnostics })?;
-    let module =
-        parser::parse_module(tokens).map_err(|diagnostics| CompileError { diagnostics })?;
-    compile_ast_with_options(&module, options)
+    let source_name = options.source_name.clone();
+    let source_text = Some(source.to_string());
+    let tokens = lexer::lex(source).map_err(|diagnostics| {
+        CompileError::from_diagnostics(diagnostics, source_name.clone(), source_text.clone())
+    })?;
+    let module = parser::parse_module(tokens).map_err(|diagnostics| {
+        CompileError::from_diagnostics(diagnostics, source_name.clone(), source_text.clone())
+    })?;
+    compile_ast_with_options(&module, options).map_err(|mut error| {
+        if error.source_name.is_none() {
+            error.source_name = source_name;
+        }
+        if error.source_text.is_none() {
+            error.source_text = source_text;
+        }
+        error
+    })
 }
 
 pub fn compile_ast(module: &Module) -> Result<CompilerOutput, CompileError> {
@@ -119,7 +158,9 @@ pub fn compile_ast_with_options(
             effect_rows_internal: options.experiments.effect_rows_internal,
         },
     )
-    .map_err(|diagnostics| CompileError { diagnostics })?;
+    .map_err(|diagnostics| {
+        CompileError::from_diagnostics(diagnostics, options.source_name.clone(), None)
+    })?;
     let mut lowered = passes::lower_to_rust_with_hints(
         &typed,
         &options.direct_borrow_hints,
@@ -131,7 +172,9 @@ pub fn compile_ast_with_options(
             .push(format!("experimental flag enabled: {name}"));
     }
     enforce_hot_clone_policy(&lowered.ownership_notes, options)
-        .map_err(|diagnostics| CompileError { diagnostics })?;
+        .map_err(|diagnostics| {
+            CompileError::from_diagnostics(diagnostics, options.source_name.clone(), None)
+        })?;
     let ownership_notes = lowered.ownership_notes.clone();
     let rust_code = codegen::emit_rust_module(&lowered);
 
@@ -230,6 +273,32 @@ mod tests {
     }
 
     #[test]
+    fn compile_error_includes_source_name_and_line_col_for_parser_errors() {
+        let source = "fn broken( { return 1; }";
+        let mut options = CompileOptions::default();
+        options.source_name = Some("examples/broken.ers".to_string());
+        let error = compile_source_with_options(source, &options).expect_err("expected parse error");
+        let rendered = error.to_string();
+        assert!(rendered.contains("examples/broken.ers:"));
+        assert!(rendered.contains("Expected"));
+    }
+
+    #[test]
+    fn compile_error_marks_spanless_diagnostics_as_location_unavailable() {
+        let source = r#"
+            fn run() {
+                return missing_call();
+            }
+        "#;
+        let mut options = CompileOptions::default();
+        options.source_name = Some("examples/missing.ers".to_string());
+        let error = compile_source_with_options(source, &options).expect_err("expected unknown function");
+        let rendered = error.to_string();
+        assert!(rendered.contains("examples/missing.ers:location unavailable"));
+        assert!(rendered.contains("Unknown function `missing_call`"));
+    }
+
+    #[test]
     fn compile_rejects_option_try_outside_option_return() {
         let source = r#"
             fn bad(v: Option<i64>) -> i64 {
@@ -307,6 +376,24 @@ mod tests {
                 .rust_code
                 .contains("values[(1) as usize] = (values[(1) as usize] % 3);")
         );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_let_reassignment_style() {
+        let source = r#"
+            fn update(v: i64) -> i64 {
+                let next = v;
+                next = next + 1;
+                next = next * 2;
+                return next;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("let mut next: i64 = v;"));
+        assert!(output.rust_code.contains("next = (next + 1);"));
+        assert!(output.rust_code.contains("next = (next * 2);"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

@@ -4,6 +4,8 @@
 > The source of truth is [ast.rs](file:///Volumes/Dev/code/jagtesh/elevate/src/ast.rs),
 > [ir/typed.rs](file:///Volumes/Dev/code/jagtesh/elevate/src/ir/typed.rs), and
 > [ir/lowered.rs](file:///Volumes/Dev/code/jagtesh/elevate/src/ir/lowered.rs).
+>
+> For focused guidance on binary AST payloads, source-map metadata, and integration contracts, see [External Frontend Path](external-frontend-path.md).
 
 ---
 
@@ -444,6 +446,7 @@ let options = CompileOptions {
         numeric_coercion: true,
         ..Default::default()
     },
+    source_name: Some("src/main.q".to_string()), // frontend source identity
     direct_borrow_hints: vec![...],
     forced_clone_places: vec![...],
     ..Default::default()
@@ -490,6 +493,8 @@ Today, Elevate accepts input via two interfaces:
 The `compile_ast` path is what external frontends (like Quiche) use today.
 It requires sharing Rust types via `Cargo.toml` path dependency.
 
+For best diagnostics from non-Elevate frontends, set `CompileOptions.source_name` to the original frontend file path (for example `.q` file). Elevate uses this in rendered diagnostics so errors are reported as `source:line:col` when span/source data is available.
+
 ### Proposed: Serialized AST Exchange
 
 For decoupled frontend/backend workflows, Elevate should support a **serialized
@@ -511,6 +516,7 @@ struct FrontendMeta {
     language: String,           // "quiche", "ers", etc.
     compiler_version: String,
     source_map_id: Option<String>,
+    source_path: Option<String>, // original frontend source path for diagnostics
 }
 ```
 
@@ -576,7 +582,11 @@ pub struct Module {
 // Binary (bincode)
 pub fn compile_from_bytes(data: &[u8]) -> Result<CompilerOutput, CompileError> {
     let envelope: AstEnvelope = bincode::deserialize(data)
-        .map_err(|e| CompileError { diagnostics: vec![Diagnostic::new(e.to_string(), Span::new(0, 0))] })?;
+        .map_err(|e| CompileError {
+            diagnostics: vec![Diagnostic::new(e.to_string(), Span::new(0, 0))],
+            source_name: None,
+            source_text: None,
+        })?;
     validate_ast_envelope(&envelope)?;
     compile_ast(&envelope.module)
 }
@@ -584,7 +594,11 @@ pub fn compile_from_bytes(data: &[u8]) -> Result<CompilerOutput, CompileError> {
 // JSON (for debugging and cross-language frontends)
 pub fn compile_from_json(input: &str) -> Result<CompilerOutput, CompileError> {
     let envelope: AstEnvelope = serde_json::from_str(input)
-        .map_err(|e| CompileError { diagnostics: vec![Diagnostic::new(e.to_string(), Span::new(0, 0))] })?;
+        .map_err(|e| CompileError {
+            diagnostics: vec![Diagnostic::new(e.to_string(), Span::new(0, 0))],
+            source_name: None,
+            source_text: None,
+        })?;
     validate_ast_envelope(&envelope)?;
     compile_ast(&envelope.module)
 }
