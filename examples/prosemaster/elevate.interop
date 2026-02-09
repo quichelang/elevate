@@ -1,6 +1,6 @@
 allow crate::runtime
 allow crate::runtime::Board
-allow crate::runtime::RenderMode
+allow crate::runtime::DisplayMode
 allow crate::host
 allow crate::host::KeyEvent
 allow crate::gfx

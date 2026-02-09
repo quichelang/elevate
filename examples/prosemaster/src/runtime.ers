@@ -3,32 +3,32 @@ use crate::host::KeyEvent;
 use crate::gfx::Canvas;
 use crate::gamekit;
 
-pub enum RenderMode {
-    Neon;
-    Vga;
+pub enum DisplayMode {
+    Terminal;
+    Window;
 }
 
-pub fn default_render_mode() -> RenderMode {
-    RenderMode::Vga
+pub fn default_display_mode() -> DisplayMode {
+    DisplayMode::Window
 }
 
-pub fn toggle_render_mode(mode: RenderMode) -> RenderMode {
+pub fn toggle_display_mode(mode: DisplayMode) -> DisplayMode {
     match mode {
-        RenderMode::Neon => RenderMode::Vga;
-        RenderMode::Vga => RenderMode::Neon;
+        DisplayMode::Terminal => DisplayMode::Window;
+        DisplayMode::Window => DisplayMode::Terminal;
     }
 }
 
-pub fn render_mode_name(mode: RenderMode) -> String {
+pub fn display_mode_name(mode: DisplayMode) -> String {
     match mode {
-        RenderMode::Neon => "Neon";
-        RenderMode::Vga => "VGA";
+        DisplayMode::Terminal => "Terminal";
+        DisplayMode::Window => "SDL/OpenGL";
     }
 }
 
-fn mode_is_vga(mode: RenderMode) -> bool {
+fn display_mode_prefers_window(mode: DisplayMode) -> bool {
     match mode {
-        RenderMode::Vga => true;
+        DisplayMode::Window => true;
         _ => false;
     }
 }
@@ -361,7 +361,7 @@ pub fn runtime_render(
     cursor_row: i64,
     cursor_col: i64,
     message: String,
-    mode: RenderMode,
+    display_mode: DisplayMode,
     debug_enabled: bool,
     fps: i64,
     player_name: String,
@@ -370,25 +370,28 @@ pub fn runtime_render(
     quit_armed: bool,
     selected_slot: i64,
 ) -> Board {
+    const vga = true;
     const time_label = format_elapsed_clock(elapsed_secs);
-    const drawn = host::runtime_draw_scene(
-        board.cells,
-        board.committed,
-        cursor_row,
-        cursor_col,
-        format!("{}", message),
-        mode_is_vga(mode),
-        debug_enabled,
-        fps,
-        player_name,
-        level_label,
-        time_label,
-        quit_armed,
-        false,
-    );
+    if display_mode_prefers_window(display_mode) {
+        const drawn = host::runtime_draw_scene(
+            board.cells,
+            board.committed,
+            cursor_row,
+            cursor_col,
+            format!("{}", message),
+            vga,
+            debug_enabled,
+            fps,
+            player_name,
+            level_label,
+            time_label,
+            quit_armed,
+            false,
+        );
 
-    if drawn {
-        return board;
+        if drawn {
+            return board;
+        }
     }
 
     const (next_board, frame) = render_frame(
@@ -396,7 +399,7 @@ pub fn runtime_render(
         cursor_row,
         cursor_col,
         message,
-        mode,
+        vga,
         debug_enabled,
         fps,
         elapsed_secs,
@@ -447,7 +450,7 @@ fn render_frame(
     cursor_row: i64,
     cursor_col: i64,
     message: String,
-    mode: RenderMode,
+    vga: bool,
     debug_enabled: bool,
     fps: i64,
     elapsed_secs: i64,
@@ -456,7 +459,6 @@ fn render_frame(
 ) -> (Board, String) {
     const width = 120;
     const height = 42;
-    const vga = mode_is_vga(mode);
     const canvas0 = Canvas::new(width, height, gamekit::palette_text(vga), gamekit::palette_bg(vga));
     const canvas1 = gamekit::draw_scene_shell(
         canvas0,
@@ -472,7 +474,7 @@ fn render_frame(
     const canvas4 = gamekit::draw_gameplay_hints(canvas3, vga);
     const canvas5 = gamekit::draw_footer_status(canvas4, message, vga);
     const canvas6 = draw_control_hint(canvas5, vga);
-    const canvas7 = draw_quit_prompt(canvas6, mode, quit_armed);
+    const canvas7 = draw_quit_prompt(canvas6, vga, quit_armed);
     (board, Canvas::to_ansi(canvas7))
 }
 
@@ -557,14 +559,13 @@ fn draw_hud(canvas: Canvas, board: Board, elapsed_secs: i64, vga: bool) -> Canva
 
 fn draw_control_hint(canvas: Canvas, vga: bool) -> Canvas {
     let out = Canvas::text(canvas, 4, gamekit::footer_y() - 2, "Scrabble UX: start at center, build one line per turn, c place, n lock-in, r undo turn", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
-    Canvas::text(out, 4, gamekit::footer_y() - 1, "h next tile, p shuffle, o sort by score, v renderer", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false)
+    Canvas::text(out, 4, gamekit::footer_y() - 1, "h next tile, p shuffle, o sort by score, v terminal/sdl", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false)
 }
 
-fn draw_quit_prompt(canvas: Canvas, mode: RenderMode, quit_armed: bool) -> Canvas {
+fn draw_quit_prompt(canvas: Canvas, vga: bool, quit_armed: bool) -> Canvas {
     if not quit_armed {
         return canvas;
     }
-    const vga = mode_is_vga(mode);
     const prompt_bg = gamekit::palette_footer_bg(vga);
     const prompt_fg = gamekit::palette_status(vga);
     const panel = Canvas::fill_rect(canvas, 24, 34, 72, 3, ' ', prompt_fg, prompt_bg, false);

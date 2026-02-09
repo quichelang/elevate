@@ -1,6 +1,6 @@
 use crate::runtime;
 use crate::runtime::Board;
-use crate::runtime::RenderMode;
+use crate::runtime::DisplayMode;
 use crate::host::KeyEvent;
 
 pub struct Game {
@@ -9,7 +9,7 @@ pub struct Game {
     cursor_row: i64;
     cursor_col: i64;
     selected_slot: i64;
-    render_mode: RenderMode;
+    display_mode: DisplayMode;
     message: String;
     running: bool;
     quit_armed: bool;
@@ -33,7 +33,7 @@ impl Game {
             cursor_row: 7;
             cursor_col: 7;
             selected_slot: 0;
-            render_mode: runtime::default_render_mode();
+            display_mode: runtime::default_display_mode();
             message: String::from("Select rack tile 1-7, c place, 0 recall tile, n submit turn, r undo turn, h next tile");
             running: true;
             quit_armed: false;
@@ -58,7 +58,7 @@ impl Game {
                     self.cursor_row,
                     self.cursor_col,
                     format!("{}", self.message),
-                    self.render_mode,
+                    self.display_mode,
                     self.debug_enabled,
                     self.fps_display,
                     String::from("PROSEMASTER"),
@@ -220,8 +220,8 @@ impl Game {
     }
 
     fn toggle_renderer(self) -> Self {
-        self.render_mode = runtime::toggle_render_mode(self.render_mode);
-        self.message = format!("Renderer: {}", runtime::render_mode_name(self.render_mode));
+        self.display_mode = runtime::toggle_display_mode(self.display_mode);
+        self.message = format!("Display: {}", runtime::display_mode_name(self.display_mode));
         self
     }
 
