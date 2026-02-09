@@ -1364,7 +1364,11 @@ fn lower_item(
                     .iter()
                     .map(|param| TypedParam {
                         name: param.name.clone(),
-                        ty: rust_param_type_string(&type_from_ast_in_context(&param.ty, context)),
+                        ty: rust_param_type_string(&resolve_function_param_type(
+                            param,
+                            context,
+                            &locals,
+                        )),
                     })
                     .collect(),
                 return_type: rust_owned_type_string(&final_return_ty),
@@ -1372,6 +1376,18 @@ fn lower_item(
             }))
         }
     }
+}
+
+fn resolve_function_param_type(
+    param: &crate::ast::Param,
+    context: &Context,
+    locals: &HashMap<String, SemType>,
+) -> SemType {
+    let declared = type_from_ast_in_context(&param.ty, context);
+    if !infer_local_bidi_enabled() || declared != SemType::Unknown {
+        return declared;
+    }
+    locals.get(&param.name).cloned().unwrap_or(SemType::Unknown)
 }
 
 fn lower_trait_method_sig(method: &TraitMethodSig, context: &Context) -> TypedTraitMethod {
@@ -1499,6 +1515,31 @@ fn lower_stmt_with_types(
             })
         }
         Stmt::Assign { target, op, value } => {
+            if infer_local_bidi_enabled()
+                && matches!(op, AssignOp::Assign)
+                && let AssignTarget::Path(name) = target
+                && !locals.contains_key(name)
+                && !context.globals.contains_key(name)
+            {
+                if immutable_locals.contains(name) {
+                    diagnostics.push(Diagnostic::new(
+                        format!("Cannot assign to immutable const `{name}`"),
+                        Span::new(0, 0),
+                    ));
+                    return None;
+                }
+                let (typed_value, value_ty) =
+                    infer_expr(value, context, locals, return_ty, diagnostics);
+                diagnose_const_mutations_in_expr(&typed_value, immutable_locals, diagnostics);
+                locals.insert(name.clone(), value_ty.clone());
+                return Some(TypedStmt::Const(TypedConst {
+                    is_public: false,
+                    is_const: false,
+                    name: name.clone(),
+                    ty: rust_owned_type_string(&value_ty),
+                    value: typed_value,
+                }));
+            }
             let (typed_target, target_ty) = infer_assign_target(
                 target,
                 context,
@@ -2214,9 +2255,23 @@ fn infer_expr(
             }
         }
         Expr::Binary { op, left, right } => {
-            let (typed_left, left_ty) = infer_expr(left, context, locals, return_ty, diagnostics);
-            let (typed_right, right_ty) =
+            let (mut typed_left, mut left_ty) =
+                infer_expr(left, context, locals, return_ty, diagnostics);
+            let (mut typed_right, mut right_ty) =
                 infer_expr(right, context, locals, return_ty, diagnostics);
+            if infer_local_bidi_enabled() {
+                apply_binary_operand_hints(
+                    op,
+                    left,
+                    &mut typed_left,
+                    &mut left_ty,
+                    right,
+                    &mut typed_right,
+                    &mut right_ty,
+                    return_ty,
+                    locals,
+                );
+            }
             let (typed_op, out_ty) = match op {
                 BinaryOp::Add => {
                     let out_ty = resolve_add_type_with_literals(
@@ -2352,6 +2407,12 @@ fn infer_expr(
                 }
                 if elem_ty == SemType::Unknown {
                     elem_ty = ty.clone();
+                    continue;
+                }
+                if infer_local_bidi_enabled()
+                    && let Some(merged) = merge_compatible_types(&elem_ty, ty)
+                {
+                    elem_ty = merged;
                     continue;
                 }
                 if !is_compatible(ty, &elem_ty) || !is_compatible(&elem_ty, ty) {
@@ -4272,6 +4333,83 @@ fn resolve_try_type(
         Span::new(0, 0),
     ));
     SemType::Unknown
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_binary_operand_hints(
+    op: &BinaryOp,
+    left_expr: &Expr,
+    typed_left: &mut TypedExpr,
+    left_ty: &mut SemType,
+    right_expr: &Expr,
+    typed_right: &mut TypedExpr,
+    right_ty: &mut SemType,
+    return_ty: &SemType,
+    locals: &mut HashMap<String, SemType>,
+) {
+    let Some(hint) = binary_operand_hint(op, left_ty, right_ty, return_ty) else {
+        return;
+    };
+    refine_expr_type_hint(left_expr, typed_left, left_ty, &hint, locals);
+    refine_expr_type_hint(right_expr, typed_right, right_ty, &hint, locals);
+}
+
+fn binary_operand_hint(
+    op: &BinaryOp,
+    left_ty: &SemType,
+    right_ty: &SemType,
+    return_ty: &SemType,
+) -> Option<SemType> {
+    match op {
+        BinaryOp::Add => {
+            if is_compatible(return_ty, &named_type("String")) {
+                return Some(named_type("String"));
+            }
+            numeric_hint_from_context(left_ty, right_ty, return_ty)
+        }
+        BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
+            numeric_hint_from_context(left_ty, right_ty, return_ty)
+        }
+        _ => None,
+    }
+}
+
+fn numeric_hint_from_context(
+    left_ty: &SemType,
+    right_ty: &SemType,
+    return_ty: &SemType,
+) -> Option<SemType> {
+    if let Some(name) = canonical_numeric_name(return_ty) {
+        return Some(named_type(name));
+    }
+    if let Some(name) = canonical_numeric_name(left_ty) {
+        return Some(named_type(name));
+    }
+    if let Some(name) = canonical_numeric_name(right_ty) {
+        return Some(named_type(name));
+    }
+    None
+}
+
+fn refine_expr_type_hint(
+    expr: &Expr,
+    typed_expr: &mut TypedExpr,
+    expr_ty: &mut SemType,
+    hint_ty: &SemType,
+    locals: &mut HashMap<String, SemType>,
+) {
+    if *expr_ty != SemType::Unknown || *hint_ty == SemType::Unknown {
+        return;
+    }
+    if let Expr::Path(path) = expr
+        && path.len() == 1
+        && let Some(existing) = locals.get(&path[0]).cloned()
+        && existing == SemType::Unknown
+    {
+        locals.insert(path[0].clone(), hint_ty.clone());
+    }
+    *expr_ty = hint_ty.clone();
+    typed_expr.ty = type_to_string(expr_ty);
 }
 
 fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
@@ -6311,6 +6449,9 @@ fn is_redundant_impl_self_param(params: &[crate::ast::Param], index: usize) -> b
 }
 
 fn type_from_ast(ty: &Type) -> SemType {
+    if ty.path.len() == 1 && ty.path[0] == "_" && ty.args.is_empty() && ty.trait_bounds.is_empty() {
+        return SemType::Unknown;
+    }
     if !ty.trait_bounds.is_empty() {
         let mut bounds = Vec::with_capacity(1 + ty.trait_bounds.len());
         bounds.push(SemType::Path {
@@ -6330,6 +6471,9 @@ fn type_from_ast(ty: &Type) -> SemType {
 }
 
 fn type_from_ast_with_impl_self(ty: &Type, impl_target: &str) -> SemType {
+    if ty.path.len() == 1 && ty.path[0] == "_" && ty.args.is_empty() && ty.trait_bounds.is_empty() {
+        return SemType::Unknown;
+    }
     if !ty.trait_bounds.is_empty() {
         let mut bounds = Vec::with_capacity(1 + ty.trait_bounds.len());
         let base = Type {

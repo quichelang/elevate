@@ -327,7 +327,8 @@ These are intentionally non-default and must be enabled explicitly.
 
 - `exp_infer_local_bidi`
   - Koko-inspired local bidirectional inference mode.
-  - Intended behavior: aggressive local inference inside function bodies, with annotations still preferred/required at public API boundaries.
+  - Intended behavior: aggressive local inference inside function bodies; supports placeholder parameter types (`_`) and omitted parameter type annotations in function definitions, resolving them from local constraints when possible.
+  - Guardrail: strict/default mode still prefers explicit parameter annotations; unresolved holes still require explicit annotations.
   - Goal: practical inference without unstable global solver complexity.
 
 - `exp_effect_rows_internal`

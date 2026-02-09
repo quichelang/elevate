@@ -14,10 +14,11 @@ This plan targets a staged inference system that can be enabled incrementally wi
 - Local inference already exists in expression/typechecking flows.
 - Experiment flags already exist in CLI and compile options.
 - This pass wires the flags into typechecking behavior and adds local unification for placeholder holes (`_`) inside compatible shapes.
+- `exp_infer_local_bidi` now also supports function parameter placeholders (`a: _`) and omitted parameter annotations (`fn f(a, b)`), inferring concrete parameter types from local constraints when possible.
 
 ## HM Core (Phase 1)
 
-- Keep function parameters as annotation-required boundaries (HM-style environment seeding).
+- Keep public API boundaries explicit by default; allow omitted/placeholder parameter annotations in opt-in bidi mode.
 - Infer expression types by constraint collection and unification in a local scope.
 - Generalize only at stable `let`/`const` points where no unresolved placeholders remain.
 - Instantiate polymorphic function signatures at callsites (already present in the current generic binding path).
@@ -68,6 +69,7 @@ Source: Koka/Lobster practical effect ownership ideas.
 ## Test Matrix Focus
 
 - Missing value families (`None`, `Result::Ok`, `Result::Err`).
+- Placeholder and omitted parameter type inference in local function bodies.
 - Reordered control-flow branches (hole first vs concrete first).
 - Nested placeholders (`Option<Result<_, _>>`).
 - Tuple and match-arm mixed holes.

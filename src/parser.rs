@@ -234,8 +234,11 @@ impl Parser {
                         trait_bounds: Vec::new(),
                     }
                 } else {
-                    self.expect(TokenKind::Colon, "Expected ':' after parameter name")?;
-                    self.parse_type()?
+                    if self.match_kind(TokenKind::Colon) {
+                        self.parse_type()?
+                    } else {
+                        inferred_placeholder_type()
+                    }
                 };
             params.push(Param {
                 name: param_name,
@@ -1100,6 +1103,9 @@ impl Parser {
     }
 
     fn parse_type_atom(&mut self) -> Option<Type> {
+        if self.match_kind(TokenKind::Underscore) {
+            return Some(inferred_placeholder_type());
+        }
         if self.match_kind(TokenKind::LParen) {
             if self.match_kind(TokenKind::RParen) {
                 return Some(Type {
@@ -1404,6 +1410,14 @@ impl Parser {
             }
             self.advance();
         }
+    }
+}
+
+fn inferred_placeholder_type() -> Type {
+    Type {
+        path: vec!["_".to_string()],
+        args: Vec::new(),
+        trait_bounds: Vec::new(),
     }
 }
 
@@ -1743,6 +1757,30 @@ mod tests {
         let source = r#"
             fn pair(left: i64, right: String) -> (i64, String) {
                 (left, right)
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_placeholder_param_types() {
+        let source = r#"
+            fn add(left: _, right: _) -> i64 {
+                return left + right;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_omitted_param_types() {
+        let source = r#"
+            fn add(left, right) -> i64 {
+                return left + right;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");
