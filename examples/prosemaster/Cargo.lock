@@ -37,16 +37,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
 
 [[package]]
-name = "boardwalk-sudoku"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "font8x8",
- "minifb",
- "sdl2",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -386,6 +376,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "prosemaster"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "font8x8",
+ "minifb",
+ "sdl2",
 ]
 
 [[package]]

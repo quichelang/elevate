@@ -119,6 +119,15 @@ Exhaustiveness checking covers `bool`, `Option`, `Result`, finite tuple domains,
 ### Generics and Trait Bounds
 
 ```rust
+struct Box<T> {
+    value: T;
+}
+
+enum Maybe<T> {
+    Some(T);
+    None;
+}
+
 fn identity<T>(x: T) -> T {
     x
 }
@@ -134,9 +143,19 @@ trait Measurable {
 trait Drawable: Measurable {
     fn draw(self) -> String;
 }
+
+impl<T> Box<T> {
+    fn new(value: T) -> Self {
+        Box { value: value }
+    }
+
+    fn get(self) -> T {
+        self.value
+    }
+}
 ```
 
-Generics compile by monomorphization with safety limits. Trait declarations support supertraits (`trait A: B + C { ... }`) and trait unions (`A + B`).
+Generics are supported on functions, structs, enums, and impl blocks. Trait declarations support supertraits (`trait A: B + C { ... }`) and trait unions (`A + B`).
 
 ### Closures
 
@@ -305,6 +324,22 @@ fn double(n: _) -> i64 {
 
 The `_` placeholder is resolved from local constraints. When inference can't find a stable principal type, the `--exp-infer-principal-fallback` flag emits a deterministic "add a type annotation here" hint instead of cascading errors.
 
+### Effect Rows (Experimental Surface)
+
+Elevate now supports an effect-row surface annotation for function and trait-method signatures:
+
+```rust
+fn render_card(card: Card) -> String ![method::render + call::std::mem::drop] {
+    const text = card.render();
+    std::mem::drop(card);
+    text
+}
+```
+
+- `![cap_a + cap_b]` declares a closed capability row.
+- `![..r]` declares an open row tail.
+- Enable checks with `--exp-effect-rows`.
+
 ---
 
 ## The Compiler Pipeline
@@ -462,6 +497,7 @@ elevate init <crate-root>
 | Flag | Effect |
 |------|--------|
 | `--exp-infer-local-bidi` | Koka-inspired bidirectional local inference (omitted params, `_` placeholders) |
+| `--exp-effect-rows` | Surface effect-row checking for `![...]` annotations (function + impl methods) |
 | `--exp-infer-principal-fallback` | Deterministic "add annotation here" diagnostics when inference stalls |
 | `--exp-move-mut-args` | Move-by-default for mutation-capable call flows |
 | `--exp-effect-rows-internal` | Internal row-like capability checks (trait-supertrait method capabilities + generic method-use diagnostics) |

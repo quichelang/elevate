@@ -53,6 +53,7 @@ Source: Koka/Lobster practical effect ownership ideas.
 - Attach effect/ownership metadata after type inference stabilization.
 - Allow experiment composition:
   - `exp_infer_local_bidi` for stronger local type unification
+  - `exp_effect_rows` for source-declared effect-row validation
   - `exp_effect_rows_internal` for internal capability metadata
   - `exp_move_mut_args` for ownership lowering policy
 - Never let effect metadata destabilize principal type decisions.

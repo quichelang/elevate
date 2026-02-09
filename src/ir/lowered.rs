@@ -26,6 +26,7 @@ pub struct RustUse {
 pub struct RustStruct {
     pub is_public: bool,
     pub name: String,
+    pub type_params: Vec<RustTypeParam>,
     pub fields: Vec<RustField>,
 }
 
@@ -39,6 +40,7 @@ pub struct RustField {
 pub struct RustEnum {
     pub is_public: bool,
     pub name: String,
+    pub type_params: Vec<RustTypeParam>,
     pub variants: Vec<RustVariant>,
 }
 
@@ -82,7 +84,9 @@ pub struct RustTraitMethod {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustImpl {
+    pub type_params: Vec<RustTypeParam>,
     pub target: String,
+    pub target_args: Vec<String>,
     pub trait_target: Option<String>,
     pub methods: Vec<RustFunction>,
 }

@@ -178,6 +178,7 @@ Implemented:
 - Heterogeneous tuple support with Rust-like semantics (tuple literals, tuple type annotations, and tuple destructuring bindings in const/assignment/`for` contexts).
 - Slice destructuring bindings for `Vec` values in `const`/`for` patterns (`[head, ..tail]`, `[left, right]`).
 - Generic function definitions with callsite type inference and trait-style bound syntax (for example `fn id<T>(x: T) -> T`, `fn keep<T: Clone + Copy>(x: T) -> T`).
+- Generic struct/enum definitions and generic impl blocks (for example `struct Box<T>`, `enum Maybe<T>`, `impl<T> Box<T>`).
 - Trait declarations with supertraits (`trait A: B + C { ... }`).
 - Trait-object shorthand types in source (`Trait`, `A + B`) with compiler-inferred lowering to Rust trait objects (`dyn` with inferred pointer/operator context).
 - Array/vector literals (`[a, b, c]`) with inferred element type and `Vec` lowering.
@@ -345,6 +346,16 @@ These are intentionally non-default and must be enabled explicitly.
     - emits targeted diagnostics suggesting missing trait bounds
   - Intended behavior: use capability rows to improve diagnostics, interop lowering, and specialization planning.
   - Goal: gain row-polymorphism-like utility without exposing a full research-style type/effect surface in MVP.
+
+- `exp_effect_rows`
+  - Surface effect-row checking for function and trait-method signatures.
+  - Current syntax:
+    - closed row: `fn run() ![call::std::mem::drop] { ... }`
+    - open row: `fn run() ![method::render + ..r] { ... }`
+  - Current behavior:
+    - parser/AST stores declared capability rows
+    - checker validates inferred capabilities against declared rows
+    - open rows (`..r`) allow additional inferred capabilities
 
 - `exp_infer_principal_fallback`
   - Principal-type fallback diagnostics mode.

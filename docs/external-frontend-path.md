@@ -69,6 +69,20 @@ struct FrontendMeta {
 - include per-node spans consistently across all emitted AST expressions/statements
 - ensure spans point to frontend source (not generated/transpiled Rust)
 
+### AST fields frontend authors should use (current)
+
+- Generic data types:
+  - `StructDef.type_params`
+  - `EnumDef.type_params`
+- Generic impls:
+  - `ImplBlock.type_params`
+  - `ImplBlock.target_args`
+  - `ImplBlock.trait_target` for trait impls
+- Effect rows (experiment):
+  - `FunctionDef.effect_row`
+  - `TraitMethodSig.effect_row`
+  - surface syntax in Elevate source is `![cap::path + ..r]`
+
 ### Best (future)
 
 - include a sidecar source-map table keyed by node IDs
@@ -98,4 +112,6 @@ struct FrontendMeta {
 
 - Source-aware diagnostic rendering is now centralized in `/Volumes/Dev/code/jagtesh/elevate/src/source_map.rs`.
 - `CompileOptions.source_name` is supported and used by compiler/CLI pathways.
+- Generic structs/enums/impl blocks are supported in AST + parser + lowering.
+- Effect-row surface syntax is available behind `--exp-effect-rows`.
 - Full external binary AST ingest and full source-map sidecar resolution are still design/next-step work.

@@ -649,6 +649,7 @@ fn usage() {
     eprintln!("experiment flags:");
     eprintln!("  --exp-move-mut-args");
     eprintln!("  --exp-infer-local-bidi");
+    eprintln!("  --exp-effect-rows");
     eprintln!("  --exp-effect-rows-internal");
     eprintln!("  --exp-infer-principal-fallback");
     eprintln!("  --exp-numeric-coercion");
@@ -764,6 +765,10 @@ fn apply_experiment_flag(flag: &str, experiments: &mut ExperimentFlags) -> bool 
         }
         "--exp-infer-local-bidi" => {
             experiments.infer_local_bidi = true;
+            true
+        }
+        "--exp-effect-rows" => {
+            experiments.effect_rows = true;
             true
         }
         "--exp-effect-rows-internal" => {

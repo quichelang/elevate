@@ -84,12 +84,14 @@ enum Item {
 struct StructDef {
     visibility: Visibility,     // Public | Private
     name: String,               // "Point"
+    type_params: Vec<GenericParam>,
     fields: Vec<Field>,         // [{ name: "x", ty: i32 }, ...]
 }
 
 struct EnumDef {
     visibility: Visibility,
     name: String,
+    type_params: Vec<GenericParam>,
     variants: Vec<EnumVariant>, // [{ name: "Red", payload: [] }, ...]
 }
 
@@ -110,6 +112,7 @@ struct TraitMethodSig {
     type_params: Vec<GenericParam>,
     params: Vec<Param>,
     return_type: Option<Type>,
+    effect_row: Option<EffectRow>, // ![call::foo + method::bar + ..r]
 }
 ```
 
@@ -122,11 +125,15 @@ struct FunctionDef {
     type_params: Vec<GenericParam>,
     params: Vec<Param>,
     return_type: Option<Type>,  // None = Elevate infers it
+    effect_row: Option<EffectRow>,
     body: Block,
 }
 
 struct ImplBlock {
+    type_params: Vec<GenericParam>,
     target: String,             // "Point"
+    target_args: Vec<Type>,     // impl<T> Point<T> => [T]
+    trait_target: Option<Type>, // Some(Display) for trait impls
     methods: Vec<FunctionDef>,  // methods with `self` as first param
 }
 
@@ -139,13 +146,12 @@ struct GenericParam {
     name: String,               // "T"
     bounds: Vec<Type>,          // [Display, Clone]
 }
-```
 
-> [!WARNING]
-> **`ImplBlock` does not support trait implementations.** There is no `trait_name`
-> field, so `impl Display for Point { ... }` cannot be represented directly.
-> Use `Item::RustBlock(String)` as an escape hatch for trait impls until this is
-> added to the AST.
+struct EffectRow {
+    caps: Vec<Vec<String>>,     // [["call","std","mem","drop"], ["method","render"]]
+    rest: Option<String>,       // Some("r") for open row tail `..r`
+}
+```
 
 > [!IMPORTANT]
 > **Self parameter convention**: Methods that take `self` should have their first

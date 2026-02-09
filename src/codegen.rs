@@ -48,8 +48,14 @@ fn emit_raw_item(code: &str, out: &mut String) {
 }
 
 fn emit_struct(def: &RustStruct, out: &mut String) {
+    let generics = emit_type_params(&def.type_params);
     out.push_str("#[derive(Debug, Clone)]\n");
-    out.push_str(&format!("{}struct {} {{\n", vis(def.is_public), def.name));
+    out.push_str(&format!(
+        "{}struct {}{} {{\n",
+        vis(def.is_public),
+        def.name,
+        generics
+    ));
     for field in &def.fields {
         out.push_str(&format!("    pub {}: {},\n", field.name, field.ty));
     }
@@ -57,8 +63,14 @@ fn emit_struct(def: &RustStruct, out: &mut String) {
 }
 
 fn emit_enum(def: &RustEnum, out: &mut String) {
+    let generics = emit_type_params(&def.type_params);
     out.push_str("#[derive(Debug, Clone)]\n");
-    out.push_str(&format!("{}enum {} {{\n", vis(def.is_public), def.name));
+    out.push_str(&format!(
+        "{}enum {}{} {{\n",
+        vis(def.is_public),
+        def.name,
+        generics
+    ));
     for variant in &def.variants {
         if variant.payload.is_empty() {
             out.push_str(&format!("    {},\n", variant.name));
@@ -125,17 +137,7 @@ fn emit_function(def: &RustFunction, out: &mut String) {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let generics = if def.type_params.is_empty() {
-        String::new()
-    } else {
-        let params = def
-            .type_params
-            .iter()
-            .map(emit_type_param)
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("<{params}>")
-    };
+    let generics = emit_type_params(&def.type_params);
     out.push_str(&format!(
         "{}fn {}{}({})",
         vis(def.is_public),
@@ -153,10 +155,15 @@ fn emit_function(def: &RustFunction, out: &mut String) {
 
 fn emit_impl(def: &RustImpl, out: &mut String) {
     let in_trait_impl = def.trait_target.is_some();
+    let generics = emit_type_params(&def.type_params);
+    let target = emit_named_type(&def.target, &def.target_args);
     if let Some(trait_target) = &def.trait_target {
-        out.push_str(&format!("impl {} for {} {{\n", trait_target, def.target));
+        out.push_str(&format!(
+            "impl{} {} for {} {{\n",
+            generics, trait_target, target
+        ));
     } else {
-        out.push_str(&format!("impl {} {{\n", def.target));
+        out.push_str(&format!("impl{} {} {{\n", generics, target));
     }
     for method in &def.methods {
         let mutated = collect_mutated_paths_in_stmts(&method.body);
@@ -172,17 +179,7 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let generics = if method.type_params.is_empty() {
-            String::new()
-        } else {
-            let params = method
-                .type_params
-                .iter()
-                .map(emit_type_param)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("<{params}>")
-        };
+        let generics = emit_type_params(&method.type_params);
         if in_trait_impl {
             out.push_str(&format!(
                 "    fn {}{}({}) -> {} {{\n",
@@ -524,6 +521,25 @@ fn emit_type_param(param: &crate::ir::lowered::RustTypeParam) -> String {
         param.name.clone()
     } else {
         format!("{}: {}", param.name, param.bounds.join(" + "))
+    }
+}
+
+fn emit_type_params(params: &[crate::ir::lowered::RustTypeParam]) -> String {
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<{}>",
+            params.iter().map(emit_type_param).collect::<Vec<_>>().join(", ")
+        )
+    }
+}
+
+fn emit_named_type(name: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}<{}>", args.join(", "))
     }
 }
 

@@ -25,6 +25,7 @@ pub struct TypedRustUse {
 pub struct TypedStruct {
     pub is_public: bool,
     pub name: String,
+    pub type_params: Vec<TypedTypeParam>,
     pub fields: Vec<TypedField>,
 }
 
@@ -38,6 +39,7 @@ pub struct TypedField {
 pub struct TypedEnum {
     pub is_public: bool,
     pub name: String,
+    pub type_params: Vec<TypedTypeParam>,
     pub variants: Vec<TypedVariant>,
 }
 
@@ -81,7 +83,9 @@ pub struct TypedTraitMethod {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedImpl {
+    pub type_params: Vec<TypedTypeParam>,
     pub target: String,
+    pub target_args: Vec<String>,
     pub trait_target: Option<String>,
     pub methods: Vec<TypedFunction>,
 }
