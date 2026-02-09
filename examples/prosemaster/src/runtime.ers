@@ -2,10 +2,36 @@ use crate::host;
 use crate::host::KeyEvent;
 use crate::gfx::Canvas;
 use crate::gamekit;
+use crate::numeric;
 
 pub enum DisplayMode {
     Terminal;
     Window;
+}
+
+pub enum PlaceFromRackError {
+    InvalidRackSlot;
+    EmptyRackSlot;
+    CellUnavailable;
+}
+
+pub enum PlaceFromRackResult {
+    Placed;
+    Rejected(PlaceFromRackError);
+}
+
+pub enum SubmitTurnError {
+    NoPendingTiles;
+    NotSingleAxis;
+    NonContiguousSpan;
+    MissingCenterOnFirstMove;
+    NotConnectedToCommitted;
+    NoValidWordCreated;
+}
+
+pub enum SubmitTurnResult {
+    Accepted;
+    Rejected(SubmitTurnError);
 }
 
 pub fn default_display_mode() -> DisplayMode {
@@ -33,50 +59,17 @@ fn display_mode_prefers_window(mode: DisplayMode) -> bool {
     }
 }
 
-fn saturating_add_i64(a: i64, b: i64) -> i64 {
-    if b > 0 and a > i64::MAX - b {
-        return i64::MAX;
-    }
-    if b < 0 and a < i64::MIN - b {
-        return i64::MIN;
-    }
-    a + b
-}
-
-fn saturating_sub_nonneg_i64(a: i64, b: i64) -> i64 {
-    if a <= 0 {
-        return 0;
-    }
-    if b <= 0 {
-        return a;
-    }
-    if a < b {
-        return 0;
-    }
-    a - b
-}
-
-fn saturating_mul_nonneg_i64(a: i64, b: i64) -> i64 {
-    if a <= 0 or b <= 0 {
-        return 0;
-    }
-    if a > i64::MAX / b {
-        return i64::MAX;
-    }
-    a * b
-}
-
 pub struct Board {
     cells: Vec<i64>;
     committed: Vec<bool>;
     pending: Vec<bool>;
     rack: Vec<i64>;
-    bag_count: i64;
-    score_total: i64;
-    last_turn_score: i64;
-    turn_number: i64;
+    bag_count: u64;
+    score_total: u64;
+    last_turn_score: u64;
+    turn_number: u64;
     first_move_done: bool;
-    rng_seed: i64;
+    rng_seed: u64;
 }
 
 impl Board {
@@ -92,34 +85,35 @@ impl Board {
         }
 
         const rack0 = empty_rack();
+        const seed_u64 = numeric::to_nonneg_u64(seed);
         let board = Board {
             cells: cells;
             committed: committed;
             pending: pending;
             rack: rack0;
-            bag_count: 98;
-            score_total: 0;
-            last_turn_score: 0;
-            turn_number: 1;
+            bag_count: numeric::to_nonneg_u64(98);
+            score_total: u64::MIN;
+            last_turn_score: u64::MIN;
+            turn_number: numeric::count_inc(u64::MIN);
             first_move_done: false;
-            rng_seed: seed;
+            rng_seed: seed_u64;
         };
         Board::refill_rack(board)
     }
 
-    pub fn turn_number(self: Self) -> i64 {
+    pub fn turn_number(self: Self) -> u64 {
         self.turn_number
     }
 
-    pub fn score_total(self: Self) -> i64 {
+    pub fn score_total(self: Self) -> u64 {
         self.score_total
     }
 
-    pub fn last_turn_score(self: Self) -> i64 {
+    pub fn last_turn_score(self: Self) -> u64 {
         self.last_turn_score
     }
 
-    pub fn tiles_left(self: Self) -> i64 {
+    pub fn tiles_left(self: Self) -> u64 {
         self.bag_count
     }
 
@@ -142,26 +136,26 @@ impl Board {
         0
     }
 
-    pub fn place_from_rack(self: Self, row: i64, col: i64, slot: i64) -> (Self, i64) {
+    pub fn place_from_rack(self: Self, row: i64, col: i64, slot: i64) -> (Self, PlaceFromRackResult) {
         if slot < 0 or slot > 6 {
-            return (self, 1);
+            return (self, PlaceFromRackResult::Rejected(PlaceFromRackError::InvalidRackSlot));
         }
         const tile = self.rack[slot];
         if tile <= 0 {
-            return (self, 2);
+            return (self, PlaceFromRackResult::Rejected(PlaceFromRackError::EmptyRackSlot));
         }
         const idx = board_index(row, col);
         if idx < 0 {
-            return (self, 3);
+            return (self, PlaceFromRackResult::Rejected(PlaceFromRackError::CellUnavailable));
         }
         if self.cells[idx] != 0 {
-            return (self, 3);
+            return (self, PlaceFromRackResult::Rejected(PlaceFromRackError::CellUnavailable));
         }
 
         self.cells[idx] = tile;
         self.pending[idx] = true;
         self.rack[slot] = 0;
-        (self, 0)
+        (self, PlaceFromRackResult::Placed)
     }
 
     pub fn remove_pending(self: Self, row: i64, col: i64) -> (Self, bool) {
@@ -180,8 +174,8 @@ impl Board {
         (self, true)
     }
 
-    pub fn recall_turn_tiles(self: Self) -> (Self, i64) {
-        let count = 0;
+    pub fn recall_turn_tiles(self: Self) -> (Self, u64) {
+        let count = u64::MIN;
         let idx = 0;
         while idx < board_area() {
             if self.pending[idx] {
@@ -189,7 +183,7 @@ impl Board {
                 self.cells[idx] = 0;
                 self.pending[idx] = false;
                 self = Board::insert_into_rack(self, tile);
-                count = count + 1;
+                count = numeric::count_inc(count);
             }
             idx = idx + 1;
         }
@@ -229,31 +223,31 @@ impl Board {
         self
     }
 
-    pub fn submit_turn(self: Self) -> (Self, i64) {
+    pub fn submit_turn(self: Self) -> (Self, SubmitTurnResult) {
         const pending_positions = collect_pending_positions(self.pending);
         let pending_count = 0;
         for _ in pending_positions {
             pending_count = pending_count + 1;
         }
         if pending_count == 0 {
-            return (self, -1);
+            return (self, SubmitTurnResult::Rejected(SubmitTurnError::NoPendingTiles));
         }
 
         const (axis_code, anchor, span_start, span_end) = placement_axis(pending_positions);
         if axis_code < 0 {
-            return (self, -2);
+            return (self, SubmitTurnResult::Rejected(SubmitTurnError::NotSingleAxis));
         }
         if not placement_span_is_contiguous(self.cells, axis_code, anchor, span_start, span_end) {
-            return (self, -3);
+            return (self, SubmitTurnResult::Rejected(SubmitTurnError::NonContiguousSpan));
         }
 
         if not self.first_move_done {
             if not pending_touches_center(self.pending) {
-                return (self, -4);
+                return (self, SubmitTurnResult::Rejected(SubmitTurnError::MissingCenterOnFirstMove));
             }
         } else {
             if not pending_connects_to_committed(self.pending, self.committed) {
-                return (self, -5);
+                return (self, SubmitTurnResult::Rejected(SubmitTurnError::NotConnectedToCommitted));
             }
         }
 
@@ -269,17 +263,17 @@ impl Board {
             const col = pos % board_size();
             const (cross_score, cross_len) = score_cross_word(self.cells, self.pending, axis_code, row, col);
             if cross_len > 1 {
-                turn_score = saturating_add_i64(turn_score, cross_score);
-                word_count = saturating_add_i64(word_count, 1);
+                turn_score = i64::saturating_add(turn_score, cross_score);
+                word_count = i64::saturating_add(word_count, 1);
             }
         }
 
         if word_count == 0 {
-            return (self, -6);
+            return (self, SubmitTurnResult::Rejected(SubmitTurnError::NoValidWordCreated));
         }
 
         if pending_count == 7 {
-            turn_score = saturating_add_i64(turn_score, 50);
+            turn_score = i64::saturating_add(turn_score, 50);
         }
 
         let idx = 0;
@@ -291,12 +285,13 @@ impl Board {
             idx = idx + 1;
         }
 
-        self.score_total = saturating_add_i64(self.score_total, turn_score);
-        self.last_turn_score = turn_score;
-        self.turn_number = saturating_add_i64(self.turn_number, 1);
+        const turn_score_u64 = numeric::to_nonneg_u64(turn_score);
+        self.score_total = numeric::score_add(self.score_total, turn_score_u64);
+        self.last_turn_score = turn_score_u64;
+        self.turn_number = numeric::count_inc(self.turn_number);
         self.first_move_done = true;
         self = Board::refill_rack(self);
-        (self, 0)
+        (self, SubmitTurnResult::Accepted)
     }
 
     fn insert_into_rack(self: Self, tile: i64) -> Self {
@@ -311,7 +306,7 @@ impl Board {
             }
             i = i + 1;
         }
-        self.bag_count = saturating_add_i64(self.bag_count, 1);
+        self.bag_count = numeric::count_inc(self.bag_count);
         self
     }
 
@@ -329,19 +324,20 @@ impl Board {
     }
 
     fn draw_tile(self: Self) -> (Self, i64) {
-        if self.bag_count == 0 {
+        if self.bag_count == u64::MIN {
             return (self, 0);
         }
         const (seed, index) = next_random_index(self.rng_seed, 98);
         self.rng_seed = seed;
-        self.bag_count = saturating_sub_nonneg_i64(self.bag_count, 1);
+        self.bag_count = numeric::count_dec(self.bag_count);
         const tile = weighted_tile(index);
         (self, tile)
     }
 }
 
 pub fn runtime_start() -> i64 {
-    host::runtime_start()
+    const mode = resolve_runtime_backend_mode();
+    host::runtime_start_mode(mode)
 }
 
 pub fn runtime_poll_key(handle: i64) -> Option<KeyEvent> {
@@ -354,6 +350,28 @@ pub fn runtime_now_millis() -> i64 {
 
 pub fn runtime_shutdown(handle: i64) {
     host::runtime_shutdown(handle);
+}
+
+fn resolve_runtime_backend_mode() -> String {
+    const window_flag = host::runtime_window_opt_in();
+    const backend_hint = host::runtime_backend_hint();
+
+    if window_flag == 0 {
+        return String::from("terminal");
+    }
+    if window_flag == 1 {
+        if backend_hint == "minifb" {
+            return String::from("minifb");
+        }
+        return String::from("sdl");
+    }
+    if backend_hint == "minifb" {
+        return String::from("minifb");
+    }
+    if backend_hint == "sdl" {
+        return String::from("sdl");
+    }
+    String::from("terminal")
 }
 
 pub fn runtime_render(
@@ -414,35 +432,29 @@ pub fn letter_to_string(letter: i64) -> String {
     format!("{}", letter_to_char(letter))
 }
 
-pub fn place_result_message(code: i64, slot: i64) -> String {
-    match code {
-        0 => format!("Placed tile from rack {}", slot_label(slot));
-        1 => String::from("Pick a rack slot from 1-7");
-        2 => String::from("That rack slot is empty");
-        _ => String::from("Cell already occupied");
+pub fn place_result_message(result: PlaceFromRackResult, slot: i64) -> String {
+    match result {
+        PlaceFromRackResult::Placed => format!("Placed tile from rack {}", slot_label(slot));
+        PlaceFromRackResult::Rejected(error) => match error {
+            PlaceFromRackError::InvalidRackSlot => String::from("Pick a rack slot from 1-7");
+            PlaceFromRackError::EmptyRackSlot => String::from("That rack slot is empty");
+            PlaceFromRackError::CellUnavailable => String::from("Cell already occupied");
+        };
     }
 }
 
-pub fn submit_result_message(code: i64, points: i64) -> String {
-    if code == 0 {
-        return format!("Turn accepted: +{} points", points);
+pub fn submit_result_message(result: SubmitTurnResult, points: u64) -> String {
+    match result {
+        SubmitTurnResult::Accepted => format!("Turn accepted: +{} points", points);
+        SubmitTurnResult::Rejected(error) => match error {
+            SubmitTurnError::NoPendingTiles => String::from("Place at least one tile before submitting");
+            SubmitTurnError::NotSingleAxis => String::from("Turn tiles must be in one row or one column");
+            SubmitTurnError::NonContiguousSpan => String::from("Turn tiles must form one contiguous line");
+            SubmitTurnError::MissingCenterOnFirstMove => String::from("First turn must cover the center star");
+            SubmitTurnError::NotConnectedToCommitted => String::from("Turn must connect to existing words");
+            SubmitTurnError::NoValidWordCreated => String::from("Turn must create at least one 2+ letter word");
+        };
     }
-    if code == -1 {
-        return String::from("Place at least one tile before submitting");
-    }
-    if code == -2 {
-        return String::from("Turn tiles must be in one row or one column");
-    }
-    if code == -3 {
-        return String::from("Turn tiles must form one contiguous line");
-    }
-    if code == -4 {
-        return String::from("First turn must cover the center star");
-    }
-    if code == -5 {
-        return String::from("Turn must connect to existing words");
-    }
-    String::from("Turn must create at least one 2+ letter word")
 }
 
 fn render_frame(
@@ -811,21 +823,21 @@ fn score_word(cells: Vec<i64>, pending: Vec<bool>, axis_code: i64, anchor: i64, 
                     letter_mult = 2;
                 } else {
                     if kind == 3 {
-                        word_mult = saturating_mul_nonneg_i64(word_mult, 3);
+                        word_mult = i64::saturating_mul(word_mult, 3);
                     } else {
                         if kind == 4 {
-                            word_mult = saturating_mul_nonneg_i64(word_mult, 2);
+                            word_mult = i64::saturating_mul(word_mult, 2);
                         }
                     }
                 }
             }
         }
-        const tile_points = saturating_mul_nonneg_i64(letter_score(tile), letter_mult);
-        sum = saturating_add_i64(sum, tile_points);
+        const tile_points = i64::saturating_mul(letter_score(tile), letter_mult);
+        sum = i64::saturating_add(sum, tile_points);
         step = step + 1;
     }
 
-    (saturating_mul_nonneg_i64(sum, word_mult), len)
+    (i64::saturating_mul(sum, word_mult), len)
 }
 
 fn placement_axis(pending_positions: Vec<i64>) -> (i64, i64, i64, i64) {
@@ -1013,16 +1025,14 @@ fn empty_rack() -> Vec<i64> {
     rack
 }
 
-fn next_random_index(seed: i64, max: i64) -> (i64, i64) {
+fn next_random_index(seed: u64, max: i64) -> (u64, i64) {
     if max <= 0 {
         return (seed, 0);
     }
-    let natural_seed = seed;
-    if natural_seed < 0 {
-        natural_seed = 0;
-    }
-    let next = saturating_add_i64(saturating_mul_nonneg_i64(natural_seed, 1103515245), 12345);
-    (next, next % max)
+    const max_u64 = numeric::to_nonneg_u64(max);
+    const next = numeric::prng_step(seed);
+    const index_u64 = numeric::modulo_nonzero(next, max_u64);
+    (next, numeric::to_i64_clamped(index_u64))
 }
 
 fn weighted_tile(value: i64) -> i64 {

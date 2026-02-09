@@ -172,9 +172,9 @@ impl Game {
     }
 
     fn place_selected(self) -> Self {
-        const (next_board, code) = Board::place_from_rack(self.board, self.cursor_row, self.cursor_col, self.selected_slot);
+        const (next_board, result) = Board::place_from_rack(self.board, self.cursor_row, self.cursor_col, self.selected_slot);
         self.board = next_board;
-        self.message = runtime::place_result_message(code, self.selected_slot);
+        self.message = runtime::place_result_message(result, self.selected_slot);
         self
     }
 
@@ -192,7 +192,7 @@ impl Game {
     fn recall_turn(self) -> Self {
         const (next_board, count) = Board::recall_turn_tiles(self.board);
         self.board = next_board;
-        if count == 0 {
+        if count == u64::MIN {
             self.message = String::from("No pending tiles to recall");
             return self;
         }
@@ -201,9 +201,9 @@ impl Game {
     }
 
     fn submit_turn(self) -> Self {
-        const (next_board, code) = Board::submit_turn(self.board);
+        const (next_board, result) = Board::submit_turn(self.board);
         self.board = next_board;
-        self.message = runtime::submit_result_message(code, Board::last_turn_score(self.board));
+        self.message = runtime::submit_result_message(result, Board::last_turn_score(self.board));
         self
     }
 

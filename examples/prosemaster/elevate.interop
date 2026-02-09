@@ -6,4 +6,5 @@ allow crate::host::KeyEvent
 allow crate::gfx
 allow crate::gfx::Canvas
 allow crate::gamekit
+allow crate::numeric
 allow prosemaster::app::Game

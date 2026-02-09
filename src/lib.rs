@@ -13,7 +13,7 @@ pub mod test_runner;
 
 use std::fmt;
 
-use ast::Module;
+use ast::{Item, Module};
 use diag::Diagnostic;
 use ir::lowered::RustModule;
 use ir::typed::TypedModule;
@@ -60,6 +60,7 @@ pub struct CompileOptions {
     pub forced_clone_places: Vec<String>,
     pub fail_on_hot_clone: bool,
     pub allow_hot_clone_places: Vec<String>,
+    pub warn_missing_types: bool,
     pub source_name: Option<String>,
 }
 
@@ -75,6 +76,7 @@ pub struct CompilerOutput {
     pub lowered: RustModule,
     pub rust_code: String,
     pub ownership_notes: Vec<String>,
+    pub warnings: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +155,7 @@ pub fn compile_ast_with_options(
     module: &Module,
     options: &CompileOptions,
 ) -> Result<CompilerOutput, CompileError> {
+    let warnings = collect_compile_warnings(module, options);
     let typed = passes::lower_to_typed_with_options(
         module,
         &passes::TypecheckOptions {
@@ -188,7 +191,73 @@ pub fn compile_ast_with_options(
         lowered,
         rust_code,
         ownership_notes,
+        warnings,
     })
+}
+
+fn collect_compile_warnings(module: &Module, options: &CompileOptions) -> Vec<Diagnostic> {
+    if !options.warn_missing_types {
+        return Vec::new();
+    }
+    let mut warnings = Vec::new();
+    for item in &module.items {
+        collect_item_warnings(item, &mut warnings);
+    }
+    warnings
+}
+
+fn collect_item_warnings(item: &Item, warnings: &mut Vec<Diagnostic>) {
+    match item {
+        Item::Function(function) => collect_function_warnings(function, warnings),
+        Item::Impl(imp) => {
+            for method in &imp.methods {
+                collect_function_warnings(method, warnings);
+            }
+        }
+        Item::Const(constant) => {
+            if constant.ty.is_none() {
+                warnings.push(Diagnostic::new(
+                    format!(
+                        "Missing explicit type for const `{}`. Add an explicit type annotation to avoid inference-only behavior.",
+                        constant.name
+                    ),
+                    warning_span(constant.span),
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_function_warnings(function: &ast::FunctionDef, warnings: &mut Vec<Diagnostic>) {
+    for param in &function.params {
+        if is_placeholder_type(&param.ty) {
+            warnings.push(Diagnostic::new(
+                format!(
+                    "Missing explicit type for parameter `{}` in function `{}`. Add an explicit type annotation or enable `--exp-infer-local-bidi`.",
+                    param.name, function.name
+                ),
+                warning_span(function.span),
+            ));
+        }
+    }
+    if function.return_type.is_none() {
+        warnings.push(Diagnostic::new(
+            format!(
+                "Missing explicit return type for function `{}`. Add an explicit return type annotation or enable `--exp-infer-local-bidi`.",
+                function.name
+            ),
+            warning_span(function.span),
+        ));
+    }
+}
+
+fn is_placeholder_type(ty: &ast::Type) -> bool {
+    ty.path.len() == 1 && ty.path[0] == "_"
+}
+
+fn warning_span(span: Option<diag::Span>) -> diag::Span {
+    span.unwrap_or(diag::Span::new(0, 0))
 }
 
 fn enforce_hot_clone_policy(

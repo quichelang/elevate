@@ -107,16 +107,22 @@ static SPRITES: OnceLock<SpritePack> = OnceLock::new();
 static UI_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
 
 pub fn runtime_start() -> i64 {
-    // If window init fails, we transparently fall back to terminal mode.
-    let enable_window_backend = should_enable_window_backend(
+    let mode = resolve_backend_mode_from_env(
         std::env::var("ELEVATE_NEON_WINDOW").ok().as_deref(),
         std::env::var("ELEVATE_NEON_BACKEND").ok().as_deref(),
     );
-    let backend = if enable_window_backend {
-        start_window_runtime()
-            .unwrap_or_else(|| RuntimeBackend::Terminal(start_terminal_runtime()))
-    } else {
-        RuntimeBackend::Terminal(start_terminal_runtime())
+    runtime_start_mode(mode)
+}
+
+pub fn runtime_start_mode(mode: String) -> i64 {
+    // If window init fails, we transparently fall back to terminal mode.
+    let normalized = mode.trim().to_ascii_lowercase();
+    let backend = match normalized.as_str() {
+        "sdl" => start_window_runtime(false)
+            .unwrap_or_else(|| RuntimeBackend::Terminal(start_terminal_runtime())),
+        "minifb" => start_window_runtime(true)
+            .unwrap_or_else(|| RuntimeBackend::Terminal(start_terminal_runtime())),
+        _ => RuntimeBackend::Terminal(start_terminal_runtime()),
     };
 
     with_registry(|registry| {
@@ -127,23 +133,55 @@ pub fn runtime_start() -> i64 {
     })
 }
 
+pub fn runtime_window_opt_in() -> i64 {
+    match parse_window_opt_in(std::env::var("ELEVATE_NEON_WINDOW").ok().as_deref()) {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
+    }
+}
+
+pub fn runtime_backend_hint() -> String {
+    normalized_backend_hint(std::env::var("ELEVATE_NEON_BACKEND").ok().as_deref())
+        .unwrap_or_default()
+}
+
+fn resolve_backend_mode_from_env(window_opt_in: Option<&str>, backend: Option<&str>) -> String {
+    let preferred = normalized_backend_hint(backend);
+    match parse_window_opt_in(window_opt_in) {
+        Some(true) => preferred.unwrap_or_else(|| "sdl".to_string()),
+        Some(false) => "terminal".to_string(),
+        None => preferred.unwrap_or_else(|| "terminal".to_string()),
+    }
+}
+
 fn should_enable_window_backend(window_opt_in: Option<&str>, backend: Option<&str>) -> bool {
-    if let Some(flag) = window_opt_in {
-        let normalized = flag.trim().to_ascii_lowercase();
-        if matches!(normalized.as_str(), "1" | "true" | "yes" | "on") {
-            return true;
-        }
-        if matches!(normalized.as_str(), "0" | "false" | "no" | "off") {
-            return false;
-        }
+    match parse_window_opt_in(window_opt_in) {
+        Some(true) => true,
+        Some(false) => false,
+        None => normalized_backend_hint(backend).is_some(),
     }
+}
 
-    if let Some(backend) = backend {
-        let normalized = backend.trim().to_ascii_lowercase();
-        return matches!(normalized.as_str(), "sdl" | "minifb");
+fn parse_window_opt_in(window_opt_in: Option<&str>) -> Option<bool> {
+    let flag = window_opt_in?;
+    let normalized = flag.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "1" | "true" | "yes" | "on") {
+        return Some(true);
     }
+    if matches!(normalized.as_str(), "0" | "false" | "no" | "off") {
+        return Some(false);
+    }
+    None
+}
 
-    false
+fn normalized_backend_hint(backend: Option<&str>) -> Option<String> {
+    let value = backend?;
+    let normalized = value.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "sdl" | "minifb") {
+        return Some(normalized);
+    }
+    None
 }
 
 pub fn runtime_poll_key(handle: i64) -> Option<KeyEvent> {
@@ -254,13 +292,8 @@ pub fn runtime_now_millis() -> i64 {
     elapsed.as_millis() as i64
 }
 
-fn start_window_runtime() -> Option<RuntimeBackend> {
-    let preferred = std::env::var("ELEVATE_NEON_BACKEND")
-        .ok()
-        .map(|value| value.to_ascii_lowercase())
-        .unwrap_or_else(|| "sdl".to_string());
-
-    if preferred == "minifb" {
+fn start_window_runtime(prefer_minifb: bool) -> Option<RuntimeBackend> {
+    if prefer_minifb {
         start_minifb_window_runtime()
             .map(RuntimeBackend::Window)
             .or_else(|| start_sdl_window_runtime().map(RuntimeBackend::SdlMain))

@@ -107,13 +107,11 @@ static SPRITES: OnceLock<SpritePack> = OnceLock::new();
 static UI_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
 
 pub fn runtime_start() -> i64 {
-    // Window mode is opt-in while runtime/thread-safety work is in progress.
     // If window init fails, we transparently fall back to terminal mode.
-    let window_opt_in = std::env::var("ELEVATE_NEON_WINDOW")
-        .ok()
-        .map(|value| value == "1")
-        .unwrap_or(false);
-    let enable_window_backend = window_opt_in;
+    let enable_window_backend = should_enable_window_backend(
+        std::env::var("ELEVATE_NEON_WINDOW").ok().as_deref(),
+        std::env::var("ELEVATE_NEON_BACKEND").ok().as_deref(),
+    );
     let backend = if enable_window_backend {
         start_window_runtime()
             .unwrap_or_else(|| RuntimeBackend::Terminal(start_terminal_runtime()))
@@ -127,6 +125,35 @@ pub fn runtime_start() -> i64 {
         registry.backends.insert(id, backend);
         id
     })
+}
+
+fn should_enable_window_backend(window_opt_in: Option<&str>, backend: Option<&str>) -> bool {
+    match parse_window_opt_in(window_opt_in) {
+        Some(true) => true,
+        Some(false) => false,
+        None => normalized_backend_hint(backend).is_some(),
+    }
+}
+
+fn parse_window_opt_in(window_opt_in: Option<&str>) -> Option<bool> {
+    let flag = window_opt_in?;
+    let normalized = flag.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "1" | "true" | "yes" | "on") {
+        return Some(true);
+    }
+    if matches!(normalized.as_str(), "0" | "false" | "no" | "off") {
+        return Some(false);
+    }
+    None
+}
+
+fn normalized_backend_hint(backend: Option<&str>) -> Option<String> {
+    let value = backend?;
+    let normalized = value.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "sdl" | "minifb") {
+        return Some(normalized);
+    }
+    None
 }
 
 pub fn runtime_poll_key(handle: i64) -> Option<KeyEvent> {
@@ -1881,4 +1908,30 @@ fn rgba_dim(color: u32, alpha: f32) -> u32 {
         (g as f32 * alpha) as u8,
         (b as f32 * alpha) as u8,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_enable_window_backend;
+
+    #[test]
+    fn window_flag_truthy_enables_window_backend() {
+        assert!(should_enable_window_backend(Some("1"), None));
+        assert!(should_enable_window_backend(Some("true"), None));
+        assert!(should_enable_window_backend(Some("yes"), None));
+    }
+
+    #[test]
+    fn window_flag_falsy_disables_window_backend_even_with_backend_hint() {
+        assert!(!should_enable_window_backend(Some("0"), Some("sdl")));
+        assert!(!should_enable_window_backend(Some("false"), Some("minifb")));
+    }
+
+    #[test]
+    fn backend_hint_enables_window_backend_when_window_flag_missing() {
+        assert!(should_enable_window_backend(None, Some("sdl")));
+        assert!(should_enable_window_backend(None, Some("minifb")));
+        assert!(!should_enable_window_backend(None, Some("terminal")));
+        assert!(!should_enable_window_backend(None, None));
+    }
 }

@@ -403,7 +403,7 @@ fn render_frame(
     canvas = draw_debug_overlay(canvas, mode, debug_enabled, fps);
     canvas = draw_terminal_hud(canvas, mode, player_name, level_label, elapsed_secs, show_player_two);
     canvas = gamekit::draw_gameplay_hints(canvas, vga);
-    canvas = draw_footer_status(canvas, message, vga);
+    canvas = gamekit::draw_footer_status(canvas, message, vga);
     canvas = draw_quit_prompt(canvas, mode, quit_armed);
     const frame = Canvas::to_ansi(canvas);
     (next_board, frame)

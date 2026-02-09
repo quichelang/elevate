@@ -98,6 +98,28 @@ fn cli_accepts_principal_fallback_flag_for_compile() {
 }
 
 #[test]
+fn cli_warn_missing_types_is_opt_in() {
+    let root = temp_dir("elevate-cli-warn-missing-types");
+    let src = root.join("input.ers");
+    fs::write(
+        &src,
+        "fn add(a, b) -> i64 {\n    return a + b;\n}\nfn main() -> i64 { add(1, 2) }\n",
+    )
+    .expect("write source should succeed");
+
+    let output = Command::new(bin())
+        .arg(&src)
+        .arg("--exp-infer-local-bidi")
+        .arg("--warn-missing-types")
+        .output()
+        .expect("run cli should succeed");
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("warning: Missing explicit type for parameter `a`"));
+    assert!(stderr.contains("warning: Missing explicit type for parameter `b`"));
+}
+
+#[test]
 fn cli_init_scaffolds_transparent_bootstrap_runner() {
     let workspace = temp_dir("elevate-cli-init");
     let root = workspace.join("starter");

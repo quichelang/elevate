@@ -158,6 +158,16 @@ fn run_compile(args: &[String]) {
             process::exit(1);
         }
     };
+    for warning in &output.warnings {
+        eprintln!(
+            "warning: {}",
+            elevate::source_map::render_diagnostic(
+                warning,
+                options.source_name.as_deref(),
+                Some(&source)
+            )
+        );
+    }
 
     match emit_target {
         EmitTarget::Stdout => println!("{}", output.rust_code),
@@ -653,6 +663,7 @@ fn usage() {
     eprintln!("  --exp-effect-rows-internal");
     eprintln!("  --exp-infer-principal-fallback");
     eprintln!("  --exp-numeric-coercion");
+    eprintln!("  --warn-missing-types");
     eprintln!("  --fail-on-hot-clone");
     eprintln!("  --allow-hot-clone-place <place>");
     eprintln!("  --force-clone-place <place>");
@@ -799,6 +810,10 @@ fn parse_compile_options(args: &[String]) -> Result<CompileOptions, String> {
         match arg.as_str() {
             "--fail-on-hot-clone" => {
                 options.fail_on_hot_clone = true;
+                index += 1;
+            }
+            "--warn-missing-types" => {
+                options.warn_missing_types = true;
                 index += 1;
             }
             "--allow-hot-clone-place" => {
