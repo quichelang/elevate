@@ -329,6 +329,9 @@ These are intentionally non-default and must be enabled explicitly.
   - Koko-inspired local bidirectional inference mode.
   - Intended behavior: aggressive local inference inside function bodies; supports placeholder parameter types (`_`) and omitted parameter type annotations in function definitions, resolving them from local constraints when possible.
   - Guardrail: strict/default mode still prefers explicit parameter annotations; unresolved holes still require explicit annotations.
+  - Showcase:
+    - `fn add(a, b) -> i64 { return a + b; }` infers `a`/`b` as `i64`.
+    - `x = add(3, 4);` can introduce an inferred local binding in bidi mode.
   - Goal: practical inference without unstable global solver complexity.
 
 - `exp_effect_rows_internal`
