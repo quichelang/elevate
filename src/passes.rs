@@ -915,7 +915,7 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                         .return_type
                         .as_ref()
                         .map(|ty| type_from_ast_in_context(ty, context))
-                        .unwrap_or(SemType::Unit),
+                        .unwrap_or(SemType::Unknown),
                 };
                 context.functions.insert(def.name.clone(), sig);
             }
@@ -964,7 +964,7 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                             .map(|ty| {
                                 type_from_ast_with_impl_self_in_context(ty, &def.target, context)
                             })
-                            .unwrap_or(SemType::Unit),
+                            .unwrap_or(SemType::Unknown),
                     };
                     context
                         .functions
@@ -1343,6 +1343,16 @@ fn lower_item(
                 ));
             }
 
+            let resolved_param_types = def
+                .params
+                .iter()
+                .map(|param| resolve_function_param_type(param, context, &locals))
+                .collect::<Vec<_>>();
+            if let Some(sig) = context.functions.get_mut(&def.name) {
+                sig.params = resolved_param_types.clone();
+                sig.return_type = final_return_ty.clone();
+            }
+
             Some(TypedItem::Function(TypedFunction {
                 is_public: def.visibility == Visibility::Public,
                 name: def.name.clone(),
@@ -1362,13 +1372,10 @@ fn lower_item(
                 params: def
                     .params
                     .iter()
-                    .map(|param| TypedParam {
+                    .zip(resolved_param_types.iter())
+                    .map(|(param, ty)| TypedParam {
                         name: param.name.clone(),
-                        ty: rust_param_type_string(&resolve_function_param_type(
-                            param,
-                            context,
-                            &locals,
-                        )),
+                        ty: rust_param_type_string(ty),
                     })
                     .collect(),
                 return_type: rust_owned_type_string(&final_return_ty),
@@ -4362,13 +4369,28 @@ fn binary_operand_hint(
 ) -> Option<SemType> {
     match op {
         BinaryOp::Add => {
-            if is_compatible(return_ty, &named_type("String")) {
+            if is_exact_string_type(return_ty)
+                || is_exact_string_type(left_ty)
+                || is_exact_string_type(right_ty)
+            {
                 return Some(named_type("String"));
             }
-            numeric_hint_from_context(left_ty, right_ty, return_ty)
+            numeric_hint_from_context(left_ty, right_ty, return_ty).or_else(|| {
+                if *left_ty == SemType::Unknown && *right_ty == SemType::Unknown {
+                    Some(named_type("i64"))
+                } else {
+                    None
+                }
+            })
         }
         BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
-            numeric_hint_from_context(left_ty, right_ty, return_ty)
+            numeric_hint_from_context(left_ty, right_ty, return_ty).or_else(|| {
+                if *left_ty == SemType::Unknown && *right_ty == SemType::Unknown {
+                    Some(named_type("i64"))
+                } else {
+                    None
+                }
+            })
         }
         _ => None,
     }
@@ -4412,8 +4434,21 @@ fn refine_expr_type_hint(
     typed_expr.ty = type_to_string(expr_ty);
 }
 
+fn is_exact_string_type(ty: &SemType) -> bool {
+    matches!(
+        ty,
+        SemType::Path { path, args } if path.len() == 1 && path[0] == "String" && args.is_empty()
+    )
+}
+
 fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
-    if is_compatible(left, &named_type("String")) && is_compatible(right, &named_type("String")) {
+    if is_exact_string_type(left) && is_exact_string_type(right) {
+        return named_type("String");
+    }
+    if infer_local_bidi_enabled()
+        && ((is_exact_string_type(left) && *right == SemType::Unknown)
+            || (is_exact_string_type(right) && *left == SemType::Unknown))
+    {
         return named_type("String");
     }
     if let Some(out_ty) = resolve_common_numeric_type(left, right) {

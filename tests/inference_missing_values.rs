@@ -282,3 +282,37 @@ fn bidi_mode_infers_omitted_param_types() {
     let output = compile_with_bidi(source).expect("bidi mode should infer omitted param types");
     assert!(output.rust_code.contains("fn add(a: i64, b: i64) -> i64"));
 }
+
+#[test]
+fn bidi_mode_infers_params_and_return_without_return_annotation() {
+    let source = r#"
+        fn add(a, b) {
+            return a + b;
+        }
+
+        fn main() {
+            x = add(3, 4);
+            return;
+        }
+    "#;
+    let output = compile_with_bidi(source).expect("bidi mode should infer missing function types");
+    assert!(output.rust_code.contains("fn add(a: i64, b: i64) -> i64"));
+    assert!(output.rust_code.contains("let x: i64 = add(3, 4);"));
+    assert!(!output.rust_code.contains("fn add(a: String, b: String) -> String"));
+}
+
+#[test]
+fn strict_mode_rejects_missing_add_types_without_bidi() {
+    let source = r#"
+        fn add(a, b) {
+            return a + b;
+        }
+
+        fn main() {
+            return;
+        }
+    "#;
+    let error =
+        compile_source(source).expect_err("strict mode should reject unresolved add signature");
+    assert!(error.to_string().contains("`+` expects numeric operands"));
+}
