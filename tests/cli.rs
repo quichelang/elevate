@@ -124,10 +124,82 @@ fn cli_init_scaffolds_transparent_bootstrap_runner() {
     assert!(bootstrap.contains("elevate build"));
     assert!(bootstrap.contains("elevate-gen"));
     assert!(bootstrap.contains("--manifest-path"));
+    assert!(bootstrap.contains("arg == \"build\" || arg == \"run\""));
+    assert!(bootstrap.contains("build_flag_takes_value"));
+    assert!(bootstrap.contains("if invocation.build_only"));
 
     let main_ers =
         fs::read_to_string(root.join("src/main.ers")).expect("main.ers should exist after init");
     assert!(main_ers.contains("fn main()"));
+}
+
+#[test]
+fn cli_bootstrap_build_forwards_experiment_and_value_flags() {
+    let workspace = temp_dir("elevate-cli-bootstrap-build");
+    let root = workspace.join("starter");
+    init_bin_project(&root);
+
+    let log = workspace.join("elevate.log");
+    let fake_bin = workspace.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("fake-bin should be created");
+    install_fake_command(&fake_bin, "elevate", &log, true);
+
+    let bootstrap_bin = build_bootstrap_binary(&root, "starter");
+    let output = Command::new(&bootstrap_bin)
+        .arg("build")
+        .arg(&root)
+        .arg("--exp-infer-local-bidi")
+        .arg("--source-name")
+        .arg("runtime.ers")
+        .env("PATH", prepend_path(&fake_bin))
+        .output()
+        .expect("bootstrap should run");
+    assert!(output.status.success());
+
+    let logged = fs::read_to_string(&log).expect("fake elevate log should exist");
+    assert!(logged.contains("build"));
+    assert!(logged.contains("--exp-infer-local-bidi"));
+    assert!(logged.contains("--source-name"));
+    assert!(logged.contains("runtime.ers"));
+}
+
+#[test]
+fn cli_bootstrap_run_forwards_build_flags_and_runtime_args() {
+    let workspace = temp_dir("elevate-cli-bootstrap-run");
+    let root = workspace.join("starter");
+    init_bin_project(&root);
+
+    let elevate_log = workspace.join("elevate.log");
+    let cargo_log = workspace.join("cargo.log");
+    let fake_bin = workspace.join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("fake-bin should be created");
+    install_fake_command(&fake_bin, "elevate", &elevate_log, true);
+    install_fake_command(&fake_bin, "cargo", &cargo_log, true);
+
+    let bootstrap_bin = build_bootstrap_binary(&root, "starter");
+    let output = Command::new(&bootstrap_bin)
+        .arg("run")
+        .arg(&root)
+        .arg("--exp-infer-local-bidi")
+        .arg("--")
+        .arg("--seed")
+        .arg("7")
+        .env("PATH", prepend_path(&fake_bin))
+        .output()
+        .expect("bootstrap should run");
+    assert!(output.status.success());
+
+    let elevate_logged =
+        fs::read_to_string(&elevate_log).expect("fake elevate log should exist for run");
+    assert!(elevate_logged.contains("build"));
+    assert!(elevate_logged.contains("--exp-infer-local-bidi"));
+
+    let cargo_logged = fs::read_to_string(&cargo_log).expect("fake cargo log should exist");
+    assert!(cargo_logged.contains("run"));
+    assert!(cargo_logged.contains("--manifest-path"));
+    assert!(cargo_logged.contains("elevate-gen/Cargo.toml"));
+    assert!(cargo_logged.contains("--seed"));
+    assert!(cargo_logged.contains("7"));
 }
 
 fn temp_dir(prefix: &str) -> std::path::PathBuf {
@@ -138,4 +210,63 @@ fn temp_dir(prefix: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
     fs::create_dir_all(&path).expect("temp dir should be created");
     path
+}
+
+fn init_bin_project(root: &std::path::Path) {
+    let output = Command::new(bin())
+        .arg("init")
+        .arg(root)
+        .arg("--name")
+        .arg("starter")
+        .arg("--vcs")
+        .arg("none")
+        .arg("--bin")
+        .output()
+        .expect("run cli init should succeed");
+    assert!(output.status.success());
+}
+
+fn build_bootstrap_binary(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = Command::new(cargo)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .output()
+        .expect("bootstrap crate should build");
+    assert!(output.status.success());
+    root.join("target").join("debug").join(name)
+}
+
+fn install_fake_command(dir: &std::path::Path, name: &str, log_path: &std::path::Path, ok: bool) {
+    let path = dir.join(name);
+    let status = if ok { 0 } else { 1 };
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nexit {status}\n",
+        log_path.display()
+    );
+    fs::write(&path, script).expect("fake command should be written");
+    make_executable(&path);
+}
+
+#[cfg(unix)]
+fn make_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(path).expect("metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms).expect("set permissions");
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &std::path::Path) {}
+
+fn prepend_path(dir: &std::path::Path) -> String {
+    let mut parts = vec![dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        parts.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(parts)
+        .expect("join PATH entries")
+        .to_string_lossy()
+        .to_string()
 }
