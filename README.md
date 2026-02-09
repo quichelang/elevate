@@ -144,9 +144,8 @@ impl Counter {
         Counter { value: 0 }
     }
 
-    fn increment(self) -> Self {
+    fn increment(self) {
         self.value += 1;
-        self
     }
 
     fn get(self) -> i64 {
@@ -156,7 +155,7 @@ impl Counter {
 
 fn main() {
     let c = Counter::new();
-    c = c.increment();
+    c.increment();
     println!("{}", c.get());
 }
 ```
