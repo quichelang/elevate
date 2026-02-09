@@ -3251,6 +3251,20 @@ world"#;
     }
 
     #[test]
+    fn compile_supports_block_expressions() {
+        let source = r#"
+            fn doubled(x: i64) -> i64 {
+                return { const y = x + x; y };
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("return {\n"));
+        assert!(output.rust_code.contains("let y: i64 = (x + x);"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_to_string_on_non_string_values() {
         let source = r#"
             fn render(v: i64) -> String {
@@ -3359,6 +3373,66 @@ world"#;
 
         let output = compile_ast(&module).expect("legacy quiche cast macro should compile");
         assert!(output.rust_code.contains("return (v as i32);"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_ast_closure_last_expr_stmt_is_value_return() {
+        use crate::ast;
+
+        let module = ast::Module {
+            items: vec![ast::Item::Function(ast::FunctionDef {
+                visibility: ast::Visibility::Private,
+                name: "run".to_string(),
+                type_params: vec![],
+                params: vec![],
+                return_type: Some(ast::Type {
+                    path: vec!["i64".to_string()],
+                    args: vec![],
+                    trait_bounds: vec![],
+                }),
+                body: ast::Block {
+                    statements: vec![
+                        ast::Stmt::Const(ast::ConstDef {
+                            visibility: ast::Visibility::Private,
+                            name: "inc".to_string(),
+                            ty: None,
+                            value: ast::Expr::Closure {
+                                params: vec![ast::Param {
+                                    name: "x".to_string(),
+                                    ty: ast::Type {
+                                        path: vec!["i64".to_string()],
+                                        args: vec![],
+                                        trait_bounds: vec![],
+                                    },
+                                }],
+                                return_type: Some(ast::Type {
+                                    path: vec!["i64".to_string()],
+                                    args: vec![],
+                                    trait_bounds: vec![],
+                                }),
+                                body: ast::Block {
+                                    statements: vec![ast::Stmt::Expr(ast::Expr::Binary {
+                                        op: ast::BinaryOp::Add,
+                                        left: Box::new(ast::Expr::Path(vec!["x".to_string()])),
+                                        right: Box::new(ast::Expr::Int(1)),
+                                    })],
+                                },
+                            },
+                            is_const: false,
+                        }),
+                        ast::Stmt::Return(Some(ast::Expr::Call {
+                            callee: Box::new(ast::Expr::Path(vec!["inc".to_string()])),
+                            args: vec![ast::Expr::Int(4)],
+                        })),
+                    ],
+                },
+            })],
+        };
+
+        let output = compile_ast(&module).expect("closure Expr stmt should return value");
+        assert!(output.rust_code.contains("|x: i64| -> i64"));
+        assert!(output.rust_code.contains("return (x + 1);"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

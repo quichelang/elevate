@@ -208,6 +208,10 @@ pub enum RustExpr {
         path: Vec<String>,
         fields: Vec<RustStructLiteralField>,
     },
+    Block {
+        body: Vec<RustStmt>,
+        tail: Option<Box<RustExpr>>,
+    },
     Closure {
         params: Vec<RustParam>,
         return_type: String,

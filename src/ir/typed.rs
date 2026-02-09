@@ -208,6 +208,10 @@ pub enum TypedExprKind {
         path: Vec<String>,
         fields: Vec<TypedStructLiteralField>,
     },
+    Block {
+        body: Vec<TypedStmt>,
+        tail: Option<Box<TypedExpr>>,
+    },
     Closure {
         params: Vec<TypedParam>,
         return_type: String,

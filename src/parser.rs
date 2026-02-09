@@ -1083,6 +1083,7 @@ impl Parser {
                 self.expect(TokenKind::RBracket, "Expected ']' after array literal")?;
                 Some(Expr::Array(items))
             }
+            TokenKind::LBrace => self.parse_block().map(Expr::Block),
             _ => {
                 self.error_current("Expected expression");
                 None
@@ -2014,6 +2015,19 @@ mod tests {
             fn f(x: i64) -> i64 {
                 const inc = |y: i64| -> i64 { y };
                 return inc(x);
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_block_expression() {
+        let source = r#"
+            fn f(x: i64) -> i64 {
+                const y = { const z = x + 1; z };
+                y
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

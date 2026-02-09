@@ -207,6 +207,7 @@ pub enum Expr {
         path: Vec<String>,
         fields: Vec<StructLiteralField>,
     },
+    Block(Block),
     Closure {
         params: Vec<Param>,
         return_type: Option<Type>,

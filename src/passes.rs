@@ -481,6 +481,17 @@ fn validate_expr_method_capabilities(
                 );
             }
         }
+        TypedExprKind::Block { body, tail } => {
+            validate_generic_method_capabilities(body, type_param_caps, trait_caps, diagnostics);
+            if let Some(tail) = tail {
+                validate_expr_method_capabilities(
+                    tail,
+                    type_param_caps,
+                    trait_caps,
+                    diagnostics,
+                );
+            }
+        }
         TypedExprKind::Closure { body, .. } => {
             validate_generic_method_capabilities(body, type_param_caps, trait_caps, diagnostics)
         }
@@ -637,6 +648,14 @@ fn direct_effects_for_expr(expr: &TypedExpr, row: &mut EffectRow) {
         TypedExprKind::StructLiteral { fields, .. } => {
             for field in fields {
                 direct_effects_for_expr(&field.value, row);
+            }
+        }
+        TypedExprKind::Block { body, tail } => {
+            for stmt in body {
+                direct_effects_for_stmt(stmt, row);
+            }
+            if let Some(tail) = tail {
+                direct_effects_for_expr(tail, row);
             }
         }
         TypedExprKind::Closure { body, .. } => {
@@ -3059,29 +3078,31 @@ fn infer_expr(
             let mut inferred_returns = Vec::new();
             for (index, statement) in body.statements.iter().enumerate() {
                 let is_last = index + 1 == body.statements.len();
-                if is_last && let Stmt::TailExpr(expr) = statement {
-                    let (typed_expr, inferred) = infer_expr(
-                        expr,
-                        context,
-                        &mut closure_locals,
-                        &provisional_return_ty,
-                        diagnostics,
-                    );
-                    inferred_returns.push(inferred.clone());
-                    if provisional_return_ty != SemType::Unknown
-                        && !is_compatible(&inferred, &provisional_return_ty)
-                    {
-                        diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Closure return type mismatch: expected `{}`, got `{}`",
-                                type_to_string(&provisional_return_ty),
-                                type_to_string(&inferred)
-                            ),
-                            Span::new(0, 0),
-                        ));
+                if is_last {
+                    if let Stmt::TailExpr(expr) | Stmt::Expr(expr) = statement {
+                        let (typed_expr, inferred) = infer_expr(
+                            expr,
+                            context,
+                            &mut closure_locals,
+                            &provisional_return_ty,
+                            diagnostics,
+                        );
+                        inferred_returns.push(inferred.clone());
+                        if provisional_return_ty != SemType::Unknown
+                            && !is_compatible(&inferred, &provisional_return_ty)
+                        {
+                            diagnostics.push(Diagnostic::new(
+                                format!(
+                                    "Closure return type mismatch: expected `{}`, got `{}`",
+                                    type_to_string(&provisional_return_ty),
+                                    type_to_string(&inferred)
+                                ),
+                                Span::new(0, 0),
+                            ));
+                        }
+                        typed_body.push(TypedStmt::Return(Some(typed_expr)));
+                        continue;
                     }
-                    typed_body.push(TypedStmt::Return(Some(typed_expr)));
-                    continue;
                 }
                 if let Some(stmt) = lower_stmt_with_types(
                     statement,
@@ -3128,6 +3149,52 @@ fn infer_expr(
                     ty: type_to_string(&fn_ty),
                 },
                 fn_ty,
+            )
+        }
+        Expr::Block(block) => {
+            let mut block_locals = locals.clone();
+            let mut block_immutable_locals = HashSet::new();
+            let mut typed_body = Vec::new();
+            let mut tail_expr = None;
+            let mut tail_ty = SemType::Unit;
+            let mut inferred_returns = Vec::new();
+
+            for (index, statement) in block.statements.iter().enumerate() {
+                let is_last = index + 1 == block.statements.len();
+                if is_last && let Stmt::TailExpr(expr) = statement {
+                    let (typed_expr, inferred) = infer_expr(
+                        expr,
+                        context,
+                        &mut block_locals,
+                        &SemType::Unknown,
+                        diagnostics,
+                    );
+                    tail_ty = inferred;
+                    tail_expr = Some(Box::new(typed_expr));
+                    continue;
+                }
+                if let Some(stmt) = lower_stmt_with_types(
+                    statement,
+                    context,
+                    &mut block_locals,
+                    &mut block_immutable_locals,
+                    &SemType::Unknown,
+                    &mut inferred_returns,
+                    diagnostics,
+                ) {
+                    typed_body.push(stmt);
+                }
+            }
+
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Block {
+                        body: typed_body,
+                        tail: tail_expr,
+                    },
+                    ty: type_to_string(&tail_ty),
+                },
+                tail_ty,
             )
         }
         Expr::Range {
@@ -3243,6 +3310,14 @@ fn diagnose_const_mutations_in_expr(
         TypedExprKind::StructLiteral { fields, .. } => {
             for field in fields {
                 diagnose_const_mutations_in_expr(&field.value, immutable_locals, diagnostics);
+            }
+        }
+        TypedExprKind::Block { body, tail } => {
+            for stmt in body {
+                diagnose_const_mutations_in_stmt(stmt, immutable_locals, diagnostics);
+            }
+            if let Some(tail) = tail {
+                diagnose_const_mutations_in_expr(tail, immutable_locals, diagnostics);
             }
         }
         TypedExprKind::Closure { body, .. } => {
@@ -5431,6 +5506,14 @@ fn count_exact_place_uses_in_expr_rec(
                 count_exact_place_uses_in_expr_rec(&field.value, target, count);
             }
         }
+        TypedExprKind::Block { body, tail } => {
+            for stmt in body {
+                count_exact_place_uses_in_stmt_rec(stmt, target, count);
+            }
+            if let Some(tail) = tail {
+                count_exact_place_uses_in_expr_rec(tail, target, count);
+            }
+        }
         TypedExprKind::Match { scrutinee, arms } => {
             count_exact_place_uses_in_expr_rec(scrutinee, target, count);
             for arm in arms {
@@ -5887,6 +5970,28 @@ fn lower_expr_with_context(
                 })
                 .collect(),
         },
+        TypedExprKind::Block { body, tail } => {
+            let mut block_context = LoweringContext {
+                ownership_plan: OwnershipPlan::from_stmts(body),
+                scope_name: format!("{}::<block>", context.scope_name),
+                loop_depth: context.loop_depth,
+                ..LoweringContext::default()
+            };
+            RustExpr::Block {
+                body: body
+                    .iter()
+                    .map(|stmt| lower_stmt_with_context(stmt, &mut block_context, state))
+                    .collect(),
+                tail: tail.as_ref().map(|expr| {
+                    Box::new(lower_expr_with_context(
+                        expr,
+                        &mut block_context,
+                        ExprPosition::Value,
+                        state,
+                    ))
+                }),
+            }
+        }
         TypedExprKind::Closure {
             params,
             return_type,
@@ -6968,6 +7073,14 @@ fn collect_place_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<OwnershipPlac
         TypedExprKind::StructLiteral { fields, .. } => {
             for field in fields {
                 collect_place_uses_in_expr(&field.value, uses);
+            }
+        }
+        TypedExprKind::Block { body, tail } => {
+            for stmt in body {
+                collect_place_uses_in_stmt(stmt, uses);
+            }
+            if let Some(tail) = tail {
+                collect_place_uses_in_expr(tail, uses);
             }
         }
         TypedExprKind::Closure { .. } => {}

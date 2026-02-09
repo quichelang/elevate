@@ -341,6 +341,20 @@ fn emit_expr(expr: &RustExpr) -> String {
                 .join(", ");
             format!("{} {{ {} }}", path.join("::"), body)
         }
+        RustExpr::Block { body, tail } => {
+            let mut text = String::from("{\n");
+            let mutated_body = collect_mutated_paths_in_stmts(body);
+            for stmt in body {
+                emit_stmt_with_indent(stmt, &mut text, 1, &mutated_body);
+            }
+            if let Some(tail) = tail {
+                text.push_str("    ");
+                text.push_str(&emit_expr(tail));
+                text.push('\n');
+            }
+            text.push('}');
+            text
+        }
         RustExpr::Closure {
             params,
             return_type,
@@ -711,6 +725,7 @@ fn needs_parens_for_call(expr: &RustExpr) -> bool {
     matches!(
         expr,
         RustExpr::Closure { .. }
+            | RustExpr::Block { .. }
             | RustExpr::Match { .. }
             | RustExpr::Unary { .. }
             | RustExpr::Binary { .. }
@@ -723,6 +738,7 @@ fn needs_parens_for_borrow(expr: &RustExpr) -> bool {
     matches!(
         expr,
         RustExpr::Closure { .. }
+            | RustExpr::Block { .. }
             | RustExpr::Match { .. }
             | RustExpr::Unary { .. }
             | RustExpr::Binary { .. }
@@ -904,6 +920,14 @@ fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::Ha
         RustExpr::StructLiteral { fields, .. } => {
             for field in fields {
                 collect_mutated_paths_in_expr(&field.value, out);
+            }
+        }
+        RustExpr::Block { body, tail } => {
+            for stmt in body {
+                collect_mutated_paths_in_stmt(stmt, out);
+            }
+            if let Some(tail) = tail {
+                collect_mutated_paths_in_expr(tail, out);
             }
         }
         RustExpr::Closure { body, .. } => {

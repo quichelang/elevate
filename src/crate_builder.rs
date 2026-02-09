@@ -1083,6 +1083,9 @@ fn validate_expr_adapter_calls(
                 validate_expr_adapter_calls(value, alias_arity, alias_param_types, diagnostics);
             }
         }
+        Expr::Block(body) => {
+            validate_block_adapter_calls(body, alias_arity, alias_param_types, diagnostics)
+        }
         Expr::Closure { body, .. } => {
             validate_block_adapter_calls(body, alias_arity, alias_param_types, diagnostics)
         }
@@ -1292,6 +1295,7 @@ fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec
                 rewrite_expr_adapter_calls(value, adapter_map);
             }
         }
+        Expr::Block(body) => rewrite_block_adapter_calls(body, adapter_map),
         Expr::Closure { body, .. } => rewrite_block_adapter_calls(body, adapter_map),
         Expr::Range { start, end, .. } => {
             if let Some(start) = start {
