@@ -326,7 +326,7 @@ These are intentionally non-default and must be enabled explicitly.
   - Goal: keep user syntax simple while preserving deterministic ownership behavior.
 
 - `exp_infer_local_bidi`
-  - Koko-inspired local bidirectional inference mode.
+  - Koka-inspired local bidirectional inference mode.
   - Intended behavior: aggressive local inference inside function bodies; supports placeholder parameter types (`_`) and omitted parameter type annotations in function definitions, resolving them from local constraints when possible.
   - Guardrail: strict/default mode still prefers explicit parameter annotations; unresolved holes still require explicit annotations.
   - Showcase:
