@@ -82,6 +82,22 @@ fn cli_accepts_experiment_flags_for_compile() {
 }
 
 #[test]
+fn cli_accepts_principal_fallback_flag_for_compile() {
+    let root = temp_dir("elevate-cli-exp-fallback");
+    let src = root.join("input.ers");
+    fs::write(&src, "fn id(v: i64) -> i64 { v }\n").expect("write source should succeed");
+
+    let output = Command::new(bin())
+        .arg(&src)
+        .arg("--exp-infer-principal-fallback")
+        .output()
+        .expect("run cli should succeed");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("experimental flag enabled: exp_infer_principal_fallback"));
+}
+
+#[test]
 fn cli_init_scaffolds_transparent_bootstrap_runner() {
     let workspace = temp_dir("elevate-cli-init");
     let root = workspace.join("starter");

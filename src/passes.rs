@@ -62,26 +62,56 @@ struct Context {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TypecheckOptions {
     pub numeric_coercion: bool,
+    pub infer_local_bidi: bool,
+    pub infer_principal_fallback: bool,
 }
 
 thread_local! {
     static NUMERIC_COERCION_ENABLED: Cell<bool> = Cell::new(false);
+    static INFER_LOCAL_BIDI_ENABLED: Cell<bool> = Cell::new(false);
+    static INFER_PRINCIPAL_FALLBACK_ENABLED: Cell<bool> = Cell::new(false);
 }
 
 static RUSTDEX_BIN_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 static RUSTDEX_TRAIT_CHECKS: OnceLock<Mutex<HashMap<(String, String), bool>>> = OnceLock::new();
 
-fn with_numeric_coercion_scope<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+fn with_typecheck_options_scope<T>(options: &TypecheckOptions, f: impl FnOnce() -> T) -> T {
     NUMERIC_COERCION_ENABLED.with(|cell| {
-        let previous = cell.replace(enabled);
-        let out = f();
-        cell.set(previous);
-        out
+        INFER_LOCAL_BIDI_ENABLED.with(|bidi_cell| {
+            INFER_PRINCIPAL_FALLBACK_ENABLED.with(|fallback_cell| {
+                let previous_numeric = cell.replace(options.numeric_coercion);
+                let previous_bidi = bidi_cell.replace(options.infer_local_bidi);
+                let previous_fallback =
+                    fallback_cell.replace(options.infer_principal_fallback);
+                let out = f();
+                cell.set(previous_numeric);
+                bidi_cell.set(previous_bidi);
+                fallback_cell.set(previous_fallback);
+                out
+            })
+        })
     })
 }
 
 fn numeric_coercion_enabled() -> bool {
     NUMERIC_COERCION_ENABLED.with(|cell| cell.get())
+}
+
+fn infer_local_bidi_enabled() -> bool {
+    INFER_LOCAL_BIDI_ENABLED.with(|cell| cell.get())
+}
+
+fn infer_principal_fallback_enabled() -> bool {
+    INFER_PRINCIPAL_FALLBACK_ENABLED.with(|cell| cell.get())
+}
+
+fn inference_hole_message(default_message: String, site: &str, annotation: &str) -> String {
+    if infer_principal_fallback_enabled() {
+        return format!(
+            "Principal fallback: add {annotation} on {site} to pin a principal type"
+        );
+    }
+    default_message
 }
 
 pub fn lower_to_typed(module: &Module) -> Result<TypedModule, Vec<Diagnostic>> {
@@ -92,7 +122,7 @@ pub fn lower_to_typed_with_options(
     module: &Module,
     options: &TypecheckOptions,
 ) -> Result<TypedModule, Vec<Diagnostic>> {
-    with_numeric_coercion_scope(options.numeric_coercion, || {
+    with_typecheck_options_scope(options, || {
         let mut diagnostics = Vec::new();
         let mut context = Context {
             functions: HashMap::new(),
@@ -1078,9 +1108,13 @@ fn lower_item(
                 });
                 if contains_unknown(&final_return_ty) {
                     diagnostics.push(Diagnostic::new(
-                        format!(
-                            "Method `{}` return type could not be fully inferred; add an explicit return type",
-                            method.name
+                        inference_hole_message(
+                            format!(
+                                "Method `{}` return type could not be fully inferred; add an explicit return type",
+                                method.name
+                            ),
+                            &format!("method `{}`", method.name),
+                            "an explicit return type",
                         ),
                         Span::new(0, 0),
                     ));
@@ -1173,9 +1207,13 @@ fn lower_item(
             };
             if contains_unknown(&final_ty) {
                 diagnostics.push(Diagnostic::new(
-                    format!(
-                        "Const `{}` type could not be fully inferred; add an explicit type",
-                        def.name
+                    inference_hole_message(
+                        format!(
+                            "Const `{}` type could not be fully inferred; add an explicit type",
+                            def.name
+                        ),
+                        &format!("const `{}`", def.name),
+                        "an explicit type",
                     ),
                     Span::new(0, 0),
                 ));
@@ -1283,9 +1321,13 @@ fn lower_item(
                 .unwrap_or_else(|| infer_return_type(&inferred_returns, diagnostics, &def.name));
             if contains_unknown(&final_return_ty) {
                 diagnostics.push(Diagnostic::new(
-                    format!(
-                        "Function `{}` return type could not be fully inferred; add an explicit return type",
-                        def.name
+                    inference_hole_message(
+                        format!(
+                            "Function `{}` return type could not be fully inferred; add an explicit return type",
+                            def.name
+                        ),
+                        &format!("function `{}`", def.name),
+                        "an explicit return type",
                     ),
                     Span::new(0, 0),
                 ));
@@ -6890,6 +6932,126 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
     }
 }
 
+fn merge_compatible_types(left: &SemType, right: &SemType) -> Option<SemType> {
+    match (left, right) {
+        (SemType::Unknown, _) => return Some(right.clone()),
+        (_, SemType::Unknown) => return Some(left.clone()),
+        (SemType::Unit, SemType::Unit) => return Some(SemType::Unit),
+        (SemType::Unit, SemType::Tuple(items)) | (SemType::Tuple(items), SemType::Unit) => {
+            if items.is_empty() {
+                return Some(SemType::Unit);
+            }
+            return None;
+        }
+        (SemType::Tuple(left_items), SemType::Tuple(right_items)) => {
+            if left_items.len() != right_items.len() {
+                return None;
+            }
+            let mut merged = Vec::with_capacity(left_items.len());
+            for (left_item, right_item) in left_items.iter().zip(right_items.iter()) {
+                merged.push(merge_compatible_types(left_item, right_item)?);
+            }
+            return Some(SemType::Tuple(merged));
+        }
+        (
+            SemType::Fn {
+                params: left_params,
+                ret: left_ret,
+            },
+            SemType::Fn {
+                params: right_params,
+                ret: right_ret,
+            },
+        ) => {
+            if left_params.len() != right_params.len() {
+                return None;
+            }
+            let mut params = Vec::with_capacity(left_params.len());
+            for (left_param, right_param) in left_params.iter().zip(right_params.iter()) {
+                params.push(merge_compatible_types(left_param, right_param)?);
+            }
+            let ret = merge_compatible_types(left_ret, right_ret)?;
+            return Some(SemType::Fn {
+                params,
+                ret: Box::new(ret),
+            });
+        }
+        (SemType::Iter(left_item), SemType::Iter(right_item)) => {
+            let merged = merge_compatible_types(left_item, right_item)?;
+            return Some(SemType::Iter(Box::new(merged)));
+        }
+        (
+            SemType::Path {
+                path: left_path,
+                args: left_args,
+            },
+            SemType::Path {
+                path: right_path,
+                args: right_args,
+            },
+        ) => {
+            if left_path != right_path || left_args.len() != right_args.len() {
+                if is_compatible(left, right) && is_compatible(right, left) {
+                    return Some(prefer_more_concrete_type(left, right));
+                }
+                return None;
+            }
+            let mut args = Vec::with_capacity(left_args.len());
+            for (left_arg, right_arg) in left_args.iter().zip(right_args.iter()) {
+                args.push(merge_compatible_types(left_arg, right_arg)?);
+            }
+            return Some(SemType::Path {
+                path: left_path.clone(),
+                args,
+            });
+        }
+        (SemType::TraitObject(left_bounds), SemType::TraitObject(right_bounds)) => {
+            if left_bounds.len() != right_bounds.len() {
+                if is_compatible(left, right) && is_compatible(right, left) {
+                    return Some(prefer_more_concrete_type(left, right));
+                }
+                return None;
+            }
+            let mut bounds = Vec::with_capacity(left_bounds.len());
+            for (left_bound, right_bound) in left_bounds.iter().zip(right_bounds.iter()) {
+                bounds.push(merge_compatible_types(left_bound, right_bound)?);
+            }
+            return Some(SemType::TraitObject(bounds));
+        }
+        _ => {}
+    }
+
+    if is_compatible(left, right) && is_compatible(right, left) {
+        Some(prefer_more_concrete_type(left, right))
+    } else {
+        None
+    }
+}
+
+fn prefer_more_concrete_type(left: &SemType, right: &SemType) -> SemType {
+    if type_specificity_score(right) > type_specificity_score(left) {
+        return right.clone();
+    }
+    left.clone()
+}
+
+fn type_specificity_score(ty: &SemType) -> usize {
+    match ty {
+        SemType::Unknown => 0,
+        SemType::Unit => 1,
+        SemType::TraitObject(bounds) => {
+            1 + bounds.iter().map(type_specificity_score).sum::<usize>()
+        }
+        SemType::Tuple(items) => 1 + items.iter().map(type_specificity_score).sum::<usize>(),
+        SemType::Fn { params, ret } => {
+            1 + params.iter().map(type_specificity_score).sum::<usize>()
+                + type_specificity_score(ret)
+        }
+        SemType::Iter(item) => 1 + type_specificity_score(item),
+        SemType::Path { args, .. } => 1 + args.iter().map(type_specificity_score).sum::<usize>(),
+    }
+}
+
 fn named_type(name: &str) -> SemType {
     SemType::Path {
         path: vec![name.to_string()],
@@ -7804,6 +7966,11 @@ fn ensure_pattern_type(
 }
 
 fn unify_types(existing: SemType, next: SemType, diagnostics: &mut Vec<Diagnostic>) -> SemType {
+    if infer_local_bidi_enabled() {
+        if let Some(merged) = merge_compatible_types(&existing, &next) {
+            return merged;
+        }
+    }
     if existing == SemType::Unknown {
         return next;
     }
@@ -7855,6 +8022,12 @@ fn infer_return_type(
 
     let mut current = returns[0].clone();
     for ty in &returns[1..] {
+        if infer_local_bidi_enabled()
+            && let Some(merged) = merge_compatible_types(&current, ty)
+        {
+            current = merged;
+            continue;
+        }
         if current == SemType::Unknown {
             current = ty.clone();
             continue;

@@ -114,6 +114,8 @@ pub fn compile_ast_with_options(
         module,
         &passes::TypecheckOptions {
             numeric_coercion: options.experiments.numeric_coercion,
+            infer_local_bidi: options.experiments.infer_local_bidi,
+            infer_principal_fallback: options.experiments.infer_principal_fallback,
         },
     )
     .map_err(|diagnostics| CompileError { diagnostics })?;
@@ -1510,6 +1512,199 @@ mod tests {
                 .to_string()
                 .contains("return type could not be fully inferred")
         );
+    }
+
+    #[test]
+    fn compile_rejects_non_principal_option_return_without_bidi() {
+        let source = r#"
+            fn maybe(flag: bool) {
+                if flag {
+                    return None;
+                }
+                return Some(1);
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected inference error");
+        assert!(
+            error
+                .to_string()
+                .contains("return type could not be fully inferred")
+        );
+    }
+
+    #[test]
+    fn compile_infers_option_return_with_bidi_when_none_precedes_some() {
+        let source = r#"
+            fn maybe(flag: bool) {
+                if flag {
+                    return None;
+                }
+                return Some(1);
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_local_bidi = true;
+        let output =
+            compile_source_with_options(source, &options).expect("bidi inference should compile");
+        assert!(output.rust_code.contains("fn maybe(flag: bool) -> Option<i64>"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_rejects_non_principal_result_return_without_bidi() {
+        let source = r#"
+            fn parse(flag: bool) {
+                if flag {
+                    return Result::Ok(1);
+                }
+                return Result::Err("bad");
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected inference error");
+        assert!(
+            error
+                .to_string()
+                .contains("return type could not be fully inferred")
+        );
+    }
+
+    #[test]
+    fn compile_infers_result_return_with_bidi_from_ok_and_err_paths() {
+        let source = r#"
+            fn parse(flag: bool) {
+                if flag {
+                    return Result::Ok(1);
+                }
+                return Result::Err("bad");
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_local_bidi = true;
+        let output =
+            compile_source_with_options(source, &options).expect("bidi inference should compile");
+        assert!(output.rust_code.contains("fn parse(flag: bool) -> Result<i64, String>"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_infers_match_option_return_with_bidi() {
+        let source = r#"
+            fn choose(flag: bool) {
+                return match flag {
+                    true => None;
+                    false => Some(9);
+                };
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_local_bidi = true;
+        let output =
+            compile_source_with_options(source, &options).expect("bidi inference should compile");
+        assert!(output.rust_code.contains("fn choose(flag: bool) -> Option<i64>"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_infers_nested_result_inside_option_with_bidi() {
+        let source = r#"
+            fn nested(flag: bool) {
+                if flag {
+                    return Some(Result::Ok(1));
+                }
+                return Some(Result::Err("bad"));
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_local_bidi = true;
+        let output =
+            compile_source_with_options(source, &options).expect("bidi inference should compile");
+        assert!(
+            output
+                .rust_code
+                .contains("fn nested(flag: bool) -> Option<Result<i64, String>>")
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_infers_tuple_of_options_with_bidi() {
+        let source = r#"
+            fn pair(flag: bool) {
+                if flag {
+                    return (Some(1), None);
+                }
+                return (None, Some(2));
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_local_bidi = true;
+        let output =
+            compile_source_with_options(source, &options).expect("bidi inference should compile");
+        assert!(
+            output
+                .rust_code
+                .contains("fn pair(flag: bool) -> (Option<i64>, Option<i64>)")
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_still_rejects_incompatible_return_families_with_bidi() {
+        let source = r#"
+            fn bad(flag: bool) {
+                if flag {
+                    return Some(1);
+                }
+                return Result::Err("nope");
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_local_bidi = true;
+        let error =
+            compile_source_with_options(source, &options).expect_err("expected mismatch error");
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot infer single return type for `bad`")
+        );
+    }
+
+    #[test]
+    fn compile_principal_fallback_flag_emits_targeted_function_hint() {
+        let source = r#"
+            fn maybe_value() {
+                return None;
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_principal_fallback = true;
+        let error = compile_source_with_options(source, &options).expect_err("expected fallback");
+        let rendered = error.to_string();
+        assert!(rendered.contains("Principal fallback:"));
+        assert!(rendered.contains("function `maybe_value`"));
+    }
+
+    #[test]
+    fn compile_principal_fallback_flag_emits_targeted_const_hint() {
+        let source = r#"
+            const EMPTY = None;
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_principal_fallback = true;
+        let error = compile_source_with_options(source, &options).expect_err("expected fallback");
+        let rendered = error.to_string();
+        assert!(rendered.contains("Principal fallback:"));
+        assert!(rendered.contains("const `EMPTY`"));
     }
 
     #[test]
