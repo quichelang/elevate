@@ -410,6 +410,25 @@ A complete reimplementation of the `lexopt` CLI parsing library, written entirel
 
 An 839-line game rendering toolkit featuring sprites, tile atlases, animated sprites, scene layout, gradient fills, bevel panels, brick floor patterns, hill wave generation, wood-frame UI, HUD panels with keypad buttons — all written in Elevate and compiled through the crate build system.
 
+**Linking default for SDL2/OpenGL examples**
+
+`boardgame-kit`-based examples (`boardwalk-sudoku`, `prosemaster`) default to:
+
+```toml
+sdl2 = { version = "0.38", default-features = false, features = ["bundled", "static-link"] }
+```
+
+This avoids macOS runtime loader failures like missing `@rpath/libSDL2-2.0.0.dylib` and gives a more reliable "run immediately after build" experience.
+
+If you want dynamic linking instead:
+
+1. Change dependency to dynamic:
+   `sdl2 = { version = "0.38", features = ["bundled"] }`
+2. Ensure your binary can locate `libSDL2-2.0.0.dylib` at runtime:
+   add an `LC_RPATH` (for example `@executable_path` or `@loader_path/../Frameworks`) and place the dylib there.
+3. Verify with:
+   `otool -L ./target/debug/<your-binary>`
+
 ### `boardwalk-sudoku` — Interactive Sudoku Game
 
 A working Sudoku game built on `boardgame-kit`, demonstrating Elevate's ability to power real interactive applications with terminal rendering.

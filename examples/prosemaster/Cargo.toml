@@ -7,7 +7,7 @@ edition = "2024"
 ab_glyph = "0.2"
 font8x8 = "0.3"
 minifb = "0.27"
-sdl2 = { version = "0.38", features = ["bundled"] }
+sdl2 = { version = "0.38", default-features = false, features = ["bundled", "static-link"] }
 
 [lib]
 name = "prosemaster"
