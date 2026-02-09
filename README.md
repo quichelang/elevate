@@ -1,10 +1,14 @@
 # Elevate
 
-**A compiled language and compiler framework that transpiles to Rust — with zero dependencies, automatic ownership, and practical type inference.**
+**A compiled language and compiler framework that transpiles to Rust with inferred ownership and no runtime.**
 
-Elevate is two things: a **language** that lets you write high-level, Rust-adjacent code without manual lifetimes, borrows, or `mut` annotations, and a **framework** that exposes a structured intermediate representation (EIR) that other languages can target. The compiler makes all ownership and mutability decisions automatically, then emits clean, compilable Rust source. No runtime. No GC. No magic.
+Elevate is both:
+- A **language** for writing Rust-adjacent code without lifetimes, borrow annotations, or manual clone planning.
+- A **compiler backend framework** where other frontends can target Elevate IR (EIR) and get ownership planning, lowering, and Rust emission.
 
-[Quiche](https://github.com/quichelang/quiche), a Python-inspired compiled language, is built on Elevate's IR — see the Quiche repo for how it uses EIR as its compilation backend.
+If you are evaluating Elevate for a language project, the key idea is simple: target EIR once, then inherit a safe Rust-oriented backend and ecosystem interop.
+
+[Quiche](https://github.com/quichelang/quiche), a Python-inspired compiled language, uses Elevate IR as its backend.
 
 ```rust
 struct Point {
@@ -19,7 +23,29 @@ fn manhattan(a: Point, b: Point) -> i64 {
 }
 ```
 
-The compiler turns this into idiomatic Rust with correct ownership, borrowing, and mutability — all inferred from how values are actually used.
+The compiler emits idiomatic Rust with ownership, borrowing, and mutability inferred from usage.
+
+---
+
+## Start Here (2 Minutes)
+
+```bash
+git clone https://github.com/quichelang/elevate.git
+cd elevate
+cargo build --release
+
+# Compile an example and print generated Rust
+cargo run -q -- examples/point.ers
+
+# Build a real .ers crate
+cargo run -q -- build examples/boardgame-kit
+```
+
+Then inspect generated Rust with:
+
+```bash
+cargo run -q -- examples/point.ers --emit-rust /tmp/point.rs
+```
 
 ---
 
@@ -34,9 +60,15 @@ The compiler turns this into idiomatic Rust with correct ownership, borrowing, a
 | **Zero dependencies** | The compiler itself has literally `[dependencies]` empty in `Cargo.toml` |
 | **Full interop with Rust crates** | Use `use` imports, call Rust functions, or embed raw Rust with `rust { ... }` blocks |
 
+This is the practical value proposition for new users:
+- Write expressive source with fewer ownership annotations.
+- Keep generated output auditable and deployable as normal Rust.
+- Reuse Rust crates instead of rebuilding ecosystem tooling.
+- Use the same backend to power new language frontends.
+
 ---
 
-## Quick Start
+## Quick Start CLI
 
 ```bash
 # Install (requires Rust 2024 edition / rustc 1.85+)
@@ -245,7 +277,7 @@ fn add(a, b) -> i64 {
 }
 
 fn main() {
-    x = add(3, 4);   // x inferred as i64, no `let` or `const` needed
+    let x = add(3, 4);   // x inferred as i64
     return;
 }
 ```
@@ -297,18 +329,33 @@ The ownership pass includes:
 - **Adaptive borrow feedback** — retries transpilation with auto-inferred borrow hints from `rustc` diagnostics
 - **Disjoint field optimization** — avoids cloning when different struct fields are used in non-overlapping scopes
 
-### Elevate Intermediate Representation (EIR)
+## Build A Language On Elevate
 
-Elevate exposes its internal IR as a reusable compilation target. The EIR has two layers:
+Elevate exposes its IR as a reusable compilation target. This is the path if you want your own syntax/front-end but still want a safe and practical backend.
+
+### EIR Layers
 
 | Layer | Module | Purpose |
 |-------|--------|---------|
 | **Typed Core IR** | `TypedModule` | Language-centric, type-checked representation with typed expressions, statements, pattern matching, generics, and traits |
 | **Rust Lowered IR** | `RustModule` | Rust-close representation with explicit ownership operations, borrow insertions, clone decisions, and Rust-specific lowering |
 
-Any language that can produce a `TypedModule` gets Elevate's full ownership inference, specialization, and Rust code generation for free. This is exactly how [Quiche](https://github.com/quichelang/quiche) works — its compiler desugars Python-style syntax into EIR's Typed Core IR, then Elevate handles the rest of the pipeline from ownership decisions through Rust emission.
+### Frontend Integration Flow
 
-The IR is fully defined in [`src/ir/typed.rs`](src/ir/typed.rs) and [`src/ir/lowered.rs`](src/ir/lowered.rs).
+1. Parse your source language into your own AST.
+2. Lower your AST into Elevate `TypedModule`.
+3. Hand `TypedModule` to Elevate passes (type checks, ownership planning, specialization, Rust lowering).
+4. Emit Rust and build against the normal Rust crate ecosystem.
+
+Any frontend that can emit `TypedModule` inherits Elevate's ownership inference, specialization, and Rust code generation. This is exactly how [Quiche](https://github.com/quichelang/quiche) works.
+
+### Safety And Ecosystem Story
+
+- Elevate does not add a runtime or GC layer between your language and Rust.
+- You can keep safety policies in Elevate passes instead of leaking backend hazards to users.
+- The output is standard Rust, so existing Rust crates, tooling, and CI remain usable.
+
+The core IR definitions are in [`src/ir/typed.rs`](src/ir/typed.rs) and [`src/ir/lowered.rs`](src/ir/lowered.rs).
 
 ### Frontend Diagnostics Contract
 

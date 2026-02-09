@@ -235,7 +235,11 @@ fn strict_mode_rejects_placeholder_param_in_arithmetic() {
         }
     "#;
     let error = compile_source(source).expect_err("strict mode should reject unresolved param");
-    assert!(error.to_string().contains("`+` expects numeric operands"));
+    assert!(
+        error
+            .to_string()
+            .contains("Cannot infer type for `a` in strict mode")
+    );
 }
 
 #[test]
@@ -314,5 +318,9 @@ fn strict_mode_rejects_missing_add_types_without_bidi() {
     "#;
     let error =
         compile_source(source).expect_err("strict mode should reject unresolved add signature");
-    assert!(error.to_string().contains("`+` expects numeric operands"));
+    assert!(
+        error
+            .to_string()
+            .contains("Cannot infer type for `a` in strict mode")
+    );
 }

@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
@@ -74,6 +74,8 @@ thread_local! {
     static INFER_LOCAL_BIDI_ENABLED: Cell<bool> = Cell::new(false);
     static INFER_PRINCIPAL_FALLBACK_ENABLED: Cell<bool> = Cell::new(false);
     static EFFECT_ROWS_INTERNAL_ENABLED: Cell<bool> = Cell::new(false);
+    static STRICT_HOLE_REPORTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static STRICT_HOLE_EMITTED: Cell<bool> = Cell::new(false);
 }
 
 static RUSTDEX_BIN_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -91,12 +93,19 @@ fn with_typecheck_options_scope<T>(options: &TypecheckOptions, f: impl FnOnce() 
                     EFFECT_ROWS_INTERNAL_ENABLED.with(|effect_cell| {
                         effect_cell.replace(options.effect_rows_internal)
                     });
-                let out = f();
-                cell.set(previous_numeric);
-                bidi_cell.set(previous_bidi);
-                fallback_cell.set(previous_fallback);
-                EFFECT_ROWS_INTERNAL_ENABLED.with(|effect_cell| effect_cell.set(previous_effect_rows));
-                out
+                STRICT_HOLE_REPORTED.with(|reported| {
+                    let previous_emitted = STRICT_HOLE_EMITTED.with(|emitted| emitted.replace(false));
+                    let previous_reported = std::mem::take(&mut *reported.borrow_mut());
+                    let out = f();
+                    *reported.borrow_mut() = previous_reported;
+                    STRICT_HOLE_EMITTED.with(|emitted| emitted.set(previous_emitted));
+                    cell.set(previous_numeric);
+                    bidi_cell.set(previous_bidi);
+                    fallback_cell.set(previous_fallback);
+                    EFFECT_ROWS_INTERNAL_ENABLED
+                        .with(|effect_cell| effect_cell.set(previous_effect_rows));
+                    out
+                })
             })
         })
     })
@@ -116,6 +125,63 @@ fn infer_principal_fallback_enabled() -> bool {
 
 fn effect_rows_internal_enabled() -> bool {
     EFFECT_ROWS_INTERNAL_ENABLED.with(|cell| cell.get())
+}
+
+fn strict_mode_enabled() -> bool {
+    !infer_local_bidi_enabled()
+}
+
+fn emit_strict_hole_once(key: String, message: String, diagnostics: &mut Vec<Diagnostic>) {
+    if strict_mode_enabled() {
+        let already_emitted = STRICT_HOLE_EMITTED.with(|emitted| {
+            if emitted.get() {
+                true
+            } else {
+                emitted.set(true);
+                false
+            }
+        });
+        if already_emitted {
+            return;
+        }
+    }
+    let should_emit = STRICT_HOLE_REPORTED.with(|reported| {
+        let mut set = reported.borrow_mut();
+        if set.contains(&key) {
+            false
+        } else {
+            set.insert(key);
+            true
+        }
+    });
+    if should_emit {
+        diagnostics.push(Diagnostic::new(message, Span::new(0, 0)));
+    }
+}
+
+fn emit_strict_unknown_operand_hint_once(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
+    match expr {
+        Expr::Path(path) if path.len() == 1 => {
+            let name = &path[0];
+            emit_strict_hole_once(
+                format!("strict:arith:path:{name}"),
+                format!(
+                    "Cannot infer type for `{name}` in strict mode. Add an explicit type \
+annotation or enable `--exp-infer-local-bidi`."
+                ),
+                diagnostics,
+            );
+        }
+        _ => {
+            emit_strict_hole_once(
+                format!("strict:arith:expr:{expr:?}"),
+                "Cannot infer arithmetic operand type in strict mode. Add an explicit type \
+annotation or enable `--exp-infer-local-bidi`."
+                    .to_string(),
+                diagnostics,
+            );
+        }
+    }
 }
 
 fn inference_hole_message(default_message: String, site: &str, annotation: &str) -> String {
@@ -2867,6 +2933,19 @@ fn infer_expr(
                     locals,
                 );
             }
+            if strict_mode_enabled()
+                && matches!(
+                    op,
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem
+                )
+            {
+                if left_ty == SemType::Unknown {
+                    emit_strict_unknown_operand_hint_once(left, diagnostics);
+                }
+                if right_ty == SemType::Unknown {
+                    emit_strict_unknown_operand_hint_once(right, diagnostics);
+                }
+            }
             let (typed_op, out_ty) = match op {
                 BinaryOp::Add => {
                     let out_ty = resolve_add_type_with_literals(
@@ -2950,7 +3029,10 @@ fn infer_expr(
                 | BinaryOp::Le
                 | BinaryOp::Gt
                 | BinaryOp::Ge => {
-                    if !is_compatible(&left_ty, &right_ty) {
+                    if !is_compatible(&left_ty, &right_ty)
+                        && !(strict_mode_enabled()
+                            && (left_ty == SemType::Unknown || right_ty == SemType::Unknown))
+                    {
                         diagnostics.push(Diagnostic::new(
                             format!(
                                 "comparison operands must be compatible, got `{}` and `{}`",
@@ -3995,16 +4077,8 @@ fn resolve_call_type(
             return ty;
         }
 
-        let lookup_name = path.join("::");
-        if let Some(sig) = context.functions.get(&lookup_name) {
-            return resolve_named_function_call(sig, &lookup_name, args, context, diagnostics);
-        }
-
-        if path.len() == 1 {
-            let name = &path[0];
-            if let Some(sig) = context.functions.get(name) {
-                return resolve_named_function_call(sig, name, args, context, diagnostics);
-            }
+        if let Some((resolved_name, sig)) = resolve_function_sig_for_path(path, context) {
+            return resolve_named_function_call(sig, &resolved_name, args, context, diagnostics);
         }
 
         if let Some(resolved) = resolve_constructor_call(path, args, context, diagnostics) {
@@ -4029,6 +4103,31 @@ fn resolve_call_type(
 
     diagnostics.push(Diagnostic::new("Unsupported call target", Span::new(0, 0)));
     SemType::Unknown
+}
+
+fn resolve_function_sig_for_path<'a>(
+    path: &[String],
+    context: &'a Context,
+) -> Option<(String, &'a FunctionSig)> {
+    let joined = path.join("::");
+    if let Some(sig) = context.functions.get(&joined) {
+        return Some((joined, sig));
+    }
+
+    if path.len() == 1 {
+        let name = &path[0];
+        if let Some(sig) = context.functions.get(name) {
+            return Some((name.clone(), sig));
+        }
+        return None;
+    }
+
+    // Crate transpilation currently stores local function signatures by bare
+    // function name. Accept module-qualified call paths by falling back to
+    // the final segment.
+    let tail = path.last()?;
+    let sig = context.functions.get(tail)?;
+    Some((tail.clone(), sig))
 }
 
 fn resolve_trait_associated_call(
@@ -5109,6 +5208,9 @@ fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagn
     if let Some(out_ty) = resolve_common_numeric_type(left, right) {
         return out_ty;
     }
+    if strict_mode_enabled() && (*left == SemType::Unknown || *right == SemType::Unknown) {
+        return SemType::Unknown;
+    }
     diagnostics.push(Diagnostic::new(
         format!(
             "`+` expects numeric operands or `String + String`, got `{}` and `{}`",
@@ -5140,6 +5242,9 @@ fn resolve_unary_neg_type(expr: &SemType, diagnostics: &mut Vec<Diagnostic>) -> 
     if ty != SemType::Unknown {
         return ty;
     }
+    if strict_mode_enabled() && *expr == SemType::Unknown {
+        return SemType::Unknown;
+    }
     diagnostics.push(Diagnostic::new(
         format!(
             "unary `-` expects a numeric operand, got `{}`",
@@ -5158,6 +5263,9 @@ fn resolve_numeric_binary_type(
 ) -> SemType {
     if let Some(out_ty) = resolve_common_numeric_type(left, right) {
         return out_ty;
+    }
+    if strict_mode_enabled() && (*left == SemType::Unknown || *right == SemType::Unknown) {
+        return SemType::Unknown;
     }
     diagnostics.push(Diagnostic::new(
         format!(
@@ -5398,7 +5506,7 @@ fn lower_stmt_with_context(
             body,
         } => RustStmt::For {
             binding: lower_destructure_pattern(binding),
-            iter: lower_expr_with_context(iter, context, ExprPosition::Value, state),
+            iter: lower_expr_with_context(iter, context, ExprPosition::OwnedOperand, state),
             body: {
                 context.loop_depth += 1;
                 let lowered = body
@@ -9051,6 +9159,35 @@ fn contains_unknown(ty: &SemType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_function_sig_for_path_falls_back_to_tail_segment() {
+        let mut context = Context {
+            functions: HashMap::new(),
+            structs: HashMap::new(),
+            enums: HashMap::new(),
+            traits: HashMap::new(),
+            trait_impls: HashMap::new(),
+            globals: HashMap::new(),
+            rust_block_functions: HashSet::new(),
+        };
+        context.functions.insert(
+            "board_left".to_string(),
+            FunctionSig {
+                type_params: Vec::new(),
+                type_param_bounds: HashMap::new(),
+                params: Vec::new(),
+                return_type: named_type("i64"),
+            },
+        );
+
+        let path = vec!["gamekit".to_string(), "board_left".to_string()];
+        let resolved = resolve_function_sig_for_path(&path, &context);
+        assert!(resolved.is_some());
+        let (name, sig) = resolved.expect("path should resolve");
+        assert_eq!(name, "board_left");
+        assert_eq!(sig.return_type, named_type("i64"));
+    }
 
     #[test]
     fn resolve_from_iter_associated_type_infers_vec_item() {

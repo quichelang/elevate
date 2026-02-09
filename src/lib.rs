@@ -1699,6 +1699,42 @@ mod tests {
     }
 
     #[test]
+    fn strict_mode_reports_unknown_binding_and_suppresses_operator_cascade() {
+        let source = r#"
+            fn run() -> i64 {
+                const left = math::left();
+                return left + 2;
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected strict inference error");
+        let rendered = error.to_string();
+        assert!(rendered.contains("Cannot infer type for `left` in strict mode"));
+        assert!(rendered.contains("--exp-infer-local-bidi"));
+        assert!(!rendered.contains("`+` expects numeric operands"));
+        assert_eq!(
+            rendered.matches("Cannot infer type for `left` in strict mode").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn bidi_mode_accepts_unknown_binding_from_namespaced_call() {
+        let source = r#"
+            fn run() -> i64 {
+                const left = math::left();
+                return left + 2;
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_local_bidi = true;
+        let output =
+            compile_source_with_options(source, &options).expect("bidi mode should compile");
+        assert!(output.rust_code.contains("left + 2"));
+    }
+
+    #[test]
     fn compile_rejects_non_principal_result_return_without_bidi() {
         let source = r#"
             fn parse(flag: bool) {
@@ -2695,6 +2731,24 @@ mod tests {
 
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("for value in values.iter()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_clones_for_loop_iterable_when_reused_after_loop() {
+        let source = r#"
+            fn count_and_probe(values: Vec<i64>) -> i64 {
+                for value in values {
+                    std::mem::drop(value);
+                }
+                std::mem::drop(values.len());
+                0
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("for value in values.clone()"));
+        assert!(output.rust_code.contains("values.len()"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
