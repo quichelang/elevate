@@ -1,8 +1,10 @@
 # Elevate
 
-**A compiled language that transpiles to Rust — with zero dependencies, automatic ownership, and practical type inference.**
+**A compiled language and compiler framework that transpiles to Rust — with zero dependencies, automatic ownership, and practical type inference.**
 
-Elevate lets you write high-level, Rust-adjacent code without manual lifetimes, borrows, or `mut` annotations. The compiler makes all ownership and mutability decisions automatically, then emits clean, compilable Rust source. No runtime. No GC. No magic.
+Elevate is two things: a **language** that lets you write high-level, Rust-adjacent code without manual lifetimes, borrows, or `mut` annotations, and a **framework** that exposes a structured intermediate representation (EIR) that other languages can target. The compiler makes all ownership and mutability decisions automatically, then emits clean, compilable Rust source. No runtime. No GC. No magic.
+
+[Quiche](https://github.com/quichelang/quiche), a Python-inspired compiled language, is built on Elevate's IR — see the Quiche repo for how it uses EIR as its compilation backend.
 
 ```rust
 struct Point {
@@ -295,6 +297,19 @@ The ownership pass includes:
 - **Loop-weighted liveness heuristics** — detects expensive clones in hot loops
 - **Adaptive borrow feedback** — retries transpilation with auto-inferred borrow hints from `rustc` diagnostics
 - **Disjoint field optimization** — avoids cloning when different struct fields are used in non-overlapping scopes
+
+### Elevate Intermediate Representation (EIR)
+
+Elevate exposes its internal IR as a reusable compilation target. The EIR has two layers:
+
+| Layer | Module | Purpose |
+|-------|--------|---------|
+| **Typed Core IR** | `TypedModule` | Language-centric, type-checked representation with typed expressions, statements, pattern matching, generics, and traits |
+| **Rust Lowered IR** | `RustModule` | Rust-close representation with explicit ownership operations, borrow insertions, clone decisions, and Rust-specific lowering |
+
+Any language that can produce a `TypedModule` gets Elevate's full ownership inference, specialization, and Rust code generation for free. This is exactly how [Quiche](https://github.com/quichelang/quiche) works — its compiler desugars Python-style syntax into EIR's Typed Core IR, then Elevate handles the rest of the pipeline from ownership decisions through Rust emission.
+
+The IR is fully defined in [`src/ir/typed.rs`](src/ir/typed.rs) and [`src/ir/lowered.rs`](src/ir/lowered.rs).
 
 ---
 
