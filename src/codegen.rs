@@ -1046,6 +1046,9 @@ fn root_path_name(expr: &RustExpr) -> Option<&str> {
     match expr {
         RustExpr::Path(path) if path.len() == 1 => Some(path[0].as_str()),
         RustExpr::Field { base, .. } => root_path_name(base),
+        RustExpr::Index { base, .. } => root_path_name(base),
+        RustExpr::Borrow(inner) => root_path_name(inner),
+        RustExpr::Cast { expr, .. } => root_path_name(expr),
         _ => None,
     }
 }

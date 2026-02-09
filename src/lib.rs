@@ -311,6 +311,52 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_nested_index_assignment_targets() {
+        let source = r#"
+            fn update(board: Vec<Vec<i64>>) -> i64 {
+                board[1][2] = board[1][2] + 1;
+                return board[1][2];
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(
+            output
+                .rust_code
+                .contains("fn update(mut board: Vec<Vec<i64>>) -> i64")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("board[(1) as usize][(2) as usize] = (board[(1) as usize][(2) as usize] + 1);")
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_deep_nested_index_assignment_targets() {
+        let source = r#"
+            fn update(hyper: Vec<Vec<Vec<Vec<i64>>>>) -> i64 {
+                hyper[0][1][2][3] = hyper[0][1][2][3] + 1;
+                return hyper[0][1][2][3];
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(
+            output
+                .rust_code
+                .contains("fn update(mut hyper: Vec<Vec<Vec<Vec<i64>>>>) -> i64")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("hyper[(0) as usize][(1) as usize][(2) as usize][(3) as usize] = (hyper[(0) as usize][(1) as usize][(2) as usize][(3) as usize] + 1);")
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_coerces_numeric_types_in_arithmetic() {
         let source = r#"
             fn measure(base: usize, delta: i64) -> i64 {
