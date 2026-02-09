@@ -1,1 +1,4 @@
 target/
+src/gamekit.ers
+src/gfx.ers
+src/assets/fonts/
