@@ -1,0 +1,9 @@
+allow crate::runtime
+allow crate::runtime::Board
+allow crate::runtime::RenderMode
+allow crate::host
+allow crate::host::KeyEvent
+allow crate::gfx
+allow crate::gfx::Canvas
+allow crate::gamekit
+allow prosemaster::app::Game

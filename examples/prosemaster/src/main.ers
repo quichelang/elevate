@@ -1,0 +1,6 @@
+use prosemaster::app::Game;
+
+fn main() {
+    const game = Game::new();
+    Game::run(game);
+}

@@ -1,0 +1,1054 @@
+use crate::host;
+use crate::host::KeyEvent;
+use crate::gfx::Canvas;
+use crate::gamekit;
+
+pub enum RenderMode {
+    Neon;
+    Vga;
+}
+
+pub fn default_render_mode() -> RenderMode {
+    RenderMode::Vga
+}
+
+pub fn toggle_render_mode(mode: RenderMode) -> RenderMode {
+    match mode {
+        RenderMode::Neon => RenderMode::Vga;
+        RenderMode::Vga => RenderMode::Neon;
+    }
+}
+
+pub fn render_mode_name(mode: RenderMode) -> String {
+    match mode {
+        RenderMode::Neon => "Neon";
+        RenderMode::Vga => "VGA";
+    }
+}
+
+fn mode_is_vga(mode: RenderMode) -> bool {
+    match mode {
+        RenderMode::Vga => true;
+        _ => false;
+    }
+}
+
+pub struct Board {
+    cells: Vec<i64>;
+    committed: Vec<bool>;
+    pending: Vec<bool>;
+    rack: Vec<i64>;
+    bag_count: i64;
+    score_total: i64;
+    last_turn_score: i64;
+    turn_number: i64;
+    first_move_done: bool;
+    rng_seed: i64;
+}
+
+impl Board {
+    pub fn new(seed: i64) -> Self {
+        const size = board_area();
+        let cells: Vec<i64> = [];
+        let committed: Vec<bool> = [];
+        let pending: Vec<bool> = [];
+        for _ in 0..size {
+            cells.push(0);
+            committed.push(false);
+            pending.push(false);
+        }
+
+        const rack0 = empty_rack();
+        let board = Board {
+            cells: cells;
+            committed: committed;
+            pending: pending;
+            rack: rack0;
+            bag_count: 98;
+            score_total: 0;
+            last_turn_score: 0;
+            turn_number: 1;
+            first_move_done: false;
+            rng_seed: seed;
+        };
+        Board::refill_rack(board)
+    }
+
+    pub fn turn_number(self: Self) -> i64 {
+        self.turn_number
+    }
+
+    pub fn score_total(self: Self) -> i64 {
+        self.score_total
+    }
+
+    pub fn last_turn_score(self: Self) -> i64 {
+        self.last_turn_score
+    }
+
+    pub fn tiles_left(self: Self) -> i64 {
+        self.bag_count
+    }
+
+    pub fn rack_letter(self: Self, slot: i64) -> i64 {
+        if slot < 0 or slot > 6 {
+            return 0;
+        }
+        self.rack[slot]
+    }
+
+    pub fn next_filled_slot(self: Self, from_slot: i64) -> i64 {
+        for step in 1..8 {
+            const slot = (from_slot + step) % 7;
+            if self.rack[slot] > 0 {
+                return slot;
+            }
+        }
+        0
+    }
+
+    pub fn place_from_rack(self: Self, row: i64, col: i64, slot: i64) -> (Self, i64) {
+        if slot < 0 or slot > 6 {
+            return (self, 1);
+        }
+        const tile = self.rack[slot];
+        if tile <= 0 {
+            return (self, 2);
+        }
+        const idx = board_index(row, col);
+        if idx < 0 {
+            return (self, 3);
+        }
+        if self.cells[idx] != 0 {
+            return (self, 3);
+        }
+
+        self.cells[idx] = tile;
+        self.pending[idx] = true;
+        self.rack[slot] = 0;
+        (self, 0)
+    }
+
+    pub fn remove_pending(self: Self, row: i64, col: i64) -> (Self, bool) {
+        const idx = board_index(row, col);
+        if idx < 0 {
+            return (self, false);
+        }
+        if not self.pending[idx] {
+            return (self, false);
+        }
+
+        const tile = self.cells[idx];
+        self.cells[idx] = 0;
+        self.pending[idx] = false;
+        self = Board::insert_into_rack(self, tile);
+        (self, true)
+    }
+
+    pub fn recall_turn_tiles(self: Self) -> (Self, i64) {
+        let count = 0;
+        for idx in 0..board_area() {
+            if self.pending[idx] {
+                const tile = self.cells[idx];
+                self.cells[idx] = 0;
+                self.pending[idx] = false;
+                self = Board::insert_into_rack(self, tile);
+                count += 1;
+            }
+        }
+        (self, count)
+    }
+
+    pub fn shuffle_rack(self: Self) -> Self {
+        for i in 0..7 {
+            const (seed, pick) = next_random_index(self.rng_seed, 7);
+            self.rng_seed = seed;
+            const j = (i + pick) % 7;
+            const tmp = self.rack[i];
+            self.rack[i] = self.rack[j];
+            self.rack[j] = tmp;
+        }
+        self
+    }
+
+    pub fn sort_rack(self: Self) -> Self {
+        for _ in 0..7 {
+            for i in 0..6 {
+                const left = self.rack[i];
+                const right = self.rack[i + 1];
+                if rank_tile_for_sort(right) > rank_tile_for_sort(left) {
+                    const tmp = self.rack[i];
+                    self.rack[i] = self.rack[i + 1];
+                    self.rack[i + 1] = tmp;
+                }
+            }
+        }
+        self
+    }
+
+    pub fn submit_turn(self: Self) -> (Self, i64) {
+        const pending_positions = collect_pending_positions(self.pending);
+        let pending_count = 0;
+        for _ in pending_positions {
+            pending_count += 1;
+        }
+        if pending_count == 0 {
+            return (self, -1);
+        }
+
+        const (axis_code, anchor, span_start, span_end) = placement_axis(pending_positions);
+        if axis_code < 0 {
+            return (self, -2);
+        }
+        if not placement_span_is_contiguous(self.cells, axis_code, anchor, span_start, span_end) {
+            return (self, -3);
+        }
+
+        if not self.first_move_done {
+            if not pending_touches_center(self.pending) {
+                return (self, -4);
+            }
+        } else {
+            if not pending_connects_to_committed(self.pending, self.committed) {
+                return (self, -5);
+            }
+        }
+
+        const (main_score, main_word_len) = score_main_word(self.cells, self.pending, axis_code, anchor, span_start, span_end);
+        let turn_score = main_score;
+        let word_count = 0;
+        if main_word_len > 1 {
+            word_count = 1;
+        }
+
+        for pos in pending_positions {
+            const row = pos / board_size();
+            const col = pos % board_size();
+            const (cross_score, cross_len) = score_cross_word(self.cells, self.pending, axis_code, row, col);
+            if cross_len > 1 {
+                turn_score += cross_score;
+                word_count += 1;
+            }
+        }
+
+        if word_count == 0 {
+            return (self, -6);
+        }
+
+        if pending_count == 7 {
+            turn_score += 50;
+        }
+
+        for idx in 0..board_area() {
+            if self.pending[idx] {
+                self.pending[idx] = false;
+                self.committed[idx] = true;
+            }
+        }
+
+        self.score_total += turn_score;
+        self.last_turn_score = turn_score;
+        self.turn_number += 1;
+        self.first_move_done = true;
+        self = Board::refill_rack(self);
+        (self, 0)
+    }
+
+    fn insert_into_rack(self: Self, tile: i64) -> Self {
+        if tile <= 0 {
+            return self;
+        }
+        for i in 0..7 {
+            if self.rack[i] == 0 {
+                self.rack[i] = tile;
+                return self;
+            }
+        }
+        self.bag_count += 1;
+        self
+    }
+
+    fn refill_rack(self: Self) -> Self {
+        for slot in 0..7 {
+            if self.rack[slot] == 0 {
+                const (next_board, tile) = Board::draw_tile(self);
+                self = next_board;
+                self.rack[slot] = tile;
+            }
+        }
+        self
+    }
+
+    fn draw_tile(self: Self) -> (Self, i64) {
+        if self.bag_count == 0 {
+            return (self, 0);
+        }
+        const (seed, index) = next_random_index(self.rng_seed, 98);
+        self.rng_seed = seed;
+        self.bag_count = self.bag_count - 1;
+        const tile = weighted_tile(index);
+        (self, tile)
+    }
+}
+
+pub fn runtime_start() -> i64 {
+    host::runtime_start()
+}
+
+pub fn runtime_poll_key(handle: i64) -> Option<KeyEvent> {
+    host::runtime_poll_key(handle)
+}
+
+pub fn runtime_now_millis() -> i64 {
+    host::runtime_now_millis()
+}
+
+pub fn runtime_shutdown(handle: i64) {
+    host::runtime_shutdown(handle);
+}
+
+pub fn runtime_render(
+    board: Board,
+    cursor_row: i64,
+    cursor_col: i64,
+    message: String,
+    mode: RenderMode,
+    debug_enabled: bool,
+    fps: i64,
+    player_name: String,
+    level_label: String,
+    elapsed_secs: i64,
+    quit_armed: bool,
+    selected_slot: i64,
+) -> Board {
+    const time_label = format_elapsed_clock(elapsed_secs);
+    const drawn = host::runtime_draw_scene(
+        board.cells,
+        board.committed,
+        cursor_row,
+        cursor_col,
+        format!("{}", message),
+        mode_is_vga(mode),
+        debug_enabled,
+        fps,
+        player_name,
+        level_label,
+        time_label,
+        quit_armed,
+        false,
+    );
+
+    if drawn {
+        return board;
+    }
+
+    const (next_board, frame) = render_frame(
+        board,
+        cursor_row,
+        cursor_col,
+        message,
+        mode,
+        debug_enabled,
+        fps,
+        elapsed_secs,
+        selected_slot,
+        quit_armed,
+    );
+    host::runtime_draw(frame);
+    next_board
+}
+
+pub fn letter_to_string(letter: i64) -> String {
+    format!("{}", letter_to_char(letter))
+}
+
+pub fn place_result_message(code: i64, slot: i64) -> String {
+    match code {
+        0 => format!("Placed tile from rack {}", slot_label(slot));
+        1 => String::from("Pick a rack slot from 1-7");
+        2 => String::from("That rack slot is empty");
+        _ => String::from("Cell already occupied");
+    }
+}
+
+pub fn submit_result_message(code: i64, points: i64) -> String {
+    if code == 0 {
+        return format!("Turn accepted: +{} points", points);
+    }
+    if code == -1 {
+        return String::from("Place at least one tile before submitting");
+    }
+    if code == -2 {
+        return String::from("Turn tiles must be in one row or one column");
+    }
+    if code == -3 {
+        return String::from("Turn tiles must form one contiguous line");
+    }
+    if code == -4 {
+        return String::from("First turn must cover the center star");
+    }
+    if code == -5 {
+        return String::from("Turn must connect to existing words");
+    }
+    String::from("Turn must create at least one 2+ letter word")
+}
+
+fn render_frame(
+    board: Board,
+    cursor_row: i64,
+    cursor_col: i64,
+    message: String,
+    mode: RenderMode,
+    debug_enabled: bool,
+    fps: i64,
+    elapsed_secs: i64,
+    selected_slot: i64,
+    quit_armed: bool,
+) -> (Board, String) {
+    const width = 120;
+    const height = 42;
+    const vga = mode_is_vga(mode);
+    const canvas0 = Canvas::new(width, height, gamekit::palette_text(vga), gamekit::palette_bg(vga));
+    const canvas1 = gamekit::draw_scene_shell(
+        canvas0,
+        String::from("PROSEMASTER"),
+        format!("TURN {}", board.turn_number),
+        debug_enabled,
+        fps,
+        vga,
+    );
+
+    const canvas2 = draw_board(canvas1, board, cursor_row, cursor_col, vga, selected_slot);
+    const canvas3 = draw_hud(canvas2, board, elapsed_secs, vga);
+    const canvas4 = gamekit::draw_gameplay_hints(canvas3, vga);
+    const canvas5 = gamekit::draw_footer_status(canvas4, message, vga);
+    const canvas6 = draw_control_hint(canvas5, vga);
+    const canvas7 = draw_quit_prompt(canvas6, mode, quit_armed);
+    (board, Canvas::to_ansi(canvas7))
+}
+
+fn draw_board(canvas: Canvas, board: Board, cursor_row: i64, cursor_col: i64, vga: bool, selected_slot: i64) -> Canvas {
+    const left = gamekit::board_left();
+    const top = gamekit::board_top();
+    const header = Canvas::text(canvas, left + 2, top - 2, "  A B C D E F G H I J K L M N O", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    let out = header;
+
+    for row in 0..15 {
+        out = draw_row_label(out, row, left, top, vga);
+        for col in 0..15 {
+            const idx = row * 15 + col;
+            const tile = board.cells[idx];
+            const pending = board.pending[idx];
+            const committed = board.committed[idx];
+            const selected = row == cursor_row and col == cursor_col;
+            const slot_x = left + 4 + col * 2;
+            const slot_y = top + row;
+            const (fg, bg, bold) = cell_style(tile, pending, committed, selected, row, col, vga);
+            const ch = match tile {
+                0 => bonus_char(row, col);
+                _ => letter_to_char(tile);
+            };
+            out = Canvas::put(out, slot_x, slot_y, ch, fg, bg, bold);
+        }
+    }
+
+    const rack_y = gamekit::footer_y() - 4;
+    out = Canvas::text(out, left + 2, rack_y - 1, "RACK", gamekit::palette_status(vga), gamekit::palette_bg(vga), true);
+    for slot in 0..7 {
+        const tile = board.rack[slot];
+        const x = left + 2 + slot * 4;
+        const selected = slot == selected_slot;
+        let base_fg = gamekit::palette_hud_text(vga);
+        let base_bg = gamekit::palette_footer_bg(vga);
+        if selected {
+            base_fg = gamekit::palette_cursor_fg(vga);
+            base_bg = gamekit::palette_cursor_bg(vga);
+        }
+        out = Canvas::text(out, x, rack_y, slot_label(slot), base_fg, base_bg, selected);
+        out = Canvas::put(out, x + 1, rack_y, ':', base_fg, base_bg, false);
+        if tile == 0 {
+            out = Canvas::put(out, x + 2, rack_y, '-', gamekit::palette_dim_fg(vga), base_bg, false);
+        } else {
+            out = Canvas::put(out, x + 2, rack_y, letter_to_char(tile), base_fg, base_bg, true);
+        }
+    }
+
+    out
+}
+
+fn draw_row_label(canvas: Canvas, row: i64, left: i64, top: i64, vga: bool) -> Canvas {
+    if row < 9 {
+        return Canvas::text(canvas, left + 1, top + row, row_label(row), gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    }
+    Canvas::text(canvas, left, top + row, row_label(row), gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false)
+}
+
+fn draw_hud(canvas: Canvas, board: Board, elapsed_secs: i64, vga: bool) -> Canvas {
+    const hud_x = 76;
+    let out = Canvas::text(canvas, hud_x, 6, format!("SCORE: {}", board.score_total), gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), true);
+    out = Canvas::text(out, hud_x, 8, format!("LAST:  +{}", board.last_turn_score), gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    out = Canvas::text(out, hud_x, 10, format!("BAG:   {}", board.bag_count), gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    out = Canvas::text(out, hud_x, 12, format!("TURN:  {}", board.turn_number), gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    out = Canvas::text(out, hud_x, 14, format!("TIME:  {}", format_elapsed_clock(elapsed_secs)), gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+
+    out = Canvas::text(out, hud_x, 18, "Premium squares", gamekit::palette_status(vga), gamekit::palette_bg(vga), true);
+    out = Canvas::text(out, hud_x, 20, "* center (DW)", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    out = Canvas::text(out, hud_x, 21, "2 double letter", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    out = Canvas::text(out, hud_x, 22, "3 triple letter", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    out = Canvas::text(out, hud_x, 23, "= double word", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    out = Canvas::text(out, hud_x, 24, "# triple word", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    out
+}
+
+fn draw_control_hint(canvas: Canvas, vga: bool) -> Canvas {
+    let out = Canvas::text(canvas, 4, gamekit::footer_y() - 2, "Scrabble UX: start at center, build one line per turn, c place, n lock-in, r undo turn", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false);
+    Canvas::text(out, 4, gamekit::footer_y() - 1, "h next tile, p shuffle, o sort by score, v renderer", gamekit::palette_hud_text(vga), gamekit::palette_bg(vga), false)
+}
+
+fn draw_quit_prompt(canvas: Canvas, mode: RenderMode, quit_armed: bool) -> Canvas {
+    if not quit_armed {
+        return canvas;
+    }
+    const vga = mode_is_vga(mode);
+    const prompt_bg = gamekit::palette_footer_bg(vga);
+    const prompt_fg = gamekit::palette_status(vga);
+    const panel = Canvas::fill_rect(canvas, 24, 34, 72, 3, ' ', prompt_fg, prompt_bg, false);
+    Canvas::text(panel, 27, 35, "Press q again to quit (any key cancels)", prompt_fg, prompt_bg, true)
+}
+
+fn cell_style(tile: i64, pending: bool, committed: bool, selected: bool, row: i64, col: i64, vga: bool) -> (i64, i64, bool) {
+    let fg = gamekit::palette_hud_text(vga);
+    let bg = bonus_bg(row, col, vga);
+    let bold = false;
+
+    if tile > 0 {
+        if committed {
+            fg = gamekit::palette_fixed_fg(vga);
+            bg = gamekit::palette_fixed_bg(vga);
+            bold = true;
+        } else {
+            if pending {
+                fg = gamekit::palette_edit_fg(vga);
+                bg = gamekit::palette_edit_bg(vga);
+                bold = true;
+            }
+        }
+    }
+
+    if selected {
+        fg = gamekit::palette_cursor_fg(vga);
+        bg = gamekit::palette_cursor_bg(vga);
+        bold = true;
+    }
+    (fg, bg, bold)
+}
+
+fn bonus_bg(row: i64, col: i64, vga: bool) -> i64 {
+    const kind = bonus_kind(row, col);
+    if kind == 4 {
+        if vga {
+            return 166;
+        }
+        return 173;
+    }
+    if kind == 3 {
+        if vga {
+            return 124;
+        }
+        return 160;
+    }
+    if kind == 2 {
+        if vga {
+            return 60;
+        }
+        return 63;
+    }
+    if kind == 1 {
+        if vga {
+            return 94;
+        }
+        return 109;
+    }
+    gamekit::palette_board_bg(vga)
+}
+
+fn bonus_char(row: i64, col: i64) -> char {
+    if row == 7 and col == 7 {
+        return '*';
+    }
+    match bonus_kind(row, col) {
+        4 => '=';
+        3 => '#';
+        2 => '3';
+        1 => '2';
+        _ => '.';
+    }
+}
+
+fn bonus_kind(row: i64, col: i64) -> i64 {
+    if row == 7 and col == 7 {
+        return 4;
+    }
+    if is_triple_word(row, col) {
+        return 3;
+    }
+    if is_double_word(row, col) {
+        return 4;
+    }
+    if is_triple_letter(row, col) {
+        return 2;
+    }
+    if is_double_letter(row, col) {
+        return 1;
+    }
+    0
+}
+
+fn is_triple_word(row: i64, col: i64) -> bool {
+    is_any_coord(
+        row,
+        col,
+        [
+            0, 0,
+            0, 7,
+            0, 14,
+            7, 0,
+            7, 14,
+            14, 0,
+            14, 7,
+            14, 14,
+        ],
+    )
+}
+
+fn is_double_word(row: i64, col: i64) -> bool {
+    is_any_coord(
+        row,
+        col,
+        [
+            1, 1, 2, 2, 3, 3, 4, 4,
+            10, 10, 11, 11, 12, 12, 13, 13,
+            1, 13, 2, 12, 3, 11, 4, 10,
+            10, 4, 11, 3, 12, 2, 13, 1,
+        ],
+    )
+}
+
+fn is_triple_letter(row: i64, col: i64) -> bool {
+    is_any_coord(
+        row,
+        col,
+        [
+            1, 5, 1, 9,
+            5, 1, 5, 5, 5, 9, 5, 13,
+            9, 1, 9, 5, 9, 9, 9, 13,
+            13, 5, 13, 9,
+        ],
+    )
+}
+
+fn is_double_letter(row: i64, col: i64) -> bool {
+    is_any_coord(
+        row,
+        col,
+        [
+            0, 3, 0, 11,
+            2, 6, 2, 8,
+            3, 0, 3, 7, 3, 14,
+            6, 2, 6, 6, 6, 8, 6, 12,
+            7, 3, 7, 11,
+            8, 2, 8, 6, 8, 8, 8, 12,
+            11, 0, 11, 7, 11, 14,
+            12, 6, 12, 8,
+            14, 3, 14, 11,
+        ],
+    )
+}
+
+fn is_any_coord(row: i64, col: i64, pairs: Vec<i64>) -> bool {
+    let expect_col = false;
+    let candidate_row = -1;
+    for value in pairs {
+        if not expect_col {
+            candidate_row = value;
+            expect_col = true;
+        } else {
+            if candidate_row == row and value == col {
+                return true;
+            }
+            expect_col = false;
+        }
+    }
+    false
+}
+
+fn score_main_word(cells: Vec<i64>, pending: Vec<bool>, axis_code: i64, anchor: i64, span_start: i64, span_end: i64) -> (i64, i64) {
+    if axis_code == 0 {
+        return score_word(cells, pending, axis_code, anchor, span_start, span_end);
+    }
+    score_word(cells, pending, axis_code, anchor, span_start, span_end)
+}
+
+fn score_cross_word(cells: Vec<i64>, pending: Vec<bool>, axis_code: i64, row: i64, col: i64) -> (i64, i64) {
+    if axis_code == 0 {
+        // main move horizontal => cross vertical
+        let start = row;
+        let end = row;
+        let cur = row;
+        while cur > 0 and cells[(cur - 1) * 15 + col] > 0 {
+            cur = cur - 1;
+        }
+        start = cur;
+        cur = row;
+        while cur < 14 and cells[(cur + 1) * 15 + col] > 0 {
+            cur = cur + 1;
+        }
+        end = cur;
+        return score_word(cells, pending, 1, col, start, end);
+    }
+
+    // main move vertical => cross horizontal
+    let start = col;
+    let end = col;
+    let cur = col;
+    while cur > 0 and cells[row * 15 + cur - 1] > 0 {
+        cur = cur - 1;
+    }
+    start = cur;
+    cur = col;
+    while cur < 14 and cells[row * 15 + cur + 1] > 0 {
+        cur = cur + 1;
+    }
+    end = cur;
+    score_word(cells, pending, 0, row, start, end)
+}
+
+fn score_word(cells: Vec<i64>, pending: Vec<bool>, axis_code: i64, anchor: i64, start: i64, end: i64) -> (i64, i64) {
+    if end < start {
+        return (0, 0);
+    }
+    let sum = 0;
+    let word_mult = 1;
+    let len = end - start + 1;
+
+    for step in start..(end + 1) {
+        let row = step;
+        let col = anchor;
+        if axis_code == 0 {
+            row = anchor;
+            col = step;
+        }
+        const idx = row * 15 + col;
+        const tile = cells[idx];
+        if tile == 0 {
+            return (0, 0);
+        }
+
+        let letter_mult = 1;
+        if pending[idx] {
+            const kind = bonus_kind(row, col);
+            if kind == 2 {
+                letter_mult = 3;
+            } else {
+                if kind == 1 {
+                    letter_mult = 2;
+                } else {
+                    if kind == 3 {
+                        word_mult = word_mult * 3;
+                    } else {
+                        if kind == 4 {
+                            word_mult = word_mult * 2;
+                        }
+                    }
+                }
+            }
+        }
+        sum += letter_score(tile) * letter_mult;
+    }
+
+    (sum * word_mult, len)
+}
+
+fn placement_axis(pending_positions: Vec<i64>) -> (i64, i64, i64, i64) {
+    const first = pending_positions[0];
+    const first_row = first / 15;
+    const first_col = first % 15;
+
+    let same_row = true;
+    let same_col = true;
+    let min_row = first_row;
+    let max_row = first_row;
+    let min_col = first_col;
+    let max_col = first_col;
+
+    for pos in pending_positions {
+        const row = pos / 15;
+        const col = pos % 15;
+        if row != first_row {
+            same_row = false;
+        }
+        if col != first_col {
+            same_col = false;
+        }
+        if row < min_row {
+            min_row = row;
+        }
+        if row > max_row {
+            max_row = row;
+        }
+        if col < min_col {
+            min_col = col;
+        }
+        if col > max_col {
+            max_col = col;
+        }
+    }
+
+    if same_row {
+        return (0, first_row, min_col, max_col);
+    }
+    if same_col {
+        return (1, first_col, min_row, max_row);
+    }
+    (-1, 0, 0, 0)
+}
+
+fn placement_span_is_contiguous(cells: Vec<i64>, axis_code: i64, anchor: i64, start: i64, end: i64) -> bool {
+    for step in start..(end + 1) {
+        let row = step;
+        let col = anchor;
+        if axis_code == 0 {
+            row = anchor;
+            col = step;
+        }
+        if cells[row * 15 + col] == 0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn pending_touches_center(pending: Vec<bool>) -> bool {
+    pending[7 * 15 + 7]
+}
+
+fn pending_connects_to_committed(pending: Vec<bool>, committed: Vec<bool>) -> bool {
+    for row in 0..15 {
+        for col in 0..15 {
+            const idx = row * 15 + col;
+            if pending[idx] {
+                if row > 0 and committed[(row - 1) * 15 + col] {
+                    return true;
+                }
+                if row < 14 and committed[(row + 1) * 15 + col] {
+                    return true;
+                }
+                if col > 0 and committed[row * 15 + col - 1] {
+                    return true;
+                }
+                if col < 14 and committed[row * 15 + col + 1] {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn collect_pending_positions(pending: Vec<bool>) -> Vec<i64> {
+    let positions: Vec<i64> = [];
+    for idx in 0..board_area() {
+        if pending[idx] {
+            positions.push(idx);
+        }
+    }
+    positions
+}
+
+fn rank_tile_for_sort(tile: i64) -> i64 {
+    if tile == 0 {
+        return -1;
+    }
+    letter_score(tile) * 100 + (27 - tile)
+}
+
+fn letter_score(letter: i64) -> i64 {
+    match letter {
+        1 => 1;
+        2 => 3;
+        3 => 3;
+        4 => 2;
+        5 => 1;
+        6 => 4;
+        7 => 2;
+        8 => 4;
+        9 => 1;
+        10 => 8;
+        11 => 5;
+        12 => 1;
+        13 => 3;
+        14 => 1;
+        15 => 1;
+        16 => 3;
+        17 => 10;
+        18 => 1;
+        19 => 1;
+        20 => 1;
+        21 => 1;
+        22 => 4;
+        23 => 4;
+        24 => 8;
+        25 => 4;
+        26 => 10;
+        _ => 0;
+    }
+}
+
+fn letter_to_char(letter: i64) -> char {
+    match letter {
+        1 => 'A';
+        2 => 'B';
+        3 => 'C';
+        4 => 'D';
+        5 => 'E';
+        6 => 'F';
+        7 => 'G';
+        8 => 'H';
+        9 => 'I';
+        10 => 'J';
+        11 => 'K';
+        12 => 'L';
+        13 => 'M';
+        14 => 'N';
+        15 => 'O';
+        16 => 'P';
+        17 => 'Q';
+        18 => 'R';
+        19 => 'S';
+        20 => 'T';
+        21 => 'U';
+        22 => 'V';
+        23 => 'W';
+        24 => 'X';
+        25 => 'Y';
+        26 => 'Z';
+        _ => '-';
+    }
+}
+
+fn empty_rack() -> Vec<i64> {
+    let rack: Vec<i64> = [];
+    for _ in 0..7 {
+        rack.push(0);
+    }
+    rack
+}
+
+fn next_random_index(seed: i64, max: i64) -> (i64, i64) {
+    if max <= 0 {
+        return (seed, 0);
+    }
+    let next = seed * 1103515245 + 12345;
+    if next < 0 {
+        next = -next;
+    }
+    (next, next % max)
+}
+
+fn weighted_tile(value: i64) -> i64 {
+    const slot = value % 98;
+    if slot < 9 { return 1; }
+    if slot < 11 { return 2; }
+    if slot < 13 { return 3; }
+    if slot < 17 { return 4; }
+    if slot < 29 { return 5; }
+    if slot < 31 { return 6; }
+    if slot < 34 { return 7; }
+    if slot < 36 { return 8; }
+    if slot < 45 { return 9; }
+    if slot < 46 { return 10; }
+    if slot < 47 { return 11; }
+    if slot < 51 { return 12; }
+    if slot < 53 { return 13; }
+    if slot < 59 { return 14; }
+    if slot < 67 { return 15; }
+    if slot < 69 { return 16; }
+    if slot < 70 { return 17; }
+    if slot < 76 { return 18; }
+    if slot < 80 { return 19; }
+    if slot < 86 { return 20; }
+    if slot < 90 { return 21; }
+    if slot < 92 { return 22; }
+    if slot < 94 { return 23; }
+    if slot < 95 { return 24; }
+    if slot < 97 { return 25; }
+    26
+}
+
+fn slot_label(slot: i64) -> String {
+    match slot {
+        0 => String::from("1");
+        1 => String::from("2");
+        2 => String::from("3");
+        3 => String::from("4");
+        4 => String::from("5");
+        5 => String::from("6");
+        _ => String::from("7");
+    }
+}
+
+fn row_label(row: i64) -> String {
+    match row {
+        0 => String::from("1");
+        1 => String::from("2");
+        2 => String::from("3");
+        3 => String::from("4");
+        4 => String::from("5");
+        5 => String::from("6");
+        6 => String::from("7");
+        7 => String::from("8");
+        8 => String::from("9");
+        9 => String::from("10");
+        10 => String::from("11");
+        11 => String::from("12");
+        12 => String::from("13");
+        13 => String::from("14");
+        _ => String::from("15");
+    }
+}
+
+fn board_index(row: i64, col: i64) -> i64 {
+    if row < 0 or row >= board_size() {
+        return -1;
+    }
+    if col < 0 or col >= board_size() {
+        return -1;
+    }
+    row * board_size() + col
+}
+
+fn board_size() -> i64 {
+    15
+}
+
+fn board_area() -> i64 {
+    board_size() * board_size()
+}
+
+fn format_elapsed_clock(seconds: i64) -> String {
+    if seconds < 0 {
+        return String::from("00:00");
+    }
+    const mins = seconds / 60;
+    const secs = seconds % 60;
+    if mins < 10 {
+        if secs < 10 {
+            return format!("0{}:0{}", mins, secs);
+        }
+        return format!("0{}:{}", mins, secs);
+    }
+    if secs < 10 {
+        return format!("{}:0{}", mins, secs);
+    }
+    format!("{}:{}", mins, secs)
+}

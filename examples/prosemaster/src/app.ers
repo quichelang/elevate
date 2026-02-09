@@ -1,0 +1,281 @@
+use crate::runtime;
+use crate::runtime::Board;
+use crate::runtime::RenderMode;
+use crate::host::KeyEvent;
+
+pub struct Game {
+    runtime: i64;
+    board: Board;
+    cursor_row: i64;
+    cursor_col: i64;
+    selected_slot: i64;
+    render_mode: RenderMode;
+    message: String;
+    running: bool;
+    quit_armed: bool;
+    needs_redraw: bool;
+    debug_enabled: bool;
+    fps_window_start_ms: i64;
+    fps_frames: i64;
+    fps_display: i64;
+    timer_started_ms: i64;
+    elapsed_secs: i64;
+}
+
+impl Game {
+    pub fn new() -> Self {
+        const runtime_handle = runtime::runtime_start();
+        const now_ms: i64 = runtime::runtime_now_millis();
+        const board_state = Board::new(now_ms);
+        Game {
+            runtime: runtime_handle;
+            board: board_state;
+            cursor_row: 7;
+            cursor_col: 7;
+            selected_slot: 0;
+            render_mode: runtime::default_render_mode();
+            message: String::from("Select rack tile 1-7, c place, 0 recall tile, n submit turn, r undo turn, h next tile");
+            running: true;
+            quit_armed: false;
+            needs_redraw: true;
+            debug_enabled: true;
+            fps_window_start_ms: now_ms;
+            fps_frames: 0;
+            fps_display: 0;
+            timer_started_ms: now_ms;
+            elapsed_secs: 0;
+        }
+    }
+
+    pub fn run(self) {
+        while self.running {
+            self = Game::tick_fps(self);
+            self = Game::tick_timer(self);
+
+            if self.needs_redraw {
+                self.board = runtime::runtime_render(
+                    self.board,
+                    self.cursor_row,
+                    self.cursor_col,
+                    format!("{}", self.message),
+                    self.render_mode,
+                    self.debug_enabled,
+                    self.fps_display,
+                    String::from("PROSEMASTER"),
+                    format!("TURN {}", Board::turn_number(self.board)),
+                    self.elapsed_secs,
+                    self.quit_armed,
+                    self.selected_slot,
+                );
+                self.needs_redraw = false;
+            }
+
+            const key = runtime::runtime_poll_key(self.runtime);
+            self = match key {
+                Option::Some(value) => Game::on_key(self, value);
+                Option::None => self;
+            };
+        }
+
+        runtime::runtime_shutdown(self.runtime);
+    }
+
+    fn on_key(self, key: KeyEvent) -> Self {
+        if self.quit_armed {
+            if key == KeyEvent::Quit {
+                return Game::stop(self);
+            }
+            self.quit_armed = false;
+            self.message = String::from("Quit cancelled");
+            return Game::mark_dirty(self);
+        }
+
+        if key == KeyEvent::Quit {
+            return Game::arm_quit(self);
+        }
+
+        const next = match key {
+            KeyEvent::Quit => Game::arm_quit(self);
+            KeyEvent::Up => Game::move_cursor(self, -1, 0);
+            KeyEvent::Down => Game::move_cursor(self, 1, 0);
+            KeyEvent::Left => Game::move_cursor(self, 0, -1);
+            KeyEvent::Right => Game::move_cursor(self, 0, 1);
+            KeyEvent::Digit(value) => Game::select_digit(self, value);
+            KeyEvent::Check => Game::place_selected(self);
+            KeyEvent::Clear => Game::remove_pending(self);
+            KeyEvent::Next => Game::submit_turn(self);
+            KeyEvent::Reset => Game::recall_turn(self);
+            KeyEvent::ToggleRenderer => Game::toggle_renderer(self);
+            KeyEvent::ToggleDebug => Game::toggle_debug(self);
+            KeyEvent::Hint => Game::select_next_filled_slot(self);
+            KeyEvent::Save => Game::shuffle_rack(self);
+            KeyEvent::Load => Game::sort_rack(self);
+        };
+        Game::mark_dirty(next)
+    }
+
+    fn stop(self) -> Self {
+        self.running = false;
+        self
+    }
+
+    fn mark_dirty(self) -> Self {
+        self.needs_redraw = true;
+        self
+    }
+
+    fn arm_quit(self) -> Self {
+        self.quit_armed = true;
+        self.message = String::from("Press q again to quit. Any other key cancels.");
+        self
+    }
+
+    fn move_cursor(self, dr: i64, dc: i64) -> Self {
+        self.cursor_row = wrap_0_to_14(self.cursor_row + dr);
+        self.cursor_col = wrap_0_to_14(self.cursor_col + dc);
+        self
+    }
+
+    fn select_slot(self, slot: i64) -> Self {
+        if slot < 0 or slot > 6 {
+            self.message = String::from("Select rack slot 1-7");
+            return self;
+        }
+        self.selected_slot = slot;
+        const letter = Board::rack_letter(self.board, slot);
+        if letter == 0 {
+            self.message = String::from("Rack slot empty");
+            return self;
+        }
+        self.message = format!("Selected tile {}", runtime::letter_to_string(letter));
+        self
+    }
+
+    fn select_digit(self, digit: i64) -> Self {
+        if digit < 1 or digit > 7 {
+            self.message = String::from("Pick a rack digit from 1-7");
+            return self;
+        }
+        Game::select_slot(self, digit - 1)
+    }
+
+    fn select_next_filled_slot(self) -> Self {
+        const next_slot = Board::next_filled_slot(self.board, self.selected_slot);
+        self.selected_slot = next_slot;
+        const letter = Board::rack_letter(self.board, next_slot);
+        if letter == 0 {
+            self.message = String::from("Rack is empty");
+            return self;
+        }
+        self.message = format!("Selected tile {}", runtime::letter_to_string(letter));
+        self
+    }
+
+    fn place_selected(self) -> Self {
+        const (next_board, code) = Board::place_from_rack(self.board, self.cursor_row, self.cursor_col, self.selected_slot);
+        self.board = next_board;
+        self.message = runtime::place_result_message(code, self.selected_slot);
+        self
+    }
+
+    fn remove_pending(self) -> Self {
+        const (next_board, ok) = Board::remove_pending(self.board, self.cursor_row, self.cursor_col);
+        self.board = next_board;
+        if ok {
+            self.message = String::from("Tile returned to rack");
+        } else {
+            self.message = String::from("No turn tile at cursor");
+        }
+        self
+    }
+
+    fn recall_turn(self) -> Self {
+        const (next_board, count) = Board::recall_turn_tiles(self.board);
+        self.board = next_board;
+        if count == 0 {
+            self.message = String::from("No pending tiles to recall");
+            return self;
+        }
+        self.message = format!("Recalled {} tile(s)", count);
+        self
+    }
+
+    fn submit_turn(self) -> Self {
+        const (next_board, code) = Board::submit_turn(self.board);
+        self.board = next_board;
+        self.message = runtime::submit_result_message(code, Board::last_turn_score(self.board));
+        self
+    }
+
+    fn shuffle_rack(self) -> Self {
+        self.board = Board::shuffle_rack(self.board);
+        self.message = String::from("Rack shuffled");
+        self
+    }
+
+    fn sort_rack(self) -> Self {
+        self.board = Board::sort_rack(self.board);
+        self.message = String::from("Rack sorted by score");
+        self
+    }
+
+    fn toggle_renderer(self) -> Self {
+        self.render_mode = runtime::toggle_render_mode(self.render_mode);
+        self.message = format!("Renderer: {}", runtime::render_mode_name(self.render_mode));
+        self
+    }
+
+    fn toggle_debug(self) -> Self {
+        self.debug_enabled = not self.debug_enabled;
+        if self.debug_enabled {
+            self.message = String::from("Debug overlay on");
+        } else {
+            self.message = String::from("Debug overlay off");
+        }
+        self
+    }
+
+    fn tick_fps(self) -> Self {
+        const now: i64 = runtime::runtime_now_millis();
+        self.fps_frames += 1;
+        const elapsed: i64 = now - self.fps_window_start_ms;
+        if elapsed >= 1000 {
+            if elapsed > 0 {
+                self.fps_display = (self.fps_frames * 1000) / elapsed;
+            } else {
+                self.fps_display = 0;
+            }
+            self.fps_frames = 0;
+            self.fps_window_start_ms = now;
+            if self.debug_enabled {
+                self.needs_redraw = true;
+            }
+        }
+        self
+    }
+
+    fn tick_timer(self) -> Self {
+        const now: i64 = runtime::runtime_now_millis();
+        const elapsed_ms: i64 = now - self.timer_started_ms;
+        if elapsed_ms < 0 {
+            self.elapsed_secs = 0;
+            return self;
+        }
+        const next_elapsed: i64 = elapsed_ms / 1000;
+        if next_elapsed != self.elapsed_secs {
+            self.elapsed_secs = next_elapsed;
+            self.needs_redraw = true;
+        }
+        self
+    }
+}
+
+fn wrap_0_to_14(value: i64) -> i64 {
+    if value < 0 {
+        return 14;
+    }
+    if value > 14 {
+        return 0;
+    }
+    value
+}
