@@ -57,6 +57,7 @@ struct Context {
     enums: HashMap<String, HashMap<String, Vec<SemType>>>,
     traits: HashMap<String, Vec<SemType>>,
     globals: HashMap<String, SemType>,
+    rust_block_functions: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -64,12 +65,14 @@ pub struct TypecheckOptions {
     pub numeric_coercion: bool,
     pub infer_local_bidi: bool,
     pub infer_principal_fallback: bool,
+    pub effect_rows_internal: bool,
 }
 
 thread_local! {
     static NUMERIC_COERCION_ENABLED: Cell<bool> = Cell::new(false);
     static INFER_LOCAL_BIDI_ENABLED: Cell<bool> = Cell::new(false);
     static INFER_PRINCIPAL_FALLBACK_ENABLED: Cell<bool> = Cell::new(false);
+    static EFFECT_ROWS_INTERNAL_ENABLED: Cell<bool> = Cell::new(false);
 }
 
 static RUSTDEX_BIN_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -83,10 +86,15 @@ fn with_typecheck_options_scope<T>(options: &TypecheckOptions, f: impl FnOnce() 
                 let previous_bidi = bidi_cell.replace(options.infer_local_bidi);
                 let previous_fallback =
                     fallback_cell.replace(options.infer_principal_fallback);
+                let previous_effect_rows =
+                    EFFECT_ROWS_INTERNAL_ENABLED.with(|effect_cell| {
+                        effect_cell.replace(options.effect_rows_internal)
+                    });
                 let out = f();
                 cell.set(previous_numeric);
                 bidi_cell.set(previous_bidi);
                 fallback_cell.set(previous_fallback);
+                EFFECT_ROWS_INTERNAL_ENABLED.with(|effect_cell| effect_cell.set(previous_effect_rows));
                 out
             })
         })
@@ -103,6 +111,10 @@ fn infer_local_bidi_enabled() -> bool {
 
 fn infer_principal_fallback_enabled() -> bool {
     INFER_PRINCIPAL_FALLBACK_ENABLED.with(|cell| cell.get())
+}
+
+fn effect_rows_internal_enabled() -> bool {
+    EFFECT_ROWS_INTERNAL_ENABLED.with(|cell| cell.get())
 }
 
 fn inference_hole_message(default_message: String, site: &str, annotation: &str) -> String {
@@ -130,6 +142,7 @@ pub fn lower_to_typed_with_options(
             enums: HashMap::new(),
             traits: HashMap::new(),
             globals: HashMap::new(),
+            rust_block_functions: HashSet::new(),
         };
 
         collect_definitions(module, &mut context, &mut diagnostics);
@@ -140,11 +153,519 @@ pub fn lower_to_typed_with_options(
             .collect::<Vec<_>>();
 
         if diagnostics.is_empty() {
+            if effect_rows_internal_enabled() {
+                let _ = analyze_effect_rows_internal(module, &items, &context, &mut diagnostics);
+            }
+            if !diagnostics.is_empty() {
+                return Err(diagnostics);
+            }
             Ok(TypedModule { items })
         } else {
             Err(diagnostics)
         }
     })
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EffectRow {
+    caps: BTreeSet<String>,
+    open: bool,
+}
+
+fn analyze_effect_rows_internal(
+    _module: &Module,
+    items: &[TypedItem],
+    context: &Context,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> HashMap<String, EffectRow> {
+    let trait_methods = collect_trait_methods(items);
+    let trait_caps = expand_trait_capabilities(context, &trait_methods);
+    let mut rows = HashMap::<String, EffectRow>::new();
+
+    for item in items {
+        match item {
+            TypedItem::Function(def) => {
+                let mut row = direct_effects_for_stmts(&def.body);
+                merge_effect_rows(&mut row, &effect_caps_for_type_params(&def.type_params, &trait_caps));
+                validate_generic_method_capabilities(
+                    &def.body,
+                    &type_param_cap_rows(&def.type_params, &trait_caps),
+                    &trait_caps,
+                    diagnostics,
+                );
+                rows.insert(def.name.clone(), row);
+            }
+            TypedItem::Impl(def) => {
+                let trait_row = def
+                    .trait_target
+                    .as_ref()
+                    .and_then(|name| trait_caps.get(name))
+                    .cloned()
+                    .unwrap_or_default();
+                for method in &def.methods {
+                    let mut row = direct_effects_for_stmts(&method.body);
+                    merge_effect_rows(&mut row, &trait_row);
+                    let method_type_param_caps =
+                        type_param_cap_rows(&method.type_params, &trait_caps);
+                    merge_effect_rows(
+                        &mut row,
+                        &effect_caps_for_type_params(&method.type_params, &trait_caps),
+                    );
+                    validate_generic_method_capabilities(
+                        &method.body,
+                        &method_type_param_caps,
+                        &trait_caps,
+                        diagnostics,
+                    );
+                    rows.insert(format!("{}::{}", def.target, method.name), row);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    rows
+}
+
+fn collect_trait_methods(items: &[TypedItem]) -> HashMap<String, BTreeSet<String>> {
+    let mut methods = HashMap::<String, BTreeSet<String>>::new();
+    for item in items {
+        if let TypedItem::Trait(def) = item {
+            let entry = methods.entry(def.name.clone()).or_default();
+            for method in &def.methods {
+                entry.insert(method.name.clone());
+            }
+        }
+    }
+    methods
+}
+
+fn expand_trait_capabilities(
+    context: &Context,
+    trait_methods: &HashMap<String, BTreeSet<String>>,
+) -> HashMap<String, EffectRow> {
+    fn walk(
+        trait_name: &str,
+        context: &Context,
+        trait_methods: &HashMap<String, BTreeSet<String>>,
+        cache: &mut HashMap<String, EffectRow>,
+        visiting: &mut HashSet<String>,
+    ) -> EffectRow {
+        if let Some(found) = cache.get(trait_name) {
+            return found.clone();
+        }
+        if !visiting.insert(trait_name.to_string()) {
+            return EffectRow::default();
+        }
+        let mut row = EffectRow::default();
+        row.caps.insert(format!("trait::{trait_name}"));
+        if let Some(methods) = trait_methods.get(trait_name) {
+            for method in methods {
+                row.caps.insert(format!("method::{method}"));
+            }
+        }
+        if let Some(bounds) = context.traits.get(trait_name) {
+            for bound in bounds {
+                if let Some(bound_name) = bound_trait_name(bound) {
+                    let nested = walk(bound_name, context, trait_methods, cache, visiting);
+                    merge_effect_rows(&mut row, &nested);
+                }
+            }
+        }
+        visiting.remove(trait_name);
+        cache.insert(trait_name.to_string(), row.clone());
+        row
+    }
+
+    let mut cache = HashMap::<String, EffectRow>::new();
+    let mut visiting = HashSet::<String>::new();
+    for trait_name in context.traits.keys() {
+        let row = walk(trait_name, context, trait_methods, &mut cache, &mut visiting);
+        cache.insert(trait_name.clone(), row);
+    }
+    cache
+}
+
+fn type_param_cap_rows(
+    params: &[TypedTypeParam],
+    trait_caps: &HashMap<String, EffectRow>,
+) -> HashMap<String, EffectRow> {
+    params
+        .iter()
+        .map(|param| (param.name.clone(), type_param_cap_row(param, trait_caps)))
+        .collect()
+}
+
+fn type_param_cap_row(
+    param: &TypedTypeParam,
+    trait_caps: &HashMap<String, EffectRow>,
+) -> EffectRow {
+    let mut row = EffectRow::default();
+    for bound in &param.bounds {
+        if let Some(caps) = trait_caps.get(bound) {
+            merge_effect_rows(&mut row, caps);
+        } else if !bound.trim().is_empty() {
+            row.caps.insert(format!("trait::{bound}"));
+            row.open = true;
+        }
+    }
+    row
+}
+
+fn effect_caps_for_type_params(
+    params: &[TypedTypeParam],
+    trait_caps: &HashMap<String, EffectRow>,
+) -> EffectRow {
+    let mut row = EffectRow::default();
+    for param in params {
+        let param_row = type_param_cap_row(param, trait_caps);
+        merge_effect_rows(&mut row, &param_row);
+    }
+    row
+}
+
+fn validate_generic_method_capabilities(
+    stmts: &[TypedStmt],
+    type_param_caps: &HashMap<String, EffectRow>,
+    trait_caps: &HashMap<String, EffectRow>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for stmt in stmts {
+        validate_stmt_method_capabilities(stmt, type_param_caps, trait_caps, diagnostics);
+    }
+}
+
+fn validate_stmt_method_capabilities(
+    stmt: &TypedStmt,
+    type_param_caps: &HashMap<String, EffectRow>,
+    trait_caps: &HashMap<String, EffectRow>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match stmt {
+        TypedStmt::Const(def) => validate_expr_method_capabilities(
+            &def.value,
+            type_param_caps,
+            trait_caps,
+            diagnostics,
+        ),
+        TypedStmt::DestructureConst { value, .. } => {
+            validate_expr_method_capabilities(value, type_param_caps, trait_caps, diagnostics)
+        }
+        TypedStmt::Assign { value, .. } => {
+            validate_expr_method_capabilities(value, type_param_caps, trait_caps, diagnostics)
+        }
+        TypedStmt::Return(value) => {
+            if let Some(value) = value {
+                validate_expr_method_capabilities(value, type_param_caps, trait_caps, diagnostics);
+            }
+        }
+        TypedStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            validate_expr_method_capabilities(condition, type_param_caps, trait_caps, diagnostics);
+            validate_generic_method_capabilities(then_body, type_param_caps, trait_caps, diagnostics);
+            if let Some(else_body) = else_body {
+                validate_generic_method_capabilities(
+                    else_body,
+                    type_param_caps,
+                    trait_caps,
+                    diagnostics,
+                );
+            }
+        }
+        TypedStmt::While { condition, body } => {
+            validate_expr_method_capabilities(condition, type_param_caps, trait_caps, diagnostics);
+            validate_generic_method_capabilities(body, type_param_caps, trait_caps, diagnostics);
+        }
+        TypedStmt::For { iter, body, .. } => {
+            validate_expr_method_capabilities(iter, type_param_caps, trait_caps, diagnostics);
+            validate_generic_method_capabilities(body, type_param_caps, trait_caps, diagnostics);
+        }
+        TypedStmt::Loop { body } => {
+            validate_generic_method_capabilities(body, type_param_caps, trait_caps, diagnostics)
+        }
+        TypedStmt::Expr(expr) => {
+            validate_expr_method_capabilities(expr, type_param_caps, trait_caps, diagnostics)
+        }
+        TypedStmt::Break | TypedStmt::Continue | TypedStmt::RustBlock(_) => {}
+    }
+}
+
+fn validate_expr_method_capabilities(
+    expr: &TypedExpr,
+    type_param_caps: &HashMap<String, EffectRow>,
+    trait_caps: &HashMap<String, EffectRow>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match &expr.kind {
+        TypedExprKind::Call { callee, args } => {
+            if let TypedExprKind::Field { base, field } = &callee.kind
+                && let Some(type_param_name) = type_param_name_for_expr(base, type_param_caps)
+                && let Some(row) = type_param_caps.get(type_param_name)
+            {
+                let required_cap = format!("method::{field}");
+                if !row.open && !row.caps.contains(&required_cap) {
+                    let suggested = suggest_trait_bounds_for_method(field, trait_caps);
+                    let hint = if suggested.is_empty() {
+                        "add an explicit trait bound".to_string()
+                    } else {
+                        format!("add a bound like `{type_param_name}: {}`", suggested.join(" + "))
+                    };
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Type parameter `{type_param_name}` is missing capability `{required_cap}` for `{type_param_name}.{field}(...)`; {hint}"
+                        ),
+                        Span::new(0, 0),
+                    ));
+                }
+            }
+            validate_expr_method_capabilities(callee, type_param_caps, trait_caps, diagnostics);
+            for arg in args {
+                validate_expr_method_capabilities(arg, type_param_caps, trait_caps, diagnostics);
+            }
+        }
+        TypedExprKind::MacroCall { args, .. } => {
+            for arg in args {
+                validate_expr_method_capabilities(arg, type_param_caps, trait_caps, diagnostics);
+            }
+        }
+        TypedExprKind::Field { base, .. } => {
+            validate_expr_method_capabilities(base, type_param_caps, trait_caps, diagnostics)
+        }
+        TypedExprKind::Index { base, index } => {
+            validate_expr_method_capabilities(base, type_param_caps, trait_caps, diagnostics);
+            validate_expr_method_capabilities(index, type_param_caps, trait_caps, diagnostics);
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            validate_expr_method_capabilities(scrutinee, type_param_caps, trait_caps, diagnostics);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    validate_expr_method_capabilities(
+                        guard,
+                        type_param_caps,
+                        trait_caps,
+                        diagnostics,
+                    );
+                }
+                validate_expr_method_capabilities(
+                    &arm.value,
+                    type_param_caps,
+                    trait_caps,
+                    diagnostics,
+                );
+            }
+        }
+        TypedExprKind::Unary { expr, .. } => {
+            validate_expr_method_capabilities(expr, type_param_caps, trait_caps, diagnostics)
+        }
+        TypedExprKind::Binary { left, right, .. } => {
+            validate_expr_method_capabilities(left, type_param_caps, trait_caps, diagnostics);
+            validate_expr_method_capabilities(right, type_param_caps, trait_caps, diagnostics);
+        }
+        TypedExprKind::Array(items) | TypedExprKind::Tuple(items) => {
+            for item in items {
+                validate_expr_method_capabilities(item, type_param_caps, trait_caps, diagnostics);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                validate_expr_method_capabilities(
+                    &field.value,
+                    type_param_caps,
+                    trait_caps,
+                    diagnostics,
+                );
+            }
+        }
+        TypedExprKind::Closure { body, .. } => {
+            validate_generic_method_capabilities(body, type_param_caps, trait_caps, diagnostics)
+        }
+        TypedExprKind::Range { start, end, .. } => {
+            if let Some(start) = start {
+                validate_expr_method_capabilities(start, type_param_caps, trait_caps, diagnostics);
+            }
+            if let Some(end) = end {
+                validate_expr_method_capabilities(end, type_param_caps, trait_caps, diagnostics);
+            }
+        }
+        TypedExprKind::Try(inner) => {
+            validate_expr_method_capabilities(inner, type_param_caps, trait_caps, diagnostics)
+        }
+        TypedExprKind::Cast { expr, .. } => {
+            validate_expr_method_capabilities(expr, type_param_caps, trait_caps, diagnostics)
+        }
+        TypedExprKind::Path(_)
+        | TypedExprKind::Int(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::String(_)
+        | TypedExprKind::Char(_) => {}
+    }
+}
+
+fn type_param_name_for_expr<'a>(
+    expr: &'a TypedExpr,
+    type_param_caps: &'a HashMap<String, EffectRow>,
+) -> Option<&'a str> {
+    let ty = expr.ty.trim();
+    let normalized = ty
+        .strip_prefix("&mut ")
+        .or_else(|| ty.strip_prefix('&'))
+        .map(str::trim)
+        .unwrap_or(ty);
+    type_param_caps
+        .contains_key(normalized)
+        .then_some(normalized)
+}
+
+fn suggest_trait_bounds_for_method(
+    method: &str,
+    trait_caps: &HashMap<String, EffectRow>,
+) -> Vec<String> {
+    let required = format!("method::{method}");
+    let mut matches = trait_caps
+        .iter()
+        .filter_map(|(trait_name, row)| row.caps.contains(&required).then_some(trait_name.clone()))
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.truncate(3);
+    matches
+}
+
+fn direct_effects_for_stmts(stmts: &[TypedStmt]) -> EffectRow {
+    let mut row = EffectRow::default();
+    for stmt in stmts {
+        direct_effects_for_stmt(stmt, &mut row);
+    }
+    row
+}
+
+fn direct_effects_for_stmt(stmt: &TypedStmt, row: &mut EffectRow) {
+    match stmt {
+        TypedStmt::Const(def) => direct_effects_for_expr(&def.value, row),
+        TypedStmt::DestructureConst { value, .. } => direct_effects_for_expr(value, row),
+        TypedStmt::Assign { value, .. } => direct_effects_for_expr(value, row),
+        TypedStmt::Return(value) => {
+            if let Some(value) = value {
+                direct_effects_for_expr(value, row);
+            }
+        }
+        TypedStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            direct_effects_for_expr(condition, row);
+            for item in then_body {
+                direct_effects_for_stmt(item, row);
+            }
+            if let Some(else_body) = else_body {
+                for item in else_body {
+                    direct_effects_for_stmt(item, row);
+                }
+            }
+        }
+        TypedStmt::While { condition, body } => {
+            direct_effects_for_expr(condition, row);
+            for item in body {
+                direct_effects_for_stmt(item, row);
+            }
+        }
+        TypedStmt::For { iter, body, .. } => {
+            direct_effects_for_expr(iter, row);
+            for item in body {
+                direct_effects_for_stmt(item, row);
+            }
+        }
+        TypedStmt::Loop { body } => {
+            for item in body {
+                direct_effects_for_stmt(item, row);
+            }
+        }
+        TypedStmt::Expr(expr) => direct_effects_for_expr(expr, row),
+        TypedStmt::Break | TypedStmt::Continue | TypedStmt::RustBlock(_) => {}
+    }
+}
+
+fn direct_effects_for_expr(expr: &TypedExpr, row: &mut EffectRow) {
+    match &expr.kind {
+        TypedExprKind::Call { callee, args } => {
+            if let TypedExprKind::Path(path) = &callee.kind {
+                row.caps.insert(format!("call::{}", path.join("::")));
+            }
+            if let TypedExprKind::Field { field, .. } = &callee.kind {
+                row.caps.insert(format!("method::{field}"));
+            }
+            direct_effects_for_expr(callee, row);
+            for arg in args {
+                direct_effects_for_expr(arg, row);
+            }
+        }
+        TypedExprKind::MacroCall { path, args } => {
+            row.caps.insert(format!("macro::{}", path.join("::")));
+            for arg in args {
+                direct_effects_for_expr(arg, row);
+            }
+        }
+        TypedExprKind::Field { base, .. } => direct_effects_for_expr(base, row),
+        TypedExprKind::Index { base, index } => {
+            direct_effects_for_expr(base, row);
+            direct_effects_for_expr(index, row);
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            direct_effects_for_expr(scrutinee, row);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    direct_effects_for_expr(guard, row);
+                }
+                direct_effects_for_expr(&arm.value, row);
+            }
+        }
+        TypedExprKind::Unary { expr, .. } => direct_effects_for_expr(expr, row),
+        TypedExprKind::Binary { left, right, .. } => {
+            direct_effects_for_expr(left, row);
+            direct_effects_for_expr(right, row);
+        }
+        TypedExprKind::Array(items) | TypedExprKind::Tuple(items) => {
+            for item in items {
+                direct_effects_for_expr(item, row);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                direct_effects_for_expr(&field.value, row);
+            }
+        }
+        TypedExprKind::Closure { body, .. } => {
+            for stmt in body {
+                direct_effects_for_stmt(stmt, row);
+            }
+        }
+        TypedExprKind::Range { start, end, .. } => {
+            if let Some(start) = start {
+                direct_effects_for_expr(start, row);
+            }
+            if let Some(end) = end {
+                direct_effects_for_expr(end, row);
+            }
+        }
+        TypedExprKind::Try(inner) => {
+            row.caps.insert("control::try".to_string());
+            direct_effects_for_expr(inner, row);
+        }
+        TypedExprKind::Cast { expr, .. } => direct_effects_for_expr(expr, row),
+        TypedExprKind::Path(_)
+        | TypedExprKind::Int(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::String(_)
+        | TypedExprKind::Char(_) => {}
+    }
+}
+
+fn merge_effect_rows(target: &mut EffectRow, source: &EffectRow) {
+    target.caps.extend(source.caps.iter().cloned());
+    target.open |= source.open;
 }
 
 pub fn lower_to_rust(module: &TypedModule) -> RustModule {
@@ -985,9 +1506,38 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                     .insert(def.name.clone(), type_from_ast_in_context(&def.ty, context));
             }
             Item::RustUse(_) => {}
-            Item::RustBlock(_) => {}
+            Item::RustBlock(code) => {
+                context
+                    .rust_block_functions
+                    .extend(extract_rust_block_function_names(code));
+            }
         }
     }
+}
+
+fn extract_rust_block_function_names(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = code.as_bytes();
+    let mut i = 0usize;
+    while i + 3 <= bytes.len() {
+        if &bytes[i..i + 3] == b"fn " {
+            let mut j = i + 3;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let start = j;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j > start {
+                out.push(code[start..j].to_string());
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    out
 }
 
 fn lower_item(
@@ -2061,7 +2611,14 @@ fn infer_expr(
             let (typed_callee, callee_ty) =
                 infer_expr(callee, context, locals, return_ty, diagnostics);
             let resolved =
-                resolve_call_type(&typed_callee, &callee_ty, &arg_types, context, diagnostics);
+                resolve_call_type(
+                    &typed_callee,
+                    &callee_ty,
+                    &arg_types,
+                    context,
+                    locals,
+                    diagnostics,
+                );
             (
                 TypedExpr {
                     kind: TypedExprKind::Call {
@@ -3315,6 +3872,7 @@ fn resolve_call_type(
     callee_ty: &SemType,
     args: &[SemType],
     context: &Context,
+    locals: &HashMap<String, SemType>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SemType {
     if let SemType::Fn { params, ret } = callee_ty {
@@ -3370,6 +3928,15 @@ fn resolve_call_type(
             return resolved;
         }
 
+        if path.len() == 1 {
+            let name = &path[0];
+            if !locals.contains_key(name) && !context.rust_block_functions.contains(name) {
+                diagnostics.push(Diagnostic::new(
+                    format!("Unknown function `{name}`"),
+                    Span::new(0, 0),
+                ));
+            }
+        }
         return SemType::Unknown;
     }
 

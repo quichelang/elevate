@@ -116,6 +116,7 @@ pub fn compile_ast_with_options(
             numeric_coercion: options.experiments.numeric_coercion,
             infer_local_bidi: options.experiments.infer_local_bidi,
             infer_principal_fallback: options.experiments.infer_principal_fallback,
+            effect_rows_internal: options.experiments.effect_rows_internal,
         },
     )
     .map_err(|diagnostics| CompileError { diagnostics })?;
@@ -1515,6 +1516,18 @@ mod tests {
     }
 
     #[test]
+    fn compile_rejects_unknown_function_call() {
+        let source = r#"
+            fn run() -> i64 {
+                return missing_call(1, 2);
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected unknown function diagnostic");
+        assert!(error.to_string().contains("Unknown function `missing_call`"));
+    }
+
+    #[test]
     fn compile_rejects_non_principal_option_return_without_bidi() {
         let source = r#"
             fn maybe(flag: bool) {
@@ -1862,6 +1875,65 @@ mod tests {
 
         let error = compile_source(source).expect_err("expected Hash bound violation");
         assert!(error.to_string().contains("does not satisfy bound `Hash`"));
+    }
+
+    #[test]
+    fn compile_effect_rows_internal_rejects_unbounded_generic_method_use() {
+        let source = r#"
+            trait Displayish {
+                fn render(self: Self) -> String;
+            }
+
+            fn bad<T>(value: T) -> String {
+                value.render()
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.effect_rows_internal = true;
+        let error =
+            compile_source_with_options(source, &options).expect_err("expected capability error");
+        let rendered = error.to_string();
+        assert!(rendered.contains("missing capability `method::render`"));
+        assert!(rendered.contains("add a bound like `T: Displayish`"));
+    }
+
+    #[test]
+    fn compile_effect_rows_internal_accepts_supertrait_method_capability() {
+        let source = r#"
+            trait Displayish {
+                fn render(self: Self) -> String;
+            }
+
+            trait Pretty: Displayish {
+            }
+
+            fn ok<T: Pretty>(value: T) -> String {
+                value.render()
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.effect_rows_internal = true;
+        let output =
+            compile_source_with_options(source, &options).expect("expected capability support");
+        assert!(
+            output
+                .rust_code
+                .contains("fn ok<T: Pretty>(value: T) -> String")
+        );
+    }
+
+    #[test]
+    fn compile_effect_rows_internal_is_flag_gated() {
+        let source = r#"
+            fn maybe<T>(value: T) -> String {
+                value.render()
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected gated behavior");
+        assert!(output.rust_code.contains("fn maybe<T>(value: T) -> String"));
     }
 
     #[test]
