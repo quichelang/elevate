@@ -335,8 +335,13 @@ These are intentionally non-default and must be enabled explicitly.
   - Goal: practical inference without unstable global solver complexity.
 
 - `exp_effect_rows_internal`
-  - Internal row-like effect/capability tracking metadata (not exposed as source syntax).
-  - Intended behavior: compiler tracks operation requirements/effects to improve diagnostics, interop lowering, and specialization planning.
+  - Internal row-like effect/capability tracking (not exposed as source syntax).
+  - Current behavior:
+    - tracks direct call/method capabilities for typed items
+    - expands trait capabilities through supertrait closure
+    - validates generic method use against inferred trait-capability rows
+    - emits targeted diagnostics suggesting missing trait bounds
+  - Intended behavior: use capability rows to improve diagnostics, interop lowering, and specialization planning.
   - Goal: gain row-polymorphism-like utility without exposing a full research-style type/effect surface in MVP.
 
 - `exp_infer_principal_fallback`

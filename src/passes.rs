@@ -56,6 +56,7 @@ struct Context {
     structs: HashMap<String, HashMap<String, SemType>>,
     enums: HashMap<String, HashMap<String, Vec<SemType>>>,
     traits: HashMap<String, Vec<SemType>>,
+    trait_impls: HashMap<String, HashSet<String>>,
     globals: HashMap<String, SemType>,
     rust_block_functions: HashSet<String>,
 }
@@ -141,6 +142,7 @@ pub fn lower_to_typed_with_options(
             structs: HashMap::new(),
             enums: HashMap::new(),
             traits: HashMap::new(),
+            trait_impls: HashMap::new(),
             globals: HashMap::new(),
             rust_block_functions: HashSet::new(),
         };
@@ -1441,6 +1443,16 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                 context.functions.insert(def.name.clone(), sig);
             }
             Item::Impl(def) => {
+                if let Some(trait_target) = def.trait_target.as_ref() {
+                    let trait_ty = type_from_ast_in_context(trait_target, context);
+                    if let Some(trait_name) = trait_name_from_type(&trait_ty) {
+                        context
+                            .trait_impls
+                            .entry(def.target.clone())
+                            .or_default()
+                            .insert(trait_name.to_string());
+                    }
+                }
                 for method in &def.methods {
                     let sig = FunctionSig {
                         type_params: method
@@ -3910,13 +3922,13 @@ fn resolve_call_type(
 
         let lookup_name = path.join("::");
         if let Some(sig) = context.functions.get(&lookup_name) {
-            return resolve_named_function_call(sig, &lookup_name, args, diagnostics);
+            return resolve_named_function_call(sig, &lookup_name, args, context, diagnostics);
         }
 
         if path.len() == 1 {
             let name = &path[0];
             if let Some(sig) = context.functions.get(name) {
-                return resolve_named_function_call(sig, name, args, diagnostics);
+                return resolve_named_function_call(sig, name, args, context, diagnostics);
             }
         }
 
@@ -4155,6 +4167,7 @@ fn resolve_named_function_call(
     sig: &FunctionSig,
     name: &str,
     args: &[SemType],
+    context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SemType {
     if sig.params.len() != args.len() {
@@ -4196,7 +4209,7 @@ fn resolve_named_function_call(
             continue;
         };
         for bound in bounds {
-            if !type_satisfies_bound(actual_ty, bound) {
+            if !type_satisfies_bound_with_context(actual_ty, bound, context) {
                 diagnostics.push(Diagnostic::new(
                     format!(
                         "Type `{}` does not satisfy bound `{}` for `{}` in function `{}`",
@@ -7269,11 +7282,97 @@ fn type_satisfies_bound(actual: &SemType, bound: &SemType) -> bool {
     }
 }
 
+fn type_satisfies_bound_with_context(actual: &SemType, bound: &SemType, context: &Context) -> bool {
+    if *actual == SemType::Unknown {
+        return true;
+    }
+    let Some(bound_name) = bound_trait_name(bound) else {
+        return true;
+    };
+    if let SemType::TraitObject(bounds) = actual {
+        return trait_object_has_trait(bounds, bound_name);
+    }
+    let builtin_ok = match bound_name {
+        "Clone" => Some(type_is_clone(actual)),
+        "Copy" => Some(type_is_copy(actual)),
+        "Debug" => Some(type_is_debug(actual)),
+        "Default" => Some(type_is_default(actual)),
+        "PartialEq" => Some(type_is_partial_eq(actual)),
+        "Eq" => Some(type_is_eq(actual)),
+        "PartialOrd" => Some(type_is_partial_ord(actual)),
+        "Ord" => Some(type_is_ord(actual)),
+        "Hash" => Some(type_is_hash(actual)),
+        _ => None,
+    };
+    if let Some(ok) = builtin_ok {
+        return ok;
+    }
+    if context.traits.contains_key(bound_name) {
+        if let Some(type_name) = concrete_type_name(actual) {
+            return type_implements_trait(type_name, bound_name, context);
+        }
+        return true;
+    }
+    true
+}
+
+fn concrete_type_name(ty: &SemType) -> Option<&str> {
+    if let SemType::Path { path, args } = ty
+        && args.is_empty()
+    {
+        return path.last().map(|part| part.as_str());
+    }
+    None
+}
+
+fn type_implements_trait(type_name: &str, trait_name: &str, context: &Context) -> bool {
+    let Some(implemented_traits) = context.trait_impls.get(type_name) else {
+        return false;
+    };
+    implemented_traits
+        .iter()
+        .any(|implemented| trait_satisfies_trait(implemented, trait_name, context))
+}
+
+fn trait_satisfies_trait(actual_trait: &str, required_trait: &str, context: &Context) -> bool {
+    if actual_trait == required_trait {
+        return true;
+    }
+    let mut stack = vec![actual_trait];
+    let mut visited = HashSet::<String>::new();
+    while let Some(next) = stack.pop() {
+        if !visited.insert(next.to_string()) {
+            continue;
+        }
+        let Some(bounds) = context.traits.get(next) else {
+            continue;
+        };
+        for bound in bounds {
+            if let Some(bound_name) = bound_trait_name(bound) {
+                if bound_name == required_trait {
+                    return true;
+                }
+                stack.push(bound_name);
+            }
+        }
+    }
+    false
+}
+
 fn bound_trait_name(bound: &SemType) -> Option<&str> {
     if let SemType::Path { path, .. } = bound {
         return path.last().map(|part| part.as_str());
     }
     None
+}
+
+fn trait_name_from_type(ty: &SemType) -> Option<&str> {
+    bound_trait_name(ty).or_else(|| {
+        if let SemType::TraitObject(bounds) = ty {
+            return bounds.first().and_then(bound_trait_name);
+        }
+        None
+    })
 }
 
 fn trait_object_has_trait(bounds: &[SemType], trait_name: &str) -> bool {

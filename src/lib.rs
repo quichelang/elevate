@@ -1878,6 +1878,106 @@ mod tests {
     }
 
     #[test]
+    fn compile_enforces_user_trait_bounds_at_elevate_level() {
+        let source = r#"
+            trait Renderable {
+                fn render(self: Self) -> String;
+            }
+
+            struct Card { id: i64; }
+
+            fn print_it<T: Renderable>(value: T) -> String {
+                value.render()
+            }
+
+            fn run(card: Card) -> String {
+                print_it(card)
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected user-trait bound violation");
+        assert!(
+            error
+                .to_string()
+                .contains("does not satisfy bound `Renderable`")
+        );
+    }
+
+    #[test]
+    fn compile_enforces_user_supertrait_bounds_at_elevate_level() {
+        let source = r#"
+            trait Renderable {
+                fn render(self: Self) -> String;
+            }
+
+            trait Fancy: Renderable {
+            }
+
+            struct Card { id: i64; }
+
+            impl Fancy for Card {
+            }
+
+            fn print_it<T: Renderable>(value: T) -> String {
+                value.render()
+            }
+
+            fn run(card: Card) -> String {
+                print_it(card)
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected supertrait closure to satisfy bound");
+        assert!(
+            output
+                .rust_code
+                .contains("fn print_it<T: Renderable>(value: T) -> String")
+        );
+    }
+
+    #[test]
+    fn compile_infers_omitted_param_and_return_from_numeric_body_with_bidi() {
+        let source = r#"
+            fn add(a: i64, b) {
+                return a + b;
+            }
+
+            fn run() {
+                x = add(3, 4);
+                return;
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_local_bidi = true;
+        let output =
+            compile_source_with_options(source, &options).expect("expected bidi inference");
+        assert!(output.rust_code.contains("fn add(a: i64, b: i64) -> i64"));
+        assert!(output.rust_code.contains("let x: i64 = add(3, 4);"));
+    }
+
+    #[test]
+    fn compile_infers_omitted_params_without_return_annotation_from_use_site_with_bidi() {
+        let source = r#"
+            fn add(a, b) {
+                return a + b;
+            }
+
+            fn run() {
+                y = add(10, 32);
+                return;
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.infer_local_bidi = true;
+        let output =
+            compile_source_with_options(source, &options).expect("expected bidi inference");
+        assert!(output.rust_code.contains("fn add(a: i64, b: i64) -> i64"));
+        assert!(output.rust_code.contains("let y: i64 = add(10, 32);"));
+    }
+
+    #[test]
     fn compile_effect_rows_internal_rejects_unbounded_generic_method_use() {
         let source = r#"
             trait Displayish {

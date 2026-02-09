@@ -384,7 +384,7 @@ elevate init <crate-root>
 | `--exp-infer-local-bidi` | Koka-inspired bidirectional local inference (omitted params, `_` placeholders) |
 | `--exp-infer-principal-fallback` | Deterministic "add annotation here" diagnostics when inference stalls |
 | `--exp-move-mut-args` | Move-by-default for mutation-capable call flows |
-| `--exp-effect-rows-internal` | Internal row-like effect/capability tracking metadata |
+| `--exp-effect-rows-internal` | Internal row-like capability checks (trait-supertrait method capabilities + generic method-use diagnostics) |
 | `--exp-numeric-coercion` | Automatic numeric type coercion in expressions |
 
 ### Ownership Control Flags
