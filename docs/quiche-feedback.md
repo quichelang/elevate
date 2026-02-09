@@ -1,148 +1,53 @@
-# Quiche Bridge Feedback: Gaps & Proposals
+# Quiche → Elevate Feedback
 
-> **Context:** We are converting Quiche `.qrs` files (MetaQuiche) to `.q` files (Quiche) compiled through the Elevate pipeline.
->
-> **Test corpus:** `qtest.qrs` -> `qtest.q` (enums, structs, match statements, `strcat`, mutation via `&mut`).
->
-> **Status update (2026-02-08):** Gaps **#2, #3, #4 are fixed in Elevate**. Gap **#1 remains**, and the root cause is in Quiche bridge lowering before Elevate codegen sees the arm body statements.
+## 1. Closure body `Stmt::Expr` adds trailing semicolons
 
----
+Using `Stmt::Expr(expr)` in a closure body emits `(expr);` which returns `()`. Workaround: `Stmt::Return(Some(expr))`.
 
-## Summary of Gaps
+Footgun for anyone building closures through the AST.
 
-| # | Gap | Impact | Difficulty | Status |
-| --- | --- | --- | --- | --- |
-| 1 | [Match arms with statements produce empty bodies](#1-match-arm-bodies) | High | Medium | Open (bridge-side) |
-| 2 | [`strcat()` emitted as bare function](#2-strcat-codegen) | Medium | Low | Fixed in Elevate |
-| 3 | [Numeric type not preserved for same-type ops](#3-numeric-same-type) | Medium | Low | Fixed in Elevate |
-| 4 | [Docstrings become dead string expressions](#4-docstring-codegen) | Low | Trivial | Fixed in Elevate |
+## 2. `Expr::Block` — block expressions
 
----
-
-## 1. Match Arm Bodies
-
-### Problem
-
-When a match arm contains multiple statements (assignments, method calls), generated Rust can end up with empty arm bodies (`()`), meaning statements were dropped before final codegen.
-
-### Broken shape
+Elevate has `Block` as a struct but no `Expr::Block(Block)` variant. This means multi-statement computations that need to produce a value require an IIFE:
 
 ```rust
-match result {
-    TestResult::Passed => (),
-    TestResult::Failed(reason) => (),
-    TestResult::Skipped(_) => (),
-};
+// Current: IIFE wrapper
+(|| { let mut v = Vec::new(); for x in iter { v.push(x); } v })()
+
+// With Expr::Block:
+{ let mut v = Vec::new(); for x in iter { v.push(x); } v }
 ```
 
-### Expected shape
+`Block` already has `TailExpr` support, so `Expr::Block` would just expose that as an expression. This would generate cleaner Rust and avoid closure overhead.
 
-```rust
-match result {
-    TestResult::Passed => {
-        summary.passed = summary.passed + 1;
-    }
-    TestResult::Failed(reason) => {
-        summary.failed = summary.failed + 1;
-        summary.failures.push(crate::strcat!(name, ": ", reason));
-    }
-    TestResult::Skipped(_) => {
-        summary.skipped = summary.skipped + 1;
-    }
-}
-```
+## Elevate Response (updated)
 
-### Current analysis
+You are right: these are AST/codegen shape problems, not inference problems.
 
-- Elevate match arms store a single expression value.
-- Elevate parser already handles block arms by desugaring them to an immediately-invoked closure expression per arm.
-- Therefore, this gap is fixable if the Quiche bridge preserves arm statement blocks in that same expression form instead of collapsing to unit.
+### A. Fix closure `Stmt::Expr` return behavior
 
-### Required bridge fix
+- Keep statement semantics consistent, but make closure lowering treat final `Stmt::Expr` as value-returning in closure expression position.
+- Equivalent lowering target:
+  - last `Stmt::Expr(e)` in closure body -> `return e;` (or tail expression without semicolon in emitted Rust block)
+- This removes the footgun without forcing all generators to synthesize `Stmt::Return`.
 
-For a statementful arm body, emit an expression equivalent to:
+### B. Add `Expr::Block(Block)`
 
-```text
-(|| { <stmts>; <tail_expr_or_unit> })()
-```
+- Add `Expr::Block(Block)` to AST.
+- Typecheck path:
+  - infer statements in order in a scoped local environment
+  - block type = tail expr type if present, else `Unit`
+- Lowering/codegen path:
+  - emit Rust block expression directly (`{ ... }`) preserving tail expression
+- This should replace IIFE patterns for value-producing multi-statement expressions.
 
-instead of emitting `()`.
+### Suggested acceptance tests
 
-### Impact
-
-This is the main blocker for `.qrs` files that rely on side effects inside match arms.
-
----
-
-## 2. `strcat()` Codegen
-
-### Previous problem
-
-`strcat(a, b, c)` was emitted as a plain function call `strcat(...)`, which failed when runtime only provides macro form.
-
-### Elevate fix (done)
-
-Elevate now treats `strcat` as a special call and lowers it to:
-
-```rust
-crate::strcat!(...)
-```
-
-### Result
-
-`strcat(...)` now type-checks and codegens correctly through Elevate.
-
----
-
-## 3. Numeric Same-Type Preservation
-
-### Previous problem
-
-Expressions like `usize + 1` were sometimes promoted to `i64`, causing assignment mismatches.
-
-### Elevate fix (done)
-
-Type inference now preserves the concrete integral type when one operand is an integer literal and the other side is already a concrete integral numeric type.
-
-### Result
-
-`usize + 1` remains `usize` in inferred result type and emitted Rust.
-
----
-
-## 4. Docstring Codegen
-
-### Previous problem
-
-Docstring-like string statements were emitted as dead runtime expressions (e.g., `String::from("...");`).
-
-### Elevate fix (done)
-
-Standalone string expression statements are now dropped during statement lowering.
-
-### Result
-
-Generated Rust no longer includes dead string-expression statements for docstring-like inputs.
-
----
-
-## Validation Notes
-
-After implementing #2, #3, #4 in Elevate:
-
-- `cargo test -q` passes.
-- Bench run (`--iters 20 --warmup 3`) shows no clone/hot-clone counter regression.
-- Median/p95 movement is within normal run-to-run variance.
-
----
-
-## Priority (Updated)
-
-| Priority | Gap | Blocks | Effort | Status |
-| --- | --- | --- | --- | --- |
-| **P0** | #1 Match arm bodies | `.q`/`.qrs` with side-effecting match arms | Medium | Open |
-| **Done** | #2 `strcat()` codegen | String concat via runtime macro | Low | Fixed |
-| **Done** | #3 Numeric same-type preservation | `usize`/integral arithmetic assignment stability | Low | Fixed |
-| **Done** | #4 Docstring dead expression emission | Cosmetic noise in generated Rust | Trivial | Fixed |
-
-Fixing #1 in Quiche bridge will unblock the remaining conversion path for match-heavy sources.
+1. Closure final expression returns value:
+   - closure body with last `Stmt::Expr(x + 1)` infers non-`Unit` return and emits valid Rust without forced explicit `return`.
+2. `Expr::Block` as call argument:
+   - `foo({ const x = 1; x + 2 })` typechecks and emits inline block.
+3. `Expr::Block` in assignment:
+   - `const y = { const a = 3; a * 2 };` infers `i64`.
+4. No IIFE needed:
+   - generated Rust contains block expression and no synthetic closure call for this case.
