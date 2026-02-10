@@ -2296,6 +2296,66 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_structural_specialization_for_generic_impl_methods() {
+        let source = r#"
+            struct Point<T> {
+                x: T;
+                y: T;
+            }
+
+            impl<T> Point<T> {
+                fn new(x: T, y: T) -> Point<T> {
+                    Point { x: x; y: y; }
+                }
+
+                fn label(self) -> String {
+                    return self.x.to_string();
+                }
+            }
+
+            fn run() -> String {
+                const p = Point::new(5, 6);
+                return p.label();
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("expected structural specialization for generic impl methods");
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_reports_missing_structural_member_for_generic_impl_methods() {
+        let source = r#"
+            struct Opaque {}
+
+            struct Point<T> {
+                x: T;
+                y: T;
+            }
+
+            impl<T> Point<T> {
+                fn label(self) -> String {
+                    self.x.to_string()
+                }
+            }
+
+            fn run(v: Opaque) -> String {
+                const p = Point { x: v; y: Opaque {} };
+                return p.label();
+            }
+        "#;
+
+        let error = compile_source(source)
+            .expect_err("expected missing method diagnostic for impl-method structural call");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("does not provide required method `to_string`"),
+            "expected structural-method diagnostic, got:\n{rendered}"
+        );
+    }
+
+    #[test]
     fn compile_reports_missing_structural_member_at_call_site() {
         let source = r#"
             struct Entry { count: i64; }
@@ -3334,6 +3394,39 @@ mod tests {
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("impl Greeter for User"));
         assert!(output.rust_code.contains("fn greet(self: User) -> String"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_infers_std_trait_method_signature_modifiers() {
+        let source = r#"
+            use std::fmt;
+            use std::fmt::Display;
+
+            pub struct Token {
+                value: i64;
+            }
+
+            rust {
+                fn __fmt_ok() -> std::fmt::Result {
+                    Ok(())
+                }
+            }
+
+            impl Display for Token {
+                fn fmt(self, f) -> std::fmt::Result {
+                    return __fmt_ok();
+                }
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected std trait signature inference");
+        assert!(output.rust_code.contains("impl Display for Token"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn fmt(self: &Token, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 

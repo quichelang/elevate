@@ -48,7 +48,11 @@ fn bidi_infers_local_binding_with_missing_array_element_types() {
     "#;
     let output = compile_with_bidi(source).expect("bidi mode should infer");
     assert!(output.rust_code.contains("fn values() -> Vec<Option<i64>>"));
-    assert!(output.rust_code.contains("let xs: Vec<Option<i64>> = vec![None, Some(1)];"));
+    assert!(
+        output
+            .rust_code
+            .contains("let xs: Vec<Option<i64>> = vec![None, Some(1)];")
+    );
 }
 
 #[test]
@@ -59,7 +63,11 @@ fn bidi_infers_result_array_from_ok_err() {
         }
     "#;
     let output = compile_with_bidi(source).expect("bidi mode should infer");
-    assert!(output.rust_code.contains("fn values() -> Vec<Result<i64, String>>"));
+    assert!(
+        output
+            .rust_code
+            .contains("fn values() -> Vec<Result<i64, String>>")
+    );
 }
 
 #[test]
@@ -88,7 +96,11 @@ fn bidi_infers_reordered_option_branches() {
         }
     "#;
     let output = compile_with_bidi(source).expect("bidi mode should infer");
-    assert!(output.rust_code.contains("fn choose(flag: bool) -> Option<i64>"));
+    assert!(
+        output
+            .rust_code
+            .contains("fn choose(flag: bool) -> Option<i64>")
+    );
 }
 
 #[test]
@@ -102,7 +114,11 @@ fn bidi_infers_reordered_result_branches() {
         }
     "#;
     let output = compile_with_bidi(source).expect("bidi mode should infer");
-    assert!(output.rust_code.contains("fn choose(flag: bool) -> Result<i64, String>"));
+    assert!(
+        output
+            .rust_code
+            .contains("fn choose(flag: bool) -> Result<i64, String>")
+    );
 }
 
 #[test]
@@ -116,7 +132,11 @@ fn bidi_infers_option_through_match_arms() {
         }
     "#;
     let output = compile_with_bidi(source).expect("bidi mode should infer");
-    assert!(output.rust_code.contains("fn choose(flag: bool) -> Option<i64>"));
+    assert!(
+        output
+            .rust_code
+            .contains("fn choose(flag: bool) -> Option<i64>")
+    );
 }
 
 #[test]
@@ -302,7 +322,11 @@ fn bidi_mode_infers_params_and_return_without_return_annotation() {
     let output = compile_with_bidi(source).expect("bidi mode should infer missing function types");
     assert!(output.rust_code.contains("fn add(a: i64, b: i64) -> i64"));
     assert!(output.rust_code.contains("let x: i64 = add(3, 4);"));
-    assert!(!output.rust_code.contains("fn add(a: String, b: String) -> String"));
+    assert!(
+        !output
+            .rust_code
+            .contains("fn add(a: String, b: String) -> String")
+    );
 }
 
 #[test]

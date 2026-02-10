@@ -548,36 +548,38 @@ pub fn runtime_render(
     quit_armed: bool,
     selected_slot: i64,
 ) -> Board {
-    const vga = true;
+    const palette_vga = true;
     const time_label = format_elapsed_clock(elapsed_secs);
+    const (board_state, window_labels, occupied_count) = build_window_cell_metrics(board);
+    const window_premium_colors = build_window_premium_colors();
     if display_mode_prefers_window(display_mode) {
         const drawn = host::runtime_draw_scene(
-            board.cells,
-            board.committed,
+            board_state.committed,
+            window_labels,
+            window_premium_colors,
+            occupied_count,
             cursor_row,
             cursor_col,
             format!("{}", message),
-            vga,
             debug_enabled,
             fps,
             player_name,
             level_label,
             time_label,
             quit_armed,
-            false,
         );
 
         if drawn {
-            return board;
+            return board_state;
         }
     }
 
     const (next_board, frame) = render_frame(
-        board,
+        board_state,
         cursor_row,
         cursor_col,
         message,
-        vga,
+        palette_vga,
         debug_enabled,
         fps,
         elapsed_secs,
@@ -648,6 +650,58 @@ fn render_frame(
     const canvas6 = draw_control_hint(canvas5, vga);
     const canvas7 = draw_quit_prompt(canvas6, vga, quit_armed);
     (board, Canvas::to_ansi(canvas7))
+}
+
+fn build_window_cell_metrics(board: Board) -> (Board, Vec<i64>, i64) {
+    let labels: Vec<i64> = [];
+    let occupied_count = 0;
+    let idx = 0;
+    while idx < board_area() {
+        const tile = board.cells[idx];
+        labels.push(window_letter_code(tile));
+        if tile > 0 {
+            occupied_count = i64::saturating_add(occupied_count, 1);
+        }
+        idx = idx + 1;
+    }
+    (board, labels, occupied_count)
+}
+
+fn build_window_premium_colors() -> Vec<i64> {
+    let colors: Vec<i64> = [];
+    let row = 0;
+    while row < 15 {
+        let col = 0;
+        while col < 15 {
+            colors.push(window_premium_fill_color(bonus_kind(row, col)));
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    colors
+}
+
+fn window_letter_code(tile: i64) -> i64 {
+    if tile < 1 or tile > 26 {
+        return 0;
+    }
+    64 + tile
+}
+
+fn window_premium_fill_color(kind: i64) -> i64 {
+    if kind == 4 {
+        return rgb_i64(210, 150, 120);
+    }
+    if kind == 3 {
+        return rgb_i64(184, 100, 95);
+    }
+    if kind == 2 {
+        return rgb_i64(98, 126, 188);
+    }
+    if kind == 1 {
+        return rgb_i64(124, 152, 206);
+    }
+    0
 }
 
 fn draw_board(canvas: Canvas, board: Board, cursor_row: i64, cursor_col: i64, vga: bool, selected_slot: i64) -> Canvas {

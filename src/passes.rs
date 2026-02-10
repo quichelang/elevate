@@ -52,6 +52,22 @@ struct FunctionSig {
     structural_requirements: HashMap<String, StructuralRequirements>,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedImplMethodSignature {
+    param_sem_types: Vec<SemType>,
+    return_sem_type: SemType,
+    param_rust_types: Option<Vec<String>>,
+    return_rust_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TraitMethodSignatureOverride {
+    param_sem_types: Vec<SemType>,
+    return_sem_type: SemType,
+    param_rust_types: Vec<String>,
+    return_rust_type: String,
+}
+
 #[derive(Debug, Clone, Default)]
 struct StructuralRequirements {
     fields: BTreeSet<String>,
@@ -68,6 +84,12 @@ impl StructuralRequirements {
 struct StructuralSpecialization {
     specialized_name: String,
     bindings: HashMap<String, SemType>,
+}
+
+#[derive(Debug, Clone)]
+struct ImplMethodTemplate {
+    impl_def: crate::ast::ImplBlock,
+    method: crate::ast::FunctionDef,
 }
 
 #[derive(Debug, Clone)]
@@ -1625,7 +1647,7 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
     }
 }
 
-fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mut Vec<Diagnostic>) {
+fn collect_definitions(module: &Module, context: &mut Context, diagnostics: &mut Vec<Diagnostic>) {
     for item in &module.items {
         if let Item::Trait(def) = item {
             context.traits.entry(def.name.clone()).or_default();
@@ -1733,6 +1755,17 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                 for method in &def.methods {
                     let all_type_params =
                         merged_impl_and_method_type_params(&def.type_params, &method.type_params);
+                    let resolved_sig =
+                        resolve_impl_method_signature(method, def, context, diagnostics);
+                    let method_params = resolved_sig
+                        .param_sem_types
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, ty)| {
+                            (!is_redundant_impl_self_param(&method.params, index))
+                                .then_some(ty.clone())
+                        })
+                        .collect::<Vec<_>>();
                     let sig = FunctionSig {
                         type_params: all_type_params
                             .iter()
@@ -1757,35 +1790,13 @@ fn collect_definitions(module: &Module, context: &mut Context, _diagnostics: &mu
                                 )
                             })
                             .collect(),
-                        params: method
-                            .params
-                            .iter()
-                            .enumerate()
-                            .filter(|(index, _)| {
-                                !is_redundant_impl_self_param(&method.params, *index)
-                            })
-                            .map(|(_, param)| {
-                                type_from_ast_with_impl_self_in_context(
-                                    &param.ty,
-                                    &def.target,
-                                    &def.target_args,
-                                    context,
-                                )
-                            })
-                            .collect(),
-                        return_type: method
-                            .return_type
-                            .as_ref()
-                            .map(|ty| {
-                                type_from_ast_with_impl_self_in_context(
-                                    ty,
-                                    &def.target,
-                                    &def.target_args,
-                                    context,
-                                )
-                            })
-                            .unwrap_or(SemType::Unknown),
-                        structural_requirements: HashMap::new(),
+                        params: method_params,
+                        return_type: resolved_sig.return_sem_type.clone(),
+                        structural_requirements: if def.trait_target.is_none() {
+                            collect_structural_requirements_for_impl_method(def, method, context)
+                        } else {
+                            HashMap::new()
+                        },
                     };
                     context.functions.insert(
                         format!("{}::{}", impl_lookup_name(&def.target), method.name),
@@ -1828,7 +1839,7 @@ fn materialize_structural_specializations(
     context: &mut Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let templates = module
+    let function_templates = module
         .items
         .iter()
         .filter_map(|item| {
@@ -1837,6 +1848,37 @@ fn materialize_structural_specializations(
             } else {
                 None
             }
+        })
+        .collect::<HashMap<_, _>>();
+    let impl_method_templates = module
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Impl(def) = item {
+                Some(def)
+            } else {
+                None
+            }
+        })
+        .filter(|def| def.trait_target.is_none())
+        .flat_map(|def| {
+            let merged_params = |method: &crate::ast::FunctionDef| {
+                merged_impl_and_method_type_params(&def.type_params, &method.type_params)
+            };
+            def.methods
+                .iter()
+                .map(|method| {
+                    let mut template_method = method.clone();
+                    template_method.type_params = merged_params(method);
+                    (
+                        format!("{}::{}", impl_lookup_name(&def.target), method.name),
+                        ImplMethodTemplate {
+                            impl_def: def.clone(),
+                            method: template_method,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
         })
         .collect::<HashMap<_, _>>();
     let structural_templates = context
@@ -1867,25 +1909,34 @@ fn materialize_structural_specializations(
         }
         for (template_name, spec) in pending {
             emitted.insert(spec.specialized_name.clone());
-            let Some(template_def) = templates.get(&template_name) else {
-                continue;
-            };
             let Some(template_sig) = context.functions.get(&template_name).cloned() else {
                 continue;
             };
-            let Some(specialized_def) = specialize_function_def_ast(
-                template_def,
-                &spec.specialized_name,
-                &spec.bindings,
-                diagnostics,
-            ) else {
-                continue;
-            };
-            let specialized_sig = substitute_function_sig(&template_sig, &spec.bindings);
-            context
-                .functions
-                .insert(spec.specialized_name.clone(), specialized_sig);
-            let specialized_item = Item::Function(specialized_def);
+            let specialized_item =
+                if let Some(template_def) = function_templates.get(&template_name) {
+                    let Some(specialized_def) = specialize_function_def_ast(
+                        template_def,
+                        &spec.specialized_name,
+                        &spec.bindings,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    let specialized_sig = substitute_function_sig(&template_sig, &spec.bindings);
+                    context
+                        .functions
+                        .insert(spec.specialized_name.clone(), specialized_sig);
+                    Item::Function(specialized_def)
+                } else if let Some(template) = impl_method_templates.get(&template_name) {
+                    let Some(specialized_def) =
+                        specialize_impl_method_ast(template, &spec.bindings, diagnostics)
+                    else {
+                        continue;
+                    };
+                    Item::Impl(specialized_def)
+                } else {
+                    continue;
+                };
             if let Some(lowered) = lower_item(&specialized_item, context, diagnostics) {
                 items.push(lowered);
             }
@@ -1907,6 +1958,22 @@ fn materialize_structural_specializations(
                     && specialized_templates.contains(&def.name)
         )
     });
+    for item in items.iter_mut() {
+        let TypedItem::Impl(def) = item else {
+            continue;
+        };
+        if def.trait_target.is_some() {
+            continue;
+        }
+        let method_owner = impl_lookup_name(&def.target);
+        let impl_has_generics = !def.type_params.is_empty();
+        def.methods.retain(|method| {
+            let method_key = format!("{method_owner}::{}", method.name);
+            let method_is_template = impl_has_generics || !method.type_params.is_empty();
+            !method_is_template || !specialized_templates.contains(&method_key)
+        });
+    }
+    items.retain(|item| !matches!(item, TypedItem::Impl(def) if def.trait_target.is_none() && def.methods.is_empty()));
 }
 
 fn substitute_function_sig(sig: &FunctionSig, bindings: &HashMap<String, SemType>) -> FunctionSig {
@@ -1962,6 +2029,64 @@ fn specialize_function_def_ast(
         effect_row: template.effect_row.clone(),
         body: substitute_type_in_block(&template.body, bindings),
         span: template.span,
+    })
+}
+
+fn specialize_impl_method_ast(
+    template: &ImplMethodTemplate,
+    bindings: &HashMap<String, SemType>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<crate::ast::ImplBlock> {
+    for param in &template.method.type_params {
+        if !bindings.contains_key(&param.name) {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Cannot specialize structural impl method `{}` because type parameter `{}` is unresolved",
+                    template.method.name, param.name
+                ),
+                default_diag_span(),
+            ));
+            return None;
+        }
+    }
+    let specialized_method = crate::ast::FunctionDef {
+        visibility: template.method.visibility,
+        name: template.method.name.clone(),
+        type_params: Vec::new(),
+        params: template
+            .method
+            .params
+            .iter()
+            .map(|param| crate::ast::Param {
+                name: param.name.clone(),
+                ty: substitute_type_in_ast_type(&param.ty, bindings),
+            })
+            .collect(),
+        return_type: template
+            .method
+            .return_type
+            .as_ref()
+            .map(|ty| substitute_type_in_ast_type(ty, bindings)),
+        effect_row: template.method.effect_row.clone(),
+        body: substitute_type_in_block(&template.method.body, bindings),
+        span: template.method.span,
+    };
+    Some(crate::ast::ImplBlock {
+        type_params: Vec::new(),
+        target: template.impl_def.target.clone(),
+        target_args: template
+            .impl_def
+            .target_args
+            .iter()
+            .map(|arg| substitute_type_in_ast_type(arg, bindings))
+            .collect(),
+        trait_target: template
+            .impl_def
+            .trait_target
+            .as_ref()
+            .map(|trait_ty| substitute_type_in_ast_type(trait_ty, bindings)),
+        methods: vec![specialized_method],
+        span: template.impl_def.span,
     })
 }
 
@@ -2518,30 +2643,30 @@ fn lower_item(
             let mut methods = Vec::new();
             for method in &def.methods {
                 let typed_method = with_diag_span_scope(method.span, || {
+                    let resolved_sig =
+                        resolve_impl_method_signature(method, def, context, diagnostics);
                     let mut locals = HashMap::new();
                     let mut immutable_locals = HashSet::new();
                     for (index, param) in method.params.iter().enumerate() {
                         if is_redundant_impl_self_param(&method.params, index) {
                             continue;
                         }
-                        locals.insert(
-                            param.name.clone(),
-                            type_from_ast_with_impl_self_in_context(
-                                &param.ty,
-                                &def.target,
-                                &def.target_args,
-                                context,
-                            ),
-                        );
+                        let resolved_param_ty = resolved_sig
+                            .param_sem_types
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                type_from_ast_with_impl_self_in_context(
+                                    &param.ty,
+                                    &def.target,
+                                    &def.target_args,
+                                    context,
+                                )
+                            });
+                        locals.insert(param.name.clone(), resolved_param_ty);
                     }
-                    let declared_return_ty = method.return_type.as_ref().map(|ty| {
-                        type_from_ast_with_impl_self_in_context(
-                            ty,
-                            &def.target,
-                            &def.target_args,
-                            context,
-                        )
-                    });
+                    let declared_return_ty = (resolved_sig.return_sem_type != SemType::Unknown)
+                        .then(|| resolved_sig.return_sem_type.clone());
                     let provisional_return_ty =
                         declared_return_ty.clone().unwrap_or(SemType::Unknown);
                     let mut body = Vec::new();
@@ -2600,7 +2725,11 @@ fn lower_item(
                             default_diag_span(),
                         ));
                     }
-                    if final_return_ty != SemType::Unit && inferred_returns.is_empty() {
+                    let has_rust_block = body.iter().any(|s| matches!(s, TypedStmt::RustBlock(_)));
+                    if final_return_ty != SemType::Unit
+                        && inferred_returns.is_empty()
+                        && !has_rust_block
+                    {
                         diagnostics.push(Diagnostic::new(
                             format!(
                                 "Method `{}` must explicitly return `{}`",
@@ -2638,19 +2767,34 @@ fn lower_item(
                             .filter(|(index, _)| {
                                 !is_redundant_impl_self_param(&method.params, *index)
                             })
-                            .map(|(_, param)| TypedParam {
+                            .map(|(index, param)| TypedParam {
                                 name: param.name.clone(),
-                                ty: rust_param_type_string(
-                                    &type_from_ast_with_impl_self_in_context(
-                                        &param.ty,
-                                        &def.target,
-                                        &def.target_args,
-                                        context,
-                                    ),
-                                ),
+                                ty: resolved_sig
+                                    .param_rust_types
+                                    .as_ref()
+                                    .and_then(|types| types.get(index).cloned())
+                                    .unwrap_or_else(|| {
+                                        resolved_sig
+                                            .param_sem_types
+                                            .get(index)
+                                            .map(rust_param_type_string)
+                                            .unwrap_or_else(|| {
+                                                rust_param_type_string(
+                                                    &type_from_ast_with_impl_self_in_context(
+                                                        &param.ty,
+                                                        &def.target,
+                                                        &def.target_args,
+                                                        context,
+                                                    ),
+                                                )
+                                            })
+                                    }),
                             })
                             .collect(),
-                        return_type: rust_owned_type_string(&final_return_ty),
+                        return_type: resolved_sig
+                            .return_rust_type
+                            .clone()
+                            .unwrap_or_else(|| rust_owned_type_string(&final_return_ty)),
                         body,
                     }
                 });
@@ -2847,7 +2991,8 @@ fn lower_item(
                     default_diag_span(),
                 ));
             }
-            if final_return_ty != SemType::Unit && inferred_returns.is_empty() {
+            let has_rust_block = body.iter().any(|s| matches!(s, TypedStmt::RustBlock(_)));
+            if final_return_ty != SemType::Unit && inferred_returns.is_empty() && !has_rust_block {
                 diagnostics.push(Diagnostic::new(
                     format!(
                         "Function `{}` must explicitly return `{}`",
@@ -5418,12 +5563,10 @@ fn validate_structural_call_requirements(
 }
 
 fn structural_type_supports_field(ty: &SemType, field: &str, context: &Context) -> bool {
-    let SemType::Path { path, args } = ty else {
+    let SemType::Path { path, args: _ } = ty else {
         return false;
     };
-    if !args.is_empty() {
-        return false;
-    }
+    // Generic args don't affect field availability — Point<i32> still has Point's fields
     let Some(type_name) = path.last() else {
         return false;
     };
@@ -5440,7 +5583,7 @@ fn structural_type_supports_method(
     arity: usize,
     context: &Context,
 ) -> bool {
-    let SemType::Path { path, args } = ty else {
+    let SemType::Path { path, args: _ } = ty else {
         return false;
     };
     let Some(type_name) = path.last() else {
@@ -5449,14 +5592,19 @@ fn structural_type_supports_method(
     if method_is_builtin_for_type(type_name, method, arity) {
         return true;
     }
-    if !args.is_empty() {
-        return false;
+    if method == "to_string" && arity == 0 && builtin_value_supports_to_string(type_name) {
+        return true;
     }
+    // Generic args don't affect method availability — Point<i32> still has Point::method
     context
         .functions
         .get(&format!("{type_name}::{method}"))
         .map(|sig| sig.params.len() == arity + 1)
         .unwrap_or(false)
+}
+
+fn builtin_value_supports_to_string(type_name: &str) -> bool {
+    type_name == "String" || type_name == "str" || is_copy_primitive_type(type_name)
 }
 
 fn method_is_builtin_for_type(type_name: &str, method: &str, arity: usize) -> bool {
@@ -5569,10 +5717,93 @@ fn collect_structural_requirements_for_function(
                 .map(|type_param| (param.name.clone(), type_param.to_string()))
         })
         .collect::<HashMap<_, _>>();
+    let self_field_bindings = HashMap::<String, String>::new();
     for stmt in &body.statements {
-        collect_structural_requirements_in_stmt(stmt, &param_bindings, &mut out);
+        collect_structural_requirements_in_stmt(
+            stmt,
+            &param_bindings,
+            &self_field_bindings,
+            &mut out,
+        );
     }
     out.retain(|_, req| !req.is_empty());
+    out
+}
+
+fn collect_structural_requirements_for_impl_method(
+    imp: &crate::ast::ImplBlock,
+    method: &crate::ast::FunctionDef,
+    context: &Context,
+) -> HashMap<String, StructuralRequirements> {
+    let all_type_params = merged_impl_and_method_type_params(&imp.type_params, &method.type_params);
+    let structural_params = all_type_params
+        .iter()
+        .filter(|param| param.bounds.is_empty())
+        .map(|param| param.name.clone())
+        .collect::<HashSet<_>>();
+    let mut out = structural_params
+        .iter()
+        .map(|name| (name.clone(), StructuralRequirements::default()))
+        .collect::<HashMap<_, _>>();
+    let param_bindings = method
+        .params
+        .iter()
+        .filter_map(|param| {
+            path_type_param_name(&param.ty, &structural_params)
+                .map(|type_param| (param.name.clone(), type_param.to_string()))
+        })
+        .collect::<HashMap<_, _>>();
+    let self_field_bindings =
+        collect_self_field_bindings_for_impl(imp, context, &structural_params);
+    for stmt in &method.body.statements {
+        collect_structural_requirements_in_stmt(
+            stmt,
+            &param_bindings,
+            &self_field_bindings,
+            &mut out,
+        );
+    }
+    out.retain(|_, req| !req.is_empty());
+    out
+}
+
+fn collect_self_field_bindings_for_impl(
+    imp: &crate::ast::ImplBlock,
+    context: &Context,
+    structural_params: &HashSet<String>,
+) -> HashMap<String, String> {
+    let target_name = impl_lookup_name(&imp.target);
+    let Some(struct_fields) = context.structs.get(&target_name) else {
+        return HashMap::new();
+    };
+    let struct_type_params = context
+        .struct_type_params
+        .get(&target_name)
+        .cloned()
+        .unwrap_or_default();
+    let struct_param_set = struct_type_params.iter().cloned().collect::<HashSet<_>>();
+    let struct_param_bindings = struct_type_params
+        .iter()
+        .zip(imp.target_args.iter())
+        .map(|(name, ty)| {
+            (
+                name.clone(),
+                type_from_ast_with_impl_self(ty, &imp.target, &imp.target_args),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut out = HashMap::new();
+    for (field_name, field_ty) in struct_fields {
+        let instantiated =
+            substitute_generic_type(field_ty, &struct_param_set, &struct_param_bindings);
+        if let SemType::Path { path, args } = instantiated
+            && args.is_empty()
+            && path.len() == 1
+            && structural_params.contains(&path[0])
+        {
+            out.insert(field_name.clone(), path[0].clone());
+        }
+    }
     out
 }
 
@@ -5590,19 +5821,38 @@ fn path_type_param_name<'a>(ty: &'a Type, type_params: &HashSet<String>) -> Opti
 fn collect_structural_requirements_in_stmt(
     stmt: &Stmt,
     param_bindings: &HashMap<String, String>,
+    self_field_bindings: &HashMap<String, String>,
     out: &mut HashMap<String, StructuralRequirements>,
 ) {
     match stmt {
-        Stmt::Const(def) => {
-            collect_structural_requirements_in_expr(&def.value, param_bindings, out)
-        }
+        Stmt::Const(def) => collect_structural_requirements_in_expr(
+            &def.value,
+            param_bindings,
+            self_field_bindings,
+            out,
+        ),
         Stmt::Assign { target, value, .. } => {
-            collect_structural_requirements_in_assign_target(target, param_bindings, out);
-            collect_structural_requirements_in_expr(value, param_bindings, out);
+            collect_structural_requirements_in_assign_target(
+                target,
+                param_bindings,
+                self_field_bindings,
+                out,
+            );
+            collect_structural_requirements_in_expr(
+                value,
+                param_bindings,
+                self_field_bindings,
+                out,
+            );
         }
         Stmt::Return(value) => {
             if let Some(value) = value {
-                collect_structural_requirements_in_expr(value, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    value,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Stmt::If {
@@ -5610,38 +5860,78 @@ fn collect_structural_requirements_in_stmt(
             then_block,
             else_block,
         } => {
-            collect_structural_requirements_in_expr(condition, param_bindings, out);
+            collect_structural_requirements_in_expr(
+                condition,
+                param_bindings,
+                self_field_bindings,
+                out,
+            );
             for stmt in &then_block.statements {
-                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+                collect_structural_requirements_in_stmt(
+                    stmt,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
             if let Some(else_block) = else_block {
                 for stmt in &else_block.statements {
-                    collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+                    collect_structural_requirements_in_stmt(
+                        stmt,
+                        param_bindings,
+                        self_field_bindings,
+                        out,
+                    );
                 }
             }
         }
         Stmt::While { condition, body } => {
-            collect_structural_requirements_in_expr(condition, param_bindings, out);
+            collect_structural_requirements_in_expr(
+                condition,
+                param_bindings,
+                self_field_bindings,
+                out,
+            );
             for stmt in &body.statements {
-                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+                collect_structural_requirements_in_stmt(
+                    stmt,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Stmt::For { iter, body, .. } => {
-            collect_structural_requirements_in_expr(iter, param_bindings, out);
+            collect_structural_requirements_in_expr(iter, param_bindings, self_field_bindings, out);
             for stmt in &body.statements {
-                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+                collect_structural_requirements_in_stmt(
+                    stmt,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Stmt::Loop { body } => {
             for stmt in &body.statements {
-                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+                collect_structural_requirements_in_stmt(
+                    stmt,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Stmt::Expr(expr) | Stmt::TailExpr(expr) => {
-            collect_structural_requirements_in_expr(expr, param_bindings, out);
+            collect_structural_requirements_in_expr(expr, param_bindings, self_field_bindings, out);
         }
         Stmt::DestructureConst { value, .. } => {
-            collect_structural_requirements_in_expr(value, param_bindings, out);
+            collect_structural_requirements_in_expr(
+                value,
+                param_bindings,
+                self_field_bindings,
+                out,
+            );
         }
         Stmt::Break | Stmt::Continue | Stmt::RustBlock(_) => {}
     }
@@ -5650,29 +5940,39 @@ fn collect_structural_requirements_in_stmt(
 fn collect_structural_requirements_in_assign_target(
     target: &AssignTarget,
     param_bindings: &HashMap<String, String>,
+    self_field_bindings: &HashMap<String, String>,
     out: &mut HashMap<String, StructuralRequirements>,
 ) {
     match target {
         AssignTarget::Path(_) => {}
         AssignTarget::Field { base, field } => {
-            if let Expr::Path(path) = base.as_ref()
-                && path.len() == 1
-                && let Some(type_param) = param_bindings.get(&path[0])
+            if let Some(type_param) =
+                resolve_structural_type_param_for_expr(base, param_bindings, self_field_bindings)
             {
-                out.entry(type_param.clone())
+                out.entry(type_param)
                     .or_default()
                     .fields
                     .insert(field.clone());
             }
-            collect_structural_requirements_in_expr(base, param_bindings, out);
+            collect_structural_requirements_in_expr(base, param_bindings, self_field_bindings, out);
         }
         AssignTarget::Index { base, index } => {
-            collect_structural_requirements_in_expr(base, param_bindings, out);
-            collect_structural_requirements_in_expr(index, param_bindings, out);
+            collect_structural_requirements_in_expr(base, param_bindings, self_field_bindings, out);
+            collect_structural_requirements_in_expr(
+                index,
+                param_bindings,
+                self_field_bindings,
+                out,
+            );
         }
         AssignTarget::Tuple(items) => {
             for item in items {
-                collect_structural_requirements_in_assign_target(item, param_bindings, out);
+                collect_structural_requirements_in_assign_target(
+                    item,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
     }
@@ -5681,100 +5981,192 @@ fn collect_structural_requirements_in_assign_target(
 fn collect_structural_requirements_in_expr(
     expr: &Expr,
     param_bindings: &HashMap<String, String>,
+    self_field_bindings: &HashMap<String, String>,
     out: &mut HashMap<String, StructuralRequirements>,
 ) {
     match expr {
         Expr::Call { callee, args } => {
             if let Expr::Field { base, field } = callee.as_ref() {
-                if let Expr::Path(path) = base.as_ref()
-                    && path.len() == 1
-                    && let Some(type_param) = param_bindings.get(&path[0])
-                {
-                    out.entry(type_param.clone())
+                if let Some(type_param) = resolve_structural_type_param_for_expr(
+                    base,
+                    param_bindings,
+                    self_field_bindings,
+                ) {
+                    out.entry(type_param)
                         .or_default()
                         .methods
                         .entry(field.clone())
                         .or_default()
                         .insert(args.len());
                 }
-                collect_structural_requirements_in_expr(base, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    base,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             } else {
-                collect_structural_requirements_in_expr(callee, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    callee,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
             for arg in args {
-                collect_structural_requirements_in_expr(arg, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    arg,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Expr::MacroCall { args, .. } => {
             for arg in args {
-                collect_structural_requirements_in_expr(arg, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    arg,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Expr::Field { base, field } => {
-            if let Expr::Path(path) = base.as_ref()
-                && path.len() == 1
-                && let Some(type_param) = param_bindings.get(&path[0])
+            if let Some(type_param) =
+                resolve_structural_type_param_for_expr(base, param_bindings, self_field_bindings)
             {
-                out.entry(type_param.clone())
+                out.entry(type_param)
                     .or_default()
                     .fields
                     .insert(field.clone());
             }
-            collect_structural_requirements_in_expr(base, param_bindings, out);
+            collect_structural_requirements_in_expr(base, param_bindings, self_field_bindings, out);
         }
         Expr::Index { base, index } => {
-            collect_structural_requirements_in_expr(base, param_bindings, out);
-            collect_structural_requirements_in_expr(index, param_bindings, out);
+            collect_structural_requirements_in_expr(base, param_bindings, self_field_bindings, out);
+            collect_structural_requirements_in_expr(
+                index,
+                param_bindings,
+                self_field_bindings,
+                out,
+            );
         }
         Expr::Match { scrutinee, arms } => {
-            collect_structural_requirements_in_expr(scrutinee, param_bindings, out);
+            collect_structural_requirements_in_expr(
+                scrutinee,
+                param_bindings,
+                self_field_bindings,
+                out,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_structural_requirements_in_expr(guard, param_bindings, out);
+                    collect_structural_requirements_in_expr(
+                        guard,
+                        param_bindings,
+                        self_field_bindings,
+                        out,
+                    );
                 }
-                collect_structural_requirements_in_expr(&arm.value, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    &arm.value,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Expr::Unary { expr, .. } => {
-            collect_structural_requirements_in_expr(expr, param_bindings, out)
+            collect_structural_requirements_in_expr(expr, param_bindings, self_field_bindings, out)
         }
         Expr::Binary { left, right, .. } => {
-            collect_structural_requirements_in_expr(left, param_bindings, out);
-            collect_structural_requirements_in_expr(right, param_bindings, out);
+            collect_structural_requirements_in_expr(left, param_bindings, self_field_bindings, out);
+            collect_structural_requirements_in_expr(
+                right,
+                param_bindings,
+                self_field_bindings,
+                out,
+            );
         }
         Expr::Array(items) | Expr::Tuple(items) => {
             for item in items {
-                collect_structural_requirements_in_expr(item, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    item,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Expr::StructLiteral { fields, .. } => {
             for field in fields {
-                collect_structural_requirements_in_expr(&field.value, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    &field.value,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Expr::Block(block) => {
             for stmt in &block.statements {
-                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+                collect_structural_requirements_in_stmt(
+                    stmt,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Expr::Closure { body, .. } => {
             for stmt in &body.statements {
-                collect_structural_requirements_in_stmt(stmt, param_bindings, out);
+                collect_structural_requirements_in_stmt(
+                    stmt,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Expr::Range { start, end, .. } => {
             if let Some(start) = start {
-                collect_structural_requirements_in_expr(start, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    start,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
             if let Some(end) = end {
-                collect_structural_requirements_in_expr(end, param_bindings, out);
+                collect_structural_requirements_in_expr(
+                    end,
+                    param_bindings,
+                    self_field_bindings,
+                    out,
+                );
             }
         }
         Expr::Cast { expr, .. } => {
-            collect_structural_requirements_in_expr(expr, param_bindings, out)
+            collect_structural_requirements_in_expr(expr, param_bindings, self_field_bindings, out)
         }
-        Expr::Try(inner) => collect_structural_requirements_in_expr(inner, param_bindings, out),
+        Expr::Try(inner) => {
+            collect_structural_requirements_in_expr(inner, param_bindings, self_field_bindings, out)
+        }
         Expr::Int(_) | Expr::Bool(_) | Expr::Char(_) | Expr::String(_) | Expr::Path(_) => {}
+    }
+}
+
+fn resolve_structural_type_param_for_expr(
+    expr: &Expr,
+    param_bindings: &HashMap<String, String>,
+    self_field_bindings: &HashMap<String, String>,
+) -> Option<String> {
+    match expr {
+        Expr::Path(path) if path.len() == 1 => param_bindings.get(&path[0]).cloned(),
+        Expr::Field { base, field } if matches!(base.as_ref(), Expr::Path(path) if path.len() == 1 && path[0] == "self") => {
+            self_field_bindings.get(field).cloned()
+        }
+        _ => None,
     }
 }
 
@@ -8768,6 +9160,292 @@ fn merged_impl_and_method_type_params(
         }
     }
     merged
+}
+
+fn resolve_impl_method_signature(
+    method: &crate::ast::FunctionDef,
+    imp: &crate::ast::ImplBlock,
+    context: &Context,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ResolvedImplMethodSignature {
+    let mut resolved = ResolvedImplMethodSignature {
+        param_sem_types: method
+            .params
+            .iter()
+            .map(|param| {
+                type_from_ast_with_impl_self_in_context(
+                    &param.ty,
+                    &imp.target,
+                    &imp.target_args,
+                    context,
+                )
+            })
+            .collect(),
+        return_sem_type: method
+            .return_type
+            .as_ref()
+            .map(|ty| {
+                type_from_ast_with_impl_self_in_context(ty, &imp.target, &imp.target_args, context)
+            })
+            .unwrap_or(SemType::Unknown),
+        param_rust_types: None,
+        return_rust_type: None,
+    };
+    let Some(trait_target) = imp.trait_target.as_ref() else {
+        return resolved;
+    };
+    let trait_ty = type_from_ast_in_context(trait_target, context);
+    let Some(trait_name) = trait_name_from_type(&trait_ty) else {
+        return resolved;
+    };
+
+    let signature_override = resolve_rustdex_trait_method_signature(
+        trait_name,
+        &method.name,
+        &imp.target,
+        &imp.target_args,
+        context,
+    )
+    .or_else(|| {
+        resolve_std_trait_method_signature(
+            trait_name,
+            &method.name,
+            &imp.target,
+            &imp.target_args,
+            context,
+        )
+    });
+    let Some(signature_override) = signature_override else {
+        return resolved;
+    };
+
+    if signature_override.param_sem_types.len() > resolved.param_sem_types.len() {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "Method `{}` in trait `{}` requires at least {} parameter(s), but impl declares {}",
+                method.name,
+                trait_name,
+                signature_override.param_sem_types.len(),
+                resolved.param_sem_types.len()
+            ),
+            default_diag_span(),
+        ));
+        return resolved;
+    }
+
+    for (index, inferred_ty) in signature_override.param_sem_types.iter().enumerate() {
+        resolved.param_sem_types[index] = inferred_ty.clone();
+    }
+    resolved.return_sem_type = signature_override.return_sem_type.clone();
+
+    let mut inferred_rust_params = resolved
+        .param_sem_types
+        .iter()
+        .map(rust_param_type_string)
+        .collect::<Vec<_>>();
+    for (index, rust_ty) in signature_override.param_rust_types.iter().enumerate() {
+        if index < inferred_rust_params.len() {
+            inferred_rust_params[index] = rust_ty.clone();
+        }
+    }
+    resolved.param_rust_types = Some(inferred_rust_params);
+    resolved.return_rust_type = Some(signature_override.return_rust_type);
+    resolved
+}
+
+fn resolve_rustdex_trait_method_signature(
+    trait_name: &str,
+    method_name: &str,
+    impl_target: &str,
+    impl_target_args: &[Type],
+    context: &Context,
+) -> Option<TraitMethodSignatureOverride> {
+    let output = rustdex_command_output(&["trait-method-signature", trait_name, method_name])?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut params_text = None::<&str>;
+    let mut return_text = None::<&str>;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("params:") {
+            params_text = Some(rest.trim());
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("return:") {
+            return_text = Some(rest.trim());
+        }
+    }
+    let params_text = params_text?;
+    let return_text = return_text?;
+    let impl_target_sem = sem_type_for_impl_target(impl_target, impl_target_args, context);
+    let mut param_rust_types = split_rust_signature_params(params_text)
+        .into_iter()
+        .map(|item| normalize_rust_signature_type(&item))
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+    if param_rust_types.is_empty() {
+        return None;
+    }
+    let param_sem_types = param_rust_types
+        .iter()
+        .map(|ty| sem_type_from_rust_signature_type(ty, &impl_target_sem))
+        .collect::<Vec<_>>();
+    let return_rust_type = normalize_rust_signature_type(return_text);
+    if return_rust_type.is_empty() {
+        return None;
+    }
+    let return_sem_type = sem_type_from_rust_signature_type(&return_rust_type, &impl_target_sem);
+    Some(TraitMethodSignatureOverride {
+        param_sem_types,
+        return_sem_type,
+        param_rust_types: std::mem::take(&mut param_rust_types),
+        return_rust_type,
+    })
+}
+
+fn resolve_std_trait_method_signature(
+    trait_name: &str,
+    method_name: &str,
+    impl_target: &str,
+    impl_target_args: &[Type],
+    context: &Context,
+) -> Option<TraitMethodSignatureOverride> {
+    if method_name != "fmt" {
+        return None;
+    }
+    if !matches!(
+        trait_name,
+        "Display"
+            | "Debug"
+            | "Binary"
+            | "Octal"
+            | "LowerHex"
+            | "UpperHex"
+            | "LowerExp"
+            | "UpperExp"
+            | "Pointer"
+    ) {
+        return None;
+    }
+    let target_sem = sem_type_for_impl_target(impl_target, impl_target_args, context);
+    let target_rust = rust_owned_type_string(&target_sem);
+    Some(TraitMethodSignatureOverride {
+        param_sem_types: vec![
+            target_sem,
+            SemType::Path {
+                path: vec![
+                    "std".to_string(),
+                    "fmt".to_string(),
+                    "Formatter".to_string(),
+                ],
+                args: Vec::new(),
+            },
+        ],
+        return_sem_type: SemType::Path {
+            path: vec!["std".to_string(), "fmt".to_string(), "Result".to_string()],
+            args: Vec::new(),
+        },
+        param_rust_types: vec![
+            format!("&{target_rust}"),
+            "&mut std::fmt::Formatter<'_>".to_string(),
+        ],
+        return_rust_type: "std::fmt::Result".to_string(),
+    })
+}
+
+fn sem_type_for_impl_target(
+    impl_target: &str,
+    impl_target_args: &[Type],
+    context: &Context,
+) -> SemType {
+    SemType::Path {
+        path: impl_target
+            .split("::")
+            .map(|segment| segment.to_string())
+            .collect(),
+        args: impl_target_args
+            .iter()
+            .map(|arg| type_from_ast_in_context(arg, context))
+            .collect(),
+    }
+}
+
+fn normalize_rust_signature_type(raw: &str) -> String {
+    let mut ty = raw.trim();
+    if let Some((_, rhs)) = ty.split_once(':') {
+        ty = rhs.trim();
+    }
+    ty.to_string()
+}
+
+fn split_rust_signature_params(text: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '<' | '(' | '[' => {
+                depth += 1;
+                current.push(ch);
+            }
+            '>' | ')' | ']' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    items.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        items.push(trimmed.to_string());
+    }
+    items
+}
+
+fn sem_type_from_rust_signature_type(ty: &str, impl_target: &SemType) -> SemType {
+    let mut inner = ty.trim();
+    if inner == "self" {
+        return impl_target.clone();
+    }
+    while let Some(stripped) = inner.strip_prefix('&') {
+        inner = stripped.trim_start();
+        if let Some(stripped_mut) = inner.strip_prefix("mut ") {
+            inner = stripped_mut.trim_start();
+        }
+    }
+    if let Some(stripped_mut) = inner.strip_prefix("mut ") {
+        inner = stripped_mut.trim_start();
+    }
+    inner = inner.trim_matches(|ch| ch == '(' || ch == ')');
+    if inner == "Self" {
+        return impl_target.clone();
+    }
+    if inner == "_" {
+        return SemType::Unknown;
+    }
+    if inner == "()" {
+        return SemType::Unit;
+    }
+    let without_generics = inner.split('<').next().unwrap_or(inner).trim();
+    if without_generics.is_empty() {
+        return SemType::Unknown;
+    }
+    SemType::Path {
+        path: without_generics
+            .split("::")
+            .map(|segment| segment.to_string())
+            .collect(),
+        args: Vec::new(),
+    }
 }
 
 fn impl_lookup_name(target: &str) -> String {

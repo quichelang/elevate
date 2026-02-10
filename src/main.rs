@@ -659,6 +659,7 @@ fn usage() {
     eprintln!("experiment flags:");
     eprintln!("  --exp-move-mut-args");
     eprintln!("  --exp-infer-local-bidi");
+    eprintln!("  --exp-literal-bidi");
     eprintln!("  --exp-effect-rows");
     eprintln!("  --exp-effect-rows-internal");
     eprintln!("  --exp-infer-principal-fallback");
@@ -778,6 +779,10 @@ fn apply_experiment_flag(flag: &str, experiments: &mut ExperimentFlags) -> bool 
             experiments.infer_local_bidi = true;
             true
         }
+        "--exp-literal-bidi" => {
+            experiments.infer_literal_bidi = true;
+            true
+        }
         "--exp-effect-rows" => {
             experiments.effect_rows = true;
             true
@@ -833,6 +838,7 @@ fn parse_compile_options(args: &[String]) -> Result<CompileOptions, String> {
             _ => return Err(format!("unknown argument '{arg}'")),
         }
     }
+    elevate::validate_experiment_flags(&options.experiments)?;
     Ok(options)
 }
 

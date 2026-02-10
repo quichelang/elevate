@@ -23,7 +23,8 @@ fn gap_closure_capture_reuse_should_clone_captured_vec() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile once closure capture cloning is fixed");
+    let output =
+        compile_source(source).expect("should compile once closure capture cloning is fixed");
     assert!(output.rust_code.contains("consume_words(words.clone())"));
 }
 
@@ -78,9 +79,18 @@ fn gap_loop_projection_capture_should_clone_projection_root() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile once projection capture is clone-safe");
-    assert!(output.rust_code.contains("for word in outer.inner.values.clone()"));
-    assert!(output.rust_code.contains("consume_words(outer.inner.values)"));
+    let output =
+        compile_source(source).expect("should compile once projection capture is clone-safe");
+    assert!(
+        output
+            .rust_code
+            .contains("for word in outer.inner.values.clone()")
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("consume_words(outer.inner.values)")
+    );
 }
 
 #[test]
@@ -105,7 +115,8 @@ fn gap_nested_container_return_chain_should_clone_at_call_site() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile with nested return-chain clone planning");
+    let output =
+        compile_source(source).expect("should compile with nested return-chain clone planning");
     assert!(output.rust_code.contains("pass(deck.words.clone())"));
     assert!(output.rust_code.contains("pass(deck.words)"));
 }
@@ -127,8 +138,13 @@ fn gap_tuple_destructure_then_reuse_should_insert_clone() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile with tuple-destructure-aware clone insertion");
-    assert!(output.rust_code.contains("let (left, right) = pair.clone();"));
+    let output = compile_source(source)
+        .expect("should compile with tuple-destructure-aware clone insertion");
+    assert!(
+        output
+            .rust_code
+            .contains("let (left, right) = pair.clone();")
+    );
     assert!(output.rust_code.contains("consume_pair(pair)"));
 }
 
@@ -151,7 +167,8 @@ fn gap_map_keys_iteration_then_owned_call_should_clone_map() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile with iterator/ownership reconciliation");
+    let output =
+        compile_source(source).expect("should compile with iterator/ownership reconciliation");
     assert!(output.rust_code.contains("for key in map.keys()"));
     assert!(output.rust_code.contains("consume_map(map)"));
 }

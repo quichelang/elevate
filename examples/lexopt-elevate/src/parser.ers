@@ -176,6 +176,22 @@ impl Parser {
         self
     }
 
+    pub fn require_mutually_exclusive_flags(
+        left_enabled: bool,
+        left_name: String,
+        right_enabled: bool,
+        right_name: String,
+    ) -> Result<(), ParseError> {
+        if left_enabled and right_enabled {
+            return Result::Err(ParseError::UnexpectedOption(format!(
+                "options '{}' and '{}' are mutually exclusive",
+                left_name,
+                right_name,
+            )));
+        }
+        Result::Ok(())
+    }
+
     fn next_internal(handle: i64) -> Result<Option<Arg>, ParseError> {
         const pending = elevate_interop::take_pending_value(handle);
         match pending {

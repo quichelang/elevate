@@ -36,19 +36,19 @@ pub enum KeyEvent {
 
 #[derive(Debug, Clone, Default)]
 struct RenderPacket {
-    cells: Vec<i64>,
     fixed: Vec<bool>,
+    cell_labels: Vec<i64>,
+    premium_colors: Vec<i64>,
+    occupied_count: i64,
     cursor_row: i64,
     cursor_col: i64,
     message: String,
-    vga: bool,
     debug_enabled: bool,
     fps: i64,
     player_name: String,
     level_label: String,
     timer_label: String,
     quit_armed: bool,
-    show_player_two: bool,
 }
 
 #[derive(Debug)]
@@ -227,20 +227,37 @@ pub fn runtime_draw(frame: String) {
     let _ = out.flush();
 }
 
+pub fn runtime_set_portrait_sprites(
+    player_width: i64,
+    player_height: i64,
+    player_pixels: Vec<i64>,
+    cpu_width: i64,
+    cpu_height: i64,
+    cpu_pixels: Vec<i64>,
+) {
+    let Some(player) = sprite_from_packed(player_width, player_height, &player_pixels) else {
+        return;
+    };
+    let Some(cpu) = sprite_from_packed(cpu_width, cpu_height, &cpu_pixels) else {
+        return;
+    };
+    let _ = SPRITES.set(SpritePack { player, cpu });
+}
+
 pub fn runtime_draw_scene(
-    cells: &[i64],
     fixed: &[bool],
+    cell_labels: &[i64],
+    premium_colors: &[i64],
+    occupied_count: i64,
     cursor_row: i64,
     cursor_col: i64,
     message: String,
-    vga: bool,
     debug_enabled: bool,
     fps: i64,
     player_name: String,
     level_label: String,
     timer_label: String,
     quit_armed: bool,
-    show_player_two: bool,
 ) -> bool {
     with_registry(|registry| {
         let mut rendered = false;
@@ -248,19 +265,19 @@ pub fn runtime_draw_scene(
         for backend in registry.backends.values_mut() {
             if packet.is_none() {
                 packet = Some(RenderPacket {
-                    cells: cells.to_vec(),
                     fixed: fixed.to_vec(),
+                    cell_labels: cell_labels.to_vec(),
+                    premium_colors: premium_colors.to_vec(),
+                    occupied_count,
                     cursor_row,
                     cursor_col,
                     message: message.clone(),
-                    vga,
                     debug_enabled,
                     fps,
                     player_name: player_name.clone(),
                     level_label: level_label.clone(),
                     timer_label: timer_label.clone(),
                     quit_armed,
-                    show_player_two,
                 });
             }
 
@@ -282,6 +299,34 @@ pub fn runtime_draw_scene(
             }
         }
         rendered
+    })
+}
+
+fn sprite_from_packed(width: i64, height: i64, packed: &[i64]) -> Option<Sprite> {
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let width_i32 = i32::try_from(width).ok()?;
+    let height_i32 = i32::try_from(height).ok()?;
+    let cell_count = usize::try_from(width.checked_mul(height)?).ok()?;
+    if packed.len() != cell_count {
+        return None;
+    }
+
+    let mut pixels = Vec::with_capacity(cell_count);
+    for value in packed {
+        if *value < 0 {
+            pixels.push(None);
+            continue;
+        }
+        let color = (*value as u32) & 0x00FF_FFFF;
+        pixels.push(Some(color));
+    }
+
+    Some(Sprite {
+        width: width_i32,
+        height: height_i32,
+        pixels,
     })
 }
 
@@ -539,7 +584,6 @@ struct SceneLayout {
     card_y: i32,
     card_w: i32,
     card_h: i32,
-    card_gap: i32,
     board_x: i32,
     board_y: i32,
     board_cell: i32,
@@ -561,7 +605,6 @@ fn scene_layout(width: i32, _height: i32) -> SceneLayout {
         card_y: 20,
         card_w: 250,
         card_h: 114,
-        card_gap: 18,
         board_x,
         board_y,
         board_cell,
@@ -628,17 +671,17 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
         layout.board_x,
         layout.board_y,
         layout.board_cell,
-        &frame.cells,
         &frame.fixed,
+        &frame.cell_labels,
+        &frame.premium_colors,
         frame.cursor_row,
         frame.cursor_col,
-        frame.vga,
     );
 
     draw_hud_panel(buffer, width, height, frame, layout);
     draw_top_cards(buffer, width, height, frame, layout);
     draw_bottom_bar(buffer, width, height, frame);
-    apply_retro_post_fx(buffer, width, height, frame.vga);
+    apply_retro_post_fx(buffer, width, height);
 
     if frame.debug_enabled {
         let fps_text = format!("FPS {:>3}", frame.fps);
@@ -697,7 +740,7 @@ fn draw_scene(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket)
 }
 
 fn draw_top_cards(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPacket, layout: SceneLayout) {
-    let score = count_filled_cells(&frame.cells).to_string();
+    let score = frame.occupied_count.to_string();
     draw_player_card(
         buffer,
         width,
@@ -710,21 +753,18 @@ fn draw_top_cards(buffer: &mut [u32], width: i32, height: i32, frame: &RenderPac
         &score,
         true,
     );
-
-    if frame.show_player_two {
-        draw_player_card(
-            buffer,
-            width,
-            height,
-            layout.card_x + layout.card_w + layout.card_gap,
-            layout.card_y,
-            layout.card_w,
-            layout.card_h,
-            "PLAYER 2",
-            "00",
-            false,
-        );
-    }
+    draw_player_card(
+        buffer,
+        width,
+        height,
+        layout.card_x + layout.card_w + 18,
+        layout.card_y,
+        layout.card_w,
+        layout.card_h,
+        "PLAYER 2",
+        "00",
+        false,
+    );
 }
 
 fn draw_player_card(
@@ -770,190 +810,10 @@ fn draw_player_card(
     );
 }
 
-fn count_filled_cells(cells: &[i64]) -> i32 {
-    let mut filled = 0;
-    for value in cells {
-        if *value > 0 {
-            filled += 1;
-        }
-    }
-    filled
-}
-
-fn tile_label(value: i64) -> String {
-    let ch = match value {
-        1 => 'A',
-        2 => 'B',
-        3 => 'C',
-        4 => 'D',
-        5 => 'E',
-        6 => 'F',
-        7 => 'G',
-        8 => 'H',
-        9 => 'I',
-        10 => 'J',
-        11 => 'K',
-        12 => 'L',
-        13 => 'M',
-        14 => 'N',
-        15 => 'O',
-        16 => 'P',
-        17 => 'Q',
-        18 => 'R',
-        19 => 'S',
-        20 => 'T',
-        21 => 'U',
-        22 => 'V',
-        23 => 'W',
-        24 => 'X',
-        25 => 'Y',
-        26 => 'Z',
-        _ => '.',
-    };
+fn tile_text_from_code(code: i64) -> String {
+    let as_u32 = u32::try_from(code).ok();
+    let ch = as_u32.and_then(char::from_u32).unwrap_or('.');
     ch.to_string()
-}
-
-fn premium_kind(row: i64, col: i64) -> i64 {
-    if row == 7 && col == 7 {
-        return 4;
-    }
-    if is_any_coord(
-        row,
-        col,
-        &[
-            (0, 0),
-            (0, 7),
-            (0, 14),
-            (7, 0),
-            (7, 14),
-            (14, 0),
-            (14, 7),
-            (14, 14),
-        ],
-    ) {
-        return 3;
-    }
-    if is_any_coord(
-        row,
-        col,
-        &[
-            (1, 1),
-            (2, 2),
-            (3, 3),
-            (4, 4),
-            (10, 10),
-            (11, 11),
-            (12, 12),
-            (13, 13),
-            (1, 13),
-            (2, 12),
-            (3, 11),
-            (4, 10),
-            (10, 4),
-            (11, 3),
-            (12, 2),
-            (13, 1),
-        ],
-    ) {
-        return 4;
-    }
-    if is_any_coord(
-        row,
-        col,
-        &[
-            (1, 5),
-            (1, 9),
-            (5, 1),
-            (5, 5),
-            (5, 9),
-            (5, 13),
-            (9, 1),
-            (9, 5),
-            (9, 9),
-            (9, 13),
-            (13, 5),
-            (13, 9),
-        ],
-    ) {
-        return 2;
-    }
-    if is_any_coord(
-        row,
-        col,
-        &[
-            (0, 3),
-            (0, 11),
-            (2, 6),
-            (2, 8),
-            (3, 0),
-            (3, 7),
-            (3, 14),
-            (6, 2),
-            (6, 6),
-            (6, 8),
-            (6, 12),
-            (7, 3),
-            (7, 11),
-            (8, 2),
-            (8, 6),
-            (8, 8),
-            (8, 12),
-            (11, 0),
-            (11, 7),
-            (11, 14),
-            (12, 6),
-            (12, 8),
-            (14, 3),
-            (14, 11),
-        ],
-    ) {
-        return 1;
-    }
-    0
-}
-
-fn is_any_coord(row: i64, col: i64, coords: &[(i64, i64)]) -> bool {
-    coords.iter().any(|(r, c)| *r == row && *c == col)
-}
-
-fn premium_fill(kind: i64, vga: bool) -> u32 {
-    match kind {
-        4 => {
-            if vga {
-                rgb(210, 150, 120)
-            } else {
-                rgb(232, 167, 136)
-            }
-        }
-        3 => {
-            if vga {
-                rgb(184, 100, 95)
-            } else {
-                rgb(212, 114, 106)
-            }
-        }
-        2 => {
-            if vga {
-                rgb(98, 126, 188)
-            } else {
-                rgb(112, 142, 210)
-            }
-        }
-        1 => {
-            if vga {
-                rgb(124, 152, 206)
-            } else {
-                rgb(142, 171, 225)
-            }
-        }
-        _ => {
-            if vga {
-                rgb(205, 169, 108)
-            } else {
-                rgb(214, 180, 124)
-            }
-        }
-    }
 }
 
 fn draw_parchment_grid(
@@ -963,14 +823,14 @@ fn draw_parchment_grid(
     board_x: i32,
     board_y: i32,
     cell: i32,
-    cells: &[i64],
     fixed: &[bool],
+    cell_labels: &[i64],
+    premium_colors: &[i64],
     cursor_row: i64,
     cursor_col: i64,
-    vga: bool,
 ) {
-    let parchment = if vga { rgb(227, 194, 132) } else { rgb(232, 205, 151) };
-    let parchment_dark = if vga { rgb(204, 164, 104) } else { rgb(209, 174, 118) };
+    let parchment = rgb(227, 194, 132);
+    let parchment_dark = rgb(204, 164, 104);
     let board_size = 15;
     let board_w = cell * board_size;
     let board_h = cell * board_size;
@@ -1011,8 +871,9 @@ fn draw_parchment_grid(
     for row in 0..board_size {
         for col in 0..board_size {
             let is_cursor = row as i64 == cursor_row && col as i64 == cursor_col;
-            let square = premium_kind(row as i64, col as i64);
-            if square != 0 {
+            let idx = row * board_size + col;
+            let premium = premium_colors.get(idx as usize).copied().unwrap_or(0);
+            if premium > 0 {
                 fill_rect(
                     buffer,
                     width,
@@ -1021,7 +882,7 @@ fn draw_parchment_grid(
                     board_y + row * cell + 2,
                     cell - 4,
                     cell - 4,
-                    premium_fill(square, vga),
+                    rgb_from_i64(premium),
                 );
             }
             if is_cursor {
@@ -1048,13 +909,11 @@ fn draw_parchment_grid(
                     rgb(255, 214, 73),
                 );
             }
-
-            let idx = row * board_size + col;
-            let value = cells.get(idx as usize).copied().unwrap_or(0);
-            if value > 0 {
+            let label = cell_labels.get(idx as usize).copied().unwrap_or(0);
+            if label > 0 {
                 let is_fixed = fixed.get(idx as usize).copied().unwrap_or(false);
                 let color = if is_fixed { rgb(17, 48, 126) } else { rgb(20, 96, 58) };
-                let text = tile_label(value);
+                let text = tile_text_from_code(label);
                 let tx = board_x + col * cell + (cell / 2) - 10;
                 let ty = board_y + row * cell + (cell / 2) - 12;
                 draw_label(
@@ -1292,7 +1151,7 @@ fn draw_hud_panel(
         "HINT",
     );
 
-    let mode_text = if frame.vga { "MODE: VGA" } else { "MODE: NEON" };
+    let mode_text = "MODE: SDL";
     draw_label(
         buffer,
         width,
@@ -1410,7 +1269,7 @@ fn draw_portrait_slot(
     draw_sprite(buffer, width, height, sprite_x, sprite_y, scale, sprite);
 }
 
-fn apply_retro_post_fx(buffer: &mut [u32], width: i32, height: i32, vga_mode: bool) {
+fn apply_retro_post_fx(buffer: &mut [u32], width: i32, height: i32) {
     let center_x = width as f32 * 0.5;
     let center_y = height as f32 * 0.52;
     let inv_x = 1.0 / (center_x * center_x);
@@ -1422,28 +1281,16 @@ fn apply_retro_post_fx(buffer: &mut [u32], width: i32, height: i32, vga_mode: bo
             let dx = x as f32 - center_x;
             let dy = y as f32 - center_y;
             let radial = (dx * dx) * inv_x + (dy * dy) * inv_y;
-            let vignette = (radial * if vga_mode { 18.0 } else { 11.0 }) as i16;
-            let scan = if vga_mode {
-                if y & 1 == 0 { -2 } else { 0 }
-            } else if y & 1 == 0 {
-                -1
-            } else {
-                0
-            };
-            let grain = if vga_mode {
-                (hash_noise(x, y, 0x9137_u32) % 5) as i16 - 2
-            } else {
-                (hash_noise(x, y, 0x9137_u32) % 3) as i16 - 1
-            };
+            let vignette = (radial * 18.0) as i16;
+            let scan = if y & 1 == 0 { -2 } else { 0 };
+            let grain = (hash_noise(x, y, 0x9137_u32) % 5) as i16 - 2;
             color = tint(color, scan + grain - vignette);
-            if vga_mode {
-                let (r, g, b) = unpack(color);
-                color = rgb(
-                    ((r as u16 / 12) * 12) as u8,
-                    ((g as u16 / 12) * 12) as u8,
-                    ((b as u16 / 12) * 12) as u8,
-                );
-            }
+            let (r, g, b) = unpack(color);
+            color = rgb(
+                ((r as u16 / 12) * 12) as u8,
+                ((g as u16 / 12) * 12) as u8,
+                ((b as u16 / 12) * 12) as u8,
+            );
             buffer[idx] = color;
         }
     }
@@ -1707,72 +1554,16 @@ fn draw_sprite(
 
 fn sprites() -> &'static SpritePack {
     SPRITES.get_or_init(|| SpritePack {
-        player: parse_sprite(
-            include_str!("assets/portrait_player.sprite"),
-            &sprite_palette(true),
-        ),
-        cpu: parse_sprite(
-            include_str!("assets/portrait_cpu.sprite"),
-            &sprite_palette(false),
-        ),
+        player: empty_sprite(),
+        cpu: empty_sprite(),
     })
 }
 
-fn sprite_palette(is_player: bool) -> Vec<(char, u32)> {
-    let skin = if is_player {
-        rgb(242, 184, 140)
-    } else {
-        rgb(235, 188, 159)
-    };
-    let shirt = if is_player {
-        rgb(24, 86, 195)
-    } else {
-        rgb(127, 63, 162)
-    };
-    vec![
-        (' ', 0),
-        ('.', 0),
-        ('#', rgb(22, 18, 24)),
-        ('w', rgb(255, 255, 255)),
-        ('s', skin),
-        ('h', rgb(99, 54, 29)),
-        ('r', rgb(198, 53, 47)),
-        ('b', shirt),
-        ('e', rgb(37, 97, 170)),
-        ('g', rgb(54, 150, 82)),
-        ('y', rgb(248, 224, 109)),
-        ('k', rgb(13, 11, 16)),
-    ]
-}
-
-fn parse_sprite(source: &str, palette: &[(char, u32)]) -> Sprite {
-    let rows = source
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>();
-    let height = rows.len() as i32;
-    let width = rows
-        .iter()
-        .map(|line| line.chars().count() as i32)
-        .max()
-        .unwrap_or(0);
-    let mut pixels = vec![None; (width * height).max(0) as usize];
-    for (y, row) in rows.iter().enumerate() {
-        for (x, ch) in row.chars().enumerate() {
-            let mapped = palette
-                .iter()
-                .find(|(key, _)| *key == ch)
-                .map(|(_, color)| *color)
-                .unwrap_or_else(|| rgb(255, 0, 255));
-            if mapped != 0 {
-                pixels[y * width as usize + x] = Some(mapped);
-            }
-        }
-    }
+fn empty_sprite() -> Sprite {
     Sprite {
-        width,
-        height,
-        pixels,
+        width: 1,
+        height: 1,
+        pixels: vec![None],
     }
 }
 
@@ -2096,6 +1887,13 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | b as u32
 }
 
+fn rgb_from_i64(color: i64) -> u32 {
+    if color < 0 {
+        return 0;
+    }
+    (color as u32) & 0x00FF_FFFF
+}
+
 fn unpack(color: u32) -> (u8, u8, u8) {
     (
         ((color >> 16) & 0xFF) as u8,
@@ -2123,7 +1921,7 @@ fn rgba_dim(color: u32, alpha: f32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::should_enable_window_backend;
+    use super::{rgb, should_enable_window_backend, sprite_from_packed};
 
     #[test]
     fn window_flag_truthy_enables_window_backend() {
@@ -2144,5 +1942,24 @@ mod tests {
         assert!(should_enable_window_backend(None, Some("minifb")));
         assert!(!should_enable_window_backend(None, Some("terminal")));
         assert!(!should_enable_window_backend(None, None));
+    }
+
+    #[test]
+    fn sprite_from_packed_maps_transparency_and_colors() {
+        let sprite = sprite_from_packed(2, 2, &[rgb(1, 2, 3) as i64, -1, 0xA0B0C0, -1]).unwrap();
+        assert_eq!(sprite.width, 2);
+        assert_eq!(sprite.height, 2);
+        assert_eq!(sprite.pixels.len(), 4);
+        assert_eq!(sprite.pixels[0], Some(rgb(1, 2, 3)));
+        assert_eq!(sprite.pixels[1], None);
+        assert_eq!(sprite.pixels[2], Some(0xA0B0C0));
+        assert_eq!(sprite.pixels[3], None);
+    }
+
+    #[test]
+    fn sprite_from_packed_rejects_mismatched_dimensions() {
+        assert!(sprite_from_packed(3, 3, &[1, 2, 3]).is_none());
+        assert!(sprite_from_packed(0, 3, &[1, 2, 3]).is_none());
+        assert!(sprite_from_packed(3, -1, &[1, 2, 3]).is_none());
     }
 }

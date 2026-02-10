@@ -54,7 +54,7 @@ fn copy_example_to_temp(example_name: &str) -> PathBuf {
     let source = workspace.join("examples").join(example_name);
     let target = temp_dir(&format!("elevate-{example_name}-numeric-policy"));
     copy_dir_filtered(&source, &target);
-    target
+    fs::canonicalize(&target).unwrap_or(target)
 }
 
 fn copy_dir_filtered(source: &Path, target: &Path) {
@@ -72,7 +72,11 @@ fn copy_dir_filtered(source: &Path, target: &Path) {
             copy_dir_filtered(&path, &next);
         } else {
             fs::copy(&path, &next).unwrap_or_else(|error| {
-                panic!("failed to copy {} to {}: {error}", path.display(), next.display())
+                panic!(
+                    "failed to copy {} to {}: {error}",
+                    path.display(),
+                    next.display()
+                )
             });
         }
     }

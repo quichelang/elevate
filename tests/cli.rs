@@ -98,6 +98,43 @@ fn cli_accepts_principal_fallback_flag_for_compile() {
 }
 
 #[test]
+fn cli_accepts_literal_bidi_flag_for_compile() {
+    let root = temp_dir("elevate-cli-exp-literal-bidi");
+    let src = root.join("input.ers");
+    fs::write(
+        &src,
+        "fn takes_u64(v: u64) -> u64 { v }\nfn run() -> u64 { takes_u64(7) }\n",
+    )
+    .expect("write source should succeed");
+
+    let output = Command::new(bin())
+        .arg(&src)
+        .arg("--exp-literal-bidi")
+        .output()
+        .expect("run cli should succeed");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("experimental flag enabled: exp_literal_bidi"));
+}
+
+#[test]
+fn cli_rejects_mutually_exclusive_bidi_flags() {
+    let root = temp_dir("elevate-cli-exp-bidi-conflict");
+    let src = root.join("input.ers");
+    fs::write(&src, "fn id(v: i64) -> i64 { v }\n").expect("write source should succeed");
+
+    let output = Command::new(bin())
+        .arg(&src)
+        .arg("--exp-infer-local-bidi")
+        .arg("--exp-literal-bidi")
+        .output()
+        .expect("run cli should succeed");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("mutually exclusive"));
+}
+
+#[test]
 fn cli_warn_missing_types_is_opt_in() {
     let root = temp_dir("elevate-cli-warn-missing-types");
     let src = root.join("input.ers");

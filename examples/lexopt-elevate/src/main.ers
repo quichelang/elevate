@@ -4,38 +4,40 @@ use lexopt_elevate::parser::Parser;
 
 fn main() {
     const parser = Parser::from_env();
-    run_loop(parser);
+    run_loop(parser, false, false);
 }
 
-fn run_loop(parser: Parser) {
+fn run_loop(parser: Parser, infer_local_bidi: bool, infer_literal_bidi: bool) {
     const next = Parser::next(parser);
     match next {
-        Result::Ok(value) => run_after_next(parser, value);
+        Result::Ok(value) => run_after_next(parser, value, infer_local_bidi, infer_literal_bidi);
         Result::Err(error) => fail_parse(error);
     };
 }
 
-fn run_after_next(parser: Parser, value: Option<Arg>) {
+fn run_after_next(parser: Parser, value: Option<Arg>, infer_local_bidi: bool, infer_literal_bidi: bool) {
     match value {
-        Option::Some(arg) => emit_arg(parser, arg);
-        Option::None => ();
+        Option::Some(arg) => emit_arg(parser, arg, infer_local_bidi, infer_literal_bidi);
+        Option::None => validate_experiment_configuration(infer_local_bidi, infer_literal_bidi);
     };
 }
 
-fn emit_arg(parser: Parser, arg: Arg) {
+fn emit_arg(parser: Parser, arg: Arg, infer_local_bidi: bool, infer_literal_bidi: bool) {
     match arg {
         Arg::Short(name) => {
             println!("short:{}", name);
-            run_loop(parser);
+            run_loop(parser, infer_local_bidi, infer_literal_bidi);
         };
         Arg::Long(name) => {
             println!("long:{}", name);
             const parser = emit_optional_long_value(parser);
-            run_loop(parser);
+            const next_local = infer_local_bidi or name == "exp-infer-local-bidi";
+            const next_literal = infer_literal_bidi or name == "exp-literal-bidi";
+            run_loop(parser, next_local, next_literal);
         };
         Arg::Value(value) => {
             println!("value:{}", value);
-            run_loop(parser);
+            run_loop(parser, infer_local_bidi, infer_literal_bidi);
         };
     };
 }
@@ -52,4 +54,17 @@ fn emit_optional_long_value(parser: Parser) -> Parser {
 fn fail_parse(error: ParseError) {
     println!("parse-error:{:?}", error);
     std::process::exit(1);
+}
+
+fn validate_experiment_configuration(infer_local_bidi: bool, infer_literal_bidi: bool) {
+    const validation = Parser::require_mutually_exclusive_flags(
+        infer_local_bidi,
+        String::from("--exp-infer-local-bidi"),
+        infer_literal_bidi,
+        String::from("--exp-literal-bidi"),
+    );
+    match validation {
+        Result::Ok(_) => ();
+        Result::Err(error) => fail_parse(error);
+    };
 }

@@ -31,7 +31,11 @@ pub fn format_location(span: Span, source: Option<&str>) -> String {
     format!("byte range {}..{}", span.start, span.end)
 }
 
-pub fn span_line_col(source: &str, start: usize, end: usize) -> Option<(usize, usize, usize, usize)> {
+pub fn span_line_col(
+    source: &str,
+    start: usize,
+    end: usize,
+) -> Option<(usize, usize, usize, usize)> {
     if start > source.len() || end > source.len() {
         return None;
     }

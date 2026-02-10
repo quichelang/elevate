@@ -334,10 +334,7 @@ impl Parser {
                 Visibility::Private
             };
             self.expect(TokenKind::Fn, "Expected `fn` in impl block")?;
-            methods.push(self.parse_function(
-                method_visibility,
-                Some((&target, &target_args)),
-            )?);
+            methods.push(self.parse_function(method_visibility, Some((&target, &target_args)))?);
         }
         self.expect(TokenKind::RBrace, "Expected '}' after impl block")?;
         Some(ImplBlock {
@@ -2214,7 +2211,10 @@ world"#;
             .effect_row
             .as_ref()
             .expect("trait method should carry effect row");
-        assert_eq!(row.caps[0], vec!["method".to_string(), "render".to_string()]);
+        assert_eq!(
+            row.caps[0],
+            vec!["method".to_string(), "render".to_string()]
+        );
         assert_eq!(row.rest.as_deref(), Some("r"));
 
         let crate::ast::Item::Function(def) = &module.items[1] else {

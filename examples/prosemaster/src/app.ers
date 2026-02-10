@@ -61,7 +61,7 @@ impl Game {
                     self.display_mode,
                     self.debug_enabled,
                     self.fps_display,
-                    String::from("PROSEMASTER"),
+                    String::from("PLAYER 1"),
                     format!("TURN {}", Board::turn_number(self.board)),
                     self.elapsed_secs,
                     self.quit_armed,

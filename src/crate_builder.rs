@@ -845,14 +845,13 @@ fn compile_source_with_interop_contract(
         return crate::compile_source_with_options(source, options);
     }
 
-    let tokens =
-        crate::lexer::lex(source).map_err(|diagnostics| crate::CompileError {
-            diagnostics,
-            source_name: options.source_name.clone(),
-            source_text: Some(source.to_string()),
-        })?;
-    let mut module = crate::parser::parse_module(tokens)
-        .map_err(|diagnostics| crate::CompileError {
+    let tokens = crate::lexer::lex(source).map_err(|diagnostics| crate::CompileError {
+        diagnostics,
+        source_name: options.source_name.clone(),
+        source_text: Some(source.to_string()),
+    })?;
+    let mut module =
+        crate::parser::parse_module(tokens).map_err(|diagnostics| crate::CompileError {
             diagnostics,
             source_name: options.source_name.clone(),
             source_text: Some(source.to_string()),
@@ -1839,7 +1838,8 @@ fn format_compile_error_with_context(
 ) -> String {
     let mut out = format!("failed to compile {}:", path.display());
     for diagnostic in &error.diagnostics {
-        let (line, col) = crate::source_map::byte_to_line_col_clamped(source, diagnostic.span.start);
+        let (line, col) =
+            crate::source_map::byte_to_line_col_clamped(source, diagnostic.span.start);
         out.push_str(&format!(
             "\n  - {} (line {}, col {}, bytes {}..{})",
             diagnostic.message, line, col, diagnostic.span.start, diagnostic.span.end

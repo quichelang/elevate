@@ -530,7 +530,11 @@ fn emit_type_params(params: &[crate::ir::lowered::RustTypeParam]) -> String {
     } else {
         format!(
             "<{}>",
-            params.iter().map(emit_type_param).collect::<Vec<_>>().join(", ")
+            params
+                .iter()
+                .map(emit_type_param)
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     }
 }
