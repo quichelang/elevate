@@ -1,7 +1,10 @@
 use elevate::{CompileOptions, crate_builder};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEST_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn prosemaster_transpile_uses_typed_results_and_u64_counters() {
@@ -87,7 +90,8 @@ fn temp_dir(prefix: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("system time should be valid")
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+    let seq = TEST_TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("{prefix}-{nanos}-{seq}"));
     fs::create_dir_all(&path).expect("temp dir should be created");
     path
 }

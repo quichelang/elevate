@@ -80,6 +80,43 @@ impl StructuralRequirements {
     }
 }
 
+fn structural_method_required_trait(method: &str, arity: usize) -> Option<SemType> {
+    match (method, arity) {
+        ("to_string", 0) => Some(SemType::Path {
+            path: vec!["std".to_string(), "fmt".to_string(), "Display".to_string()],
+            args: Vec::new(),
+        }),
+        ("clone", 0) => Some(named_type("Clone")),
+        ("into_iter", 0) => Some(SemType::Path {
+            path: vec!["std".to_string(), "iter".to_string(), "IntoIterator".to_string()],
+            args: Vec::new(),
+        }),
+        _ => None,
+    }
+}
+
+fn push_unique_bound(bounds: &mut Vec<SemType>, bound: SemType) {
+    if bounds.iter().all(|existing| existing != &bound) {
+        bounds.push(bound);
+    }
+}
+
+fn merge_structural_method_bounds(
+    type_param_bounds: &mut HashMap<String, Vec<SemType>>,
+    structural_requirements: &HashMap<String, StructuralRequirements>,
+) {
+    for (type_param, requirements) in structural_requirements {
+        let entry = type_param_bounds.entry(type_param.clone()).or_default();
+        for (method, arities) in &requirements.methods {
+            for arity in arities {
+                if let Some(bound) = structural_method_required_trait(method, *arity) {
+                    push_unique_bound(entry, bound);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct StructuralSpecialization {
     specialized_name: String,
@@ -1707,22 +1744,26 @@ fn collect_definitions(module: &Module, context: &mut Context, diagnostics: &mut
                 );
             }
             Item::Function(def) => {
+                let mut type_param_bounds = def
+                    .type_params
+                    .iter()
+                    .map(|param| {
+                        (
+                            param.name.clone(),
+                            param.bounds.iter().map(type_from_ast).collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>();
+                let structural_requirements =
+                    collect_structural_requirements_for_function(&def.type_params, &def.params, &def.body);
+                merge_structural_method_bounds(&mut type_param_bounds, &structural_requirements);
                 let sig = FunctionSig {
                     type_params: def
                         .type_params
                         .iter()
                         .map(|param| param.name.clone())
                         .collect(),
-                    type_param_bounds: def
-                        .type_params
-                        .iter()
-                        .map(|param| {
-                            (
-                                param.name.clone(),
-                                param.bounds.iter().map(type_from_ast).collect::<Vec<_>>(),
-                            )
-                        })
-                        .collect(),
+                    type_param_bounds,
                     params: def
                         .params
                         .iter()
@@ -1733,11 +1774,7 @@ fn collect_definitions(module: &Module, context: &mut Context, diagnostics: &mut
                         .as_ref()
                         .map(|ty| type_from_ast_in_context(ty, context))
                         .unwrap_or(SemType::Unknown),
-                    structural_requirements: collect_structural_requirements_for_function(
-                        &def.type_params,
-                        &def.params,
-                        &def.body,
-                    ),
+                    structural_requirements,
                 };
                 context.functions.insert(def.name.clone(), sig);
             }
@@ -1766,37 +1803,40 @@ fn collect_definitions(module: &Module, context: &mut Context, diagnostics: &mut
                                 .then_some(ty.clone())
                         })
                         .collect::<Vec<_>>();
+                    let mut type_param_bounds = all_type_params
+                        .iter()
+                        .map(|param| {
+                            (
+                                param.name.clone(),
+                                param
+                                    .bounds
+                                    .iter()
+                                    .map(|bound| {
+                                        type_from_ast_with_impl_self(
+                                            bound,
+                                            &def.target,
+                                            &def.target_args,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                        })
+                        .collect::<HashMap<_, _>>();
+                    let structural_requirements = if def.trait_target.is_none() {
+                        collect_structural_requirements_for_impl_method(def, method, context)
+                    } else {
+                        HashMap::new()
+                    };
+                    merge_structural_method_bounds(&mut type_param_bounds, &structural_requirements);
                     let sig = FunctionSig {
                         type_params: all_type_params
                             .iter()
                             .map(|param| param.name.clone())
                             .collect(),
-                        type_param_bounds: all_type_params
-                            .iter()
-                            .map(|param| {
-                                (
-                                    param.name.clone(),
-                                    param
-                                        .bounds
-                                        .iter()
-                                        .map(|bound| {
-                                            type_from_ast_with_impl_self(
-                                                bound,
-                                                &def.target,
-                                                &def.target_args,
-                                            )
-                                        })
-                                        .collect::<Vec<_>>(),
-                                )
-                            })
-                            .collect(),
+                        type_param_bounds,
                         params: method_params,
                         return_type: resolved_sig.return_sem_type.clone(),
-                        structural_requirements: if def.trait_target.is_none() {
-                            collect_structural_requirements_for_impl_method(def, method, context)
-                        } else {
-                            HashMap::new()
-                        },
+                        structural_requirements,
                     };
                     context.functions.insert(
                         format!("{}::{}", impl_lookup_name(&def.target), method.name),
@@ -1831,6 +1871,41 @@ fn function_has_structural_requirements(sig: &FunctionSig) -> bool {
     sig.structural_requirements
         .values()
         .any(|requirements| !requirements.is_empty())
+}
+
+fn sem_type_contains_any_type_param(ty: &SemType, type_params: &HashSet<String>) -> bool {
+    match ty {
+        SemType::Path { path, args } => {
+            (path.len() == 1 && args.is_empty() && type_params.contains(&path[0]))
+                || args
+                    .iter()
+                    .any(|arg| sem_type_contains_any_type_param(arg, type_params))
+        }
+        SemType::TraitObject(bounds) => bounds
+            .iter()
+            .any(|bound| sem_type_contains_any_type_param(bound, type_params)),
+        SemType::Tuple(items) => items
+            .iter()
+            .any(|item| sem_type_contains_any_type_param(item, type_params)),
+        SemType::Fn { params, ret } => {
+            params
+                .iter()
+                .any(|param| sem_type_contains_any_type_param(param, type_params))
+                || sem_type_contains_any_type_param(ret, type_params)
+        }
+        SemType::Iter(item) => sem_type_contains_any_type_param(item, type_params),
+        SemType::Unit | SemType::Unknown => false,
+    }
+}
+
+fn specialization_bindings_are_concrete(bindings: &HashMap<String, SemType>) -> bool {
+    if bindings.is_empty() {
+        return false;
+    }
+    let type_params = bindings.keys().cloned().collect::<HashSet<_>>();
+    bindings.values().all(|bound| {
+        !contains_unknown(bound) && !sem_type_contains_any_type_param(bound, &type_params)
+    })
 }
 
 fn materialize_structural_specializations(
@@ -1908,6 +1983,14 @@ fn materialize_structural_specializations(
             break;
         }
         for (template_name, spec) in pending {
+            if !specialization_bindings_are_concrete(&spec.bindings) {
+                emitted.insert(spec.specialized_name.clone());
+                context
+                    .structural_specialization_lookup
+                    .borrow_mut()
+                    .retain(|_, value| value != &spec.specialized_name);
+                continue;
+            }
             emitted.insert(spec.specialized_name.clone());
             let Some(template_sig) = context.functions.get(&template_name).cloned() else {
                 continue;
@@ -2739,6 +2822,13 @@ fn lower_item(
                             default_diag_span(),
                         ));
                     }
+                    let method_lookup_name =
+                        format!("{}::{}", impl_lookup_name(&def.target), method.name);
+                    let inferred_method_bounds = context
+                        .functions
+                        .get(&method_lookup_name)
+                        .map(|sig| sig.type_param_bounds.clone())
+                        .unwrap_or_default();
                     TypedFunction {
                         is_public: method.visibility == Visibility::Public,
                         name: method.name.clone(),
@@ -2747,16 +2837,12 @@ fn lower_item(
                             .iter()
                             .map(|param| TypedTypeParam {
                                 name: param.name.clone(),
-                                bounds: param
-                                    .bounds
-                                    .iter()
-                                    .map(|bound| {
-                                        rust_trait_bound_string(&type_from_ast_with_impl_self(
-                                            bound,
-                                            &def.target,
-                                            &def.target_args,
-                                        ))
-                                    })
+                                bounds: inferred_method_bounds
+                                    .get(&param.name)
+                                    .cloned()
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|bound| rust_trait_bound_string(&bound))
                                     .collect(),
                             })
                             .collect(),
@@ -2800,18 +2886,19 @@ fn lower_item(
                 });
                 methods.push(typed_method);
             }
+            let impl_param_bounds = inferred_impl_type_param_bounds(def, context);
             Some(TypedItem::Impl(TypedImpl {
                 type_params: def
                     .type_params
                     .iter()
                     .map(|param| TypedTypeParam {
                         name: param.name.clone(),
-                        bounds: param
-                            .bounds
-                            .iter()
-                            .map(|bound| {
-                                rust_trait_bound_string(&type_from_ast_in_context(bound, context))
-                            })
+                        bounds: impl_param_bounds
+                            .get(&param.name)
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|bound| rust_trait_bound_string(&bound))
                             .collect(),
                     })
                     .collect(),
@@ -3012,6 +3099,11 @@ fn lower_item(
                 sig.params = resolved_param_types.clone();
                 sig.return_type = final_return_ty.clone();
             }
+            let function_param_bounds = context
+                .functions
+                .get(&def.name)
+                .map(|sig| sig.type_param_bounds.clone())
+                .unwrap_or_default();
 
             Some(TypedItem::Function(TypedFunction {
                 is_public: def.visibility == Visibility::Public,
@@ -3021,10 +3113,11 @@ fn lower_item(
                     .iter()
                     .map(|param| TypedTypeParam {
                         name: param.name.clone(),
-                        bounds: param
-                            .bounds
-                            .iter()
-                            .map(type_from_ast)
+                        bounds: function_param_bounds
+                            .get(&param.name)
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_iter()
                             .map(|bound| rust_trait_bound_string(&bound))
                             .collect(),
                     })
@@ -3043,6 +3136,45 @@ fn lower_item(
             }))
         }),
     }
+}
+
+fn inferred_impl_type_param_bounds(
+    imp: &crate::ast::ImplBlock,
+    context: &Context,
+) -> HashMap<String, Vec<SemType>> {
+    let mut out = imp
+        .type_params
+        .iter()
+        .map(|param| {
+            (
+                param.name.clone(),
+                param
+                    .bounds
+                    .iter()
+                    .map(|bound| type_from_ast_with_impl_self(bound, &imp.target, &imp.target_args))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let owner = impl_lookup_name(&imp.target);
+    for method in &imp.methods {
+        let method_key = format!("{owner}::{}", method.name);
+        let Some(sig) = context.functions.get(&method_key) else {
+            continue;
+        };
+        for param in &imp.type_params {
+            let Some(inferred) = sig.type_param_bounds.get(&param.name) else {
+                continue;
+            };
+            let entry = out.entry(param.name.clone()).or_default();
+            for bound in inferred {
+                push_unique_bound(entry, bound.clone());
+            }
+        }
+    }
+
+    out
 }
 
 fn resolve_function_param_type(
@@ -5538,7 +5670,13 @@ fn validate_structural_call_requirements(
         }
         for (method, arities) in &requirements.methods {
             for arity in arities {
-                if !structural_type_supports_method(actual_ty, method, *arity, context) {
+                if !structural_type_supports_method(
+                    actual_ty,
+                    method,
+                    *arity,
+                    context,
+                    &sig.type_param_bounds,
+                ) {
                     diagnostics.push(Diagnostic::new(
                         format!(
                             "`{}` passed to `{fn_name}` does not provide required method `{method}` with {} argument(s) for `{type_param}`",
@@ -5577,11 +5715,29 @@ fn structural_type_supports_field(ty: &SemType, field: &str, context: &Context) 
         .unwrap_or(false)
 }
 
+fn bounds_satisfy_trait_requirement(
+    bounds: &[SemType],
+    required_trait: &SemType,
+    context: &Context,
+) -> bool {
+    let Some(required_name) = bound_trait_name(required_trait) else {
+        return false;
+    };
+    bounds.iter().any(|bound| {
+        bound_trait_name(bound)
+            .map(|actual| {
+                actual == required_name || trait_satisfies_trait(actual, required_name, context)
+            })
+            .unwrap_or(false)
+    })
+}
+
 fn structural_type_supports_method(
     ty: &SemType,
     method: &str,
     arity: usize,
     context: &Context,
+    type_param_bounds: &HashMap<String, Vec<SemType>>,
 ) -> bool {
     let SemType::Path { path, args: _ } = ty else {
         return false;
@@ -5589,6 +5745,13 @@ fn structural_type_supports_method(
     let Some(type_name) = path.last() else {
         return false;
     };
+    if path.len() == 1
+        && let Some(bounds) = type_param_bounds.get(type_name)
+        && let Some(required_trait) = structural_method_required_trait(method, arity)
+        && bounds_satisfy_trait_requirement(bounds, &required_trait, context)
+    {
+        return true;
+    }
     if method_is_builtin_for_type(type_name, method, arity) {
         return true;
     }

@@ -327,9 +327,11 @@ mod tests {
     use std::env;
     use std::fs;
     use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{CompileOptions, compile_ast, compile_source, compile_source_with_options};
+    static TEST_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn compile_smoke_test() {
@@ -2325,6 +2327,81 @@ mod tests {
     }
 
     #[test]
+    fn compile_allows_structural_trait_methods_for_generic_impl_calls_with_bounds() {
+        let source = r#"
+            use std::fmt::Display;
+
+            struct Point<T> {
+                x: T;
+                y: T;
+            }
+
+            impl<T> Point<T> {
+                fn new(x: T, y: T) -> Point<T> {
+                    Point { x: x; y: y; }
+                }
+
+                fn label(self) -> String {
+                    return self.x.to_string();
+                }
+            }
+
+            fn describe<T: Display>(point: Point<T>) -> String {
+                return point.label();
+            }
+
+            fn run() -> String {
+                return describe(Point::new(5, 6));
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("expected structural trait method checks to honor inferred Display bound");
+        assert!(output.rust_code.contains("fn describe<T: Display>(point: Point<T>) -> String"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_does_not_emit_unresolved_structural_impl_specializations() {
+        let source = r#"
+            use std::fmt::Display;
+
+            struct Point<T> {
+                x: T;
+                y: T;
+            }
+
+            impl<T> Point<T> {
+                fn new(x: T, y: T) -> Point<T> {
+                    Point { x: x; y: y; }
+                }
+
+                fn label(self) -> String {
+                    return self.x.to_string();
+                }
+            }
+
+            fn describe<T: Display>(point: Point<T>) -> String {
+                return point.label();
+            }
+
+            fn run() -> String {
+                const p = Point::new(5, 6);
+                return describe(p);
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("expected concrete structural specialization without leaked unresolved impl");
+        assert!(
+            !output.rust_code.contains("impl Point<T> {"),
+            "unexpected leaked unresolved impl specialization:\n{}",
+            output.rust_code
+        );
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_reports_missing_structural_member_for_generic_impl_methods() {
         let source = r#"
             struct Opaque {}
@@ -4262,7 +4339,8 @@ world"#;
             .duration_since(UNIX_EPOCH)
             .expect("system time must be after epoch")
             .as_nanos();
-        let base = env::temp_dir().join(format!("elevate-test-{nanos}"));
+        let seq = TEST_TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = env::temp_dir().join(format!("elevate-test-{nanos}-{seq}"));
         fs::create_dir_all(&base).expect("temp dir create should succeed");
         let source_path = base.join("generated.rs");
         let output_path = base.join("generated.rlib");
