@@ -2,11 +2,23 @@
 
 **A compiled language and compiler framework that transpiles to Rust with inferred ownership and no runtime.**
 
-Elevate is both:
-- A **language** for writing Rust-adjacent code without lifetimes, borrow annotations, or manual clone planning.
-- A **compiler backend framework** where other frontends can target Elevate IR (EIR) and get ownership planning, lowering, and Rust emission.
+Elevate is a **source-to-source compiler**: it compiles `.ers` into Rust source, then Rust handles final compilation and guarantees.
 
-If you are evaluating Elevate for a language project, the key idea is simple: target EIR once, then inherit a safe Rust-oriented backend and ecosystem interop.
+Elevate is two things:
+- A simpler representation of Rust.
+- A model of what Rust could look like if the compiler took more decisions automatically for the user.
+
+We think these decisions are good enough for roughly 80% of typical Rust systems-tooling use cases and should not impose a heavy performance burden. Our target is to keep performance within 10-20% of Rust.
+
+Key differences:
+- No explicit lifetimes
+- No explicit memory-reference access/pointers
+- Some match behavior limitations
+- Friendlier generics syntax (you can invoke methods on generic objects without explicit definition)
+- No unsafe code by default
+- No panics by default
+
+Elevate uses Cargo for package management and can interop with crates directly. When direct memory or ownership syntax is required, use a `rust {}` block anywhere in source; it is emitted verbatim. You can also mix `.rs` files with Elevate source in the same crate and add wrappers to expose Rust behavior ergonomically in Elevate.
 
 [Quiche](https://github.com/quichelang/quiche), a Python-inspired compiled language, uses Elevate IR as its backend.
 
@@ -54,9 +66,9 @@ cargo run -q -- examples/point.ers --emit-rust /tmp/point.rs
 | What you get | How it works |
 |---|---|
 | **No `&`, `&mut`, or lifetime annotations** | The compiler's ownership planner infers borrows, moves, and clones from usage patterns |
-| **No `mut` keyword** | Mutability is detected heuristically — if you reassign or call `.push()`, it becomes `mut` |
+| **No `mut` keyword** | Mutability is detected heuristically - if you reassign or call `.push()`, it becomes `mut` |
 | **No `dyn` or `Box<dyn>`** | Trait-object lowering is inferred when you use trait types |
-| **Real Rust output** | Every `.ers` file compiles to clean `.rs` — you can read, audit, and ship the generated code |
+| **Real Rust output** | Every `.ers` file compiles to clean `.rs` - you can read, audit, and ship the generated code |
 | **Zero dependencies** | The compiler itself has literally `[dependencies]` empty in `Cargo.toml` |
 | **Full interop with Rust crates** | Use `use` imports, call Rust functions, or embed raw Rust with `rust { ... }` blocks |
 
@@ -114,7 +126,7 @@ fn area(shape: Shape) -> f64 {
 
 Pattern matching supports tuple patterns, literal patterns, binding patterns, nested variant payloads, struct rest patterns (`Type { field, .. }`), or-patterns (`p1 | p2`), match guards (`pattern if condition => ...`), slice/rest patterns (`[a, ..tail]`), and block arm expressions.
 
-Exhaustiveness checking covers `bool`, `Option`, `Result`, finite tuple domains, and known local enums — with guard-aware analysis.
+Exhaustiveness checking covers `bool`, `Option`, `Result`, finite tuple domains, and known local enums - with guard-aware analysis.
 
 ### Generics and Trait Bounds
 
@@ -182,6 +194,17 @@ fn fizzbuzz(n: i64) -> String {
 ```
 
 All the essentials: `if`/`else`, `while`, `loop` with `break`/`continue`, `for ... in ...` (ranges, `Vec`, `String`, `Option`, `HashMap`, `BTreeMap`, `HashSet`, `BTreeSet`), and tail-expression returns.
+
+## Framework Design
+
+A useful mental model:
+- **Typed IR** (`src/ir/typed.rs`) is like technical language or writing: language-semantic, type-checked, and close to source intent.
+- **Lowered Rust IR** (`src/ir/lowered.rs`) is like legal writing: still structured, but rewritten into Rust-shaped forms needed for deterministic backend emission.
+
+What should you use to design and implement your own language frontend integration?
+- Treat Elevate IR as a staged IR family, not a single node format.
+- Prefer **Typed IR** for frontend integration.
+- Let Elevate handle lowering into **Lowered Rust IR** and code emission.
 
 ### Impl Blocks and Method Calls
 
@@ -290,7 +313,7 @@ cargo run -q -- file.ers --exp-infer-local-bidi --exp-infer-principal-fallback
 ### Inferred Parameter Types
 
 ```rust
-// No type annotations on parameters — inferred from return type + usage
+// No type annotations on parameters - inferred from return type + usage
 fn add(a, b) -> i64 {
     return a + b;
 }
@@ -344,7 +367,7 @@ fn render_card(card: Card) -> String ![method::render + call::std::mem::drop] {
 
 ## The Compiler Pipeline
 
-Elevate's compiler is a **complete, 7-stage pipeline** — not a prototype:
+Elevate's compiler is a **complete, 7-stage pipeline** - not a prototype:
 
 ```
 Source (.ers)
@@ -359,10 +382,10 @@ Source (.ers)
 ```
 
 The ownership pass includes:
-- **Place-level conflict analysis** — tracks which struct fields are used independently
-- **Loop-weighted liveness heuristics** — detects expensive clones in hot loops
-- **Adaptive borrow feedback** — retries transpilation with auto-inferred borrow hints from `rustc` diagnostics
-- **Disjoint field optimization** — avoids cloning when different struct fields are used in non-overlapping scopes
+- **Place-level conflict analysis** - tracks which struct fields are used independently
+- **Loop-weighted liveness heuristics** - detects expensive clones in hot loops
+- **Adaptive borrow feedback** - retries transpilation with auto-inferred borrow hints from `rustc` diagnostics
+- **Disjoint field optimization** - avoids cloning when different struct fields are used in non-overlapping scopes
 
 ## Build A Language On Elevate
 
@@ -425,25 +448,25 @@ The compiler is backed by an extensive test suite that validates every layer:
 | `test_runner.rs` | 2 | Native `.ers` test framework discovery and execution |
 
 Tests verify:
-- **Deterministic output** — same input always produces same Rust code
-- **Generated Rust compiles** — tests run `rustc --crate-type=lib` on output
-- **Ownership correctness** — auto-clone insertion, borrow elision, move semantics
-- **Error quality** — actionable diagnostics with source location and fix hints
-- **No panics on invalid programs** — malformed input produces errors, never crashes
+- **Deterministic output** - same input always produces same Rust code
+- **Generated Rust compiles** - tests run `rustc --crate-type=lib` on output
+- **Ownership correctness** - auto-clone insertion, borrow elision, move semantics
+- **Error quality** - actionable diagnostics with source location and fix hints
+- **No panics on invalid programs** - malformed input produces errors, never crashes
 
 ---
 
 ## Real-World Example Projects
 
-### `lexopt-elevate` — Full CLI Argument Parser
+### `lexopt-elevate` - Full CLI Argument Parser
 
 A complete reimplementation of the `lexopt` CLI parsing library, written entirely in Elevate with Rust interop. Multi-module crate with `Parser`, `Arg`, `ParseError` types, short/long option handling, cluster splitting, value extraction, and error formatting.
 
 **4 source modules, 450+ lines of Elevate code.**
 
-### `boardgame-kit` — Game Engine Rendering Framework
+### `boardgame-kit` - Game Engine Rendering Framework
 
-An 839-line game rendering toolkit featuring sprites, tile atlases, animated sprites, scene layout, gradient fills, bevel panels, brick floor patterns, hill wave generation, wood-frame UI, HUD panels with keypad buttons — all written in Elevate and compiled through the crate build system.
+An 839-line game rendering toolkit featuring sprites, tile atlases, animated sprites, scene layout, gradient fills, bevel panels, brick floor patterns, hill wave generation, wood-frame UI, HUD panels with keypad buttons - all written in Elevate and compiled through the crate build system.
 
 **Linking default for SDL2/OpenGL examples**
 
@@ -464,7 +487,7 @@ If you want dynamic linking instead:
 3. Verify with:
    `otool -L ./target/debug/<your-binary>`
 
-### `boardwalk-sudoku` — Interactive Sudoku Game
+### `boardwalk-sudoku` - Interactive Sudoku Game
 
 A working Sudoku game built on `boardgame-kit`, demonstrating Elevate's ability to power real interactive applications with terminal rendering.
 
@@ -517,8 +540,8 @@ elevate init <crate-root>
 
 Syntax highlighting is available for:
 
-- **Visual Studio Code** — TextMate grammar with full keyword, operator, and literal coverage
-- **Zed** — Tree-sitter queries with indent rules
+- **Visual Studio Code** - TextMate grammar with full keyword, operator, and literal coverage
+- **Zed** - Tree-sitter queries with indent rules
 
 See [`docs/editor-extensions.md`](docs/editor-extensions.md) for setup instructions.
 
@@ -563,17 +586,17 @@ Requires **Rust 2024 edition** (rustc 1.85+).
 
 ## Documentation
 
-- [Language Design](docs/language-design.md) — Full specification, contracts, and implementation status
-- [Type Inference Plan](docs/type-inference-plan.md) — HM-style inference + bidirectional extensions roadmap
-- [AST Reference](docs/ast.md) — Node structure documentation
-- [External Frontend Path](docs/external-frontend-path.md) — Binary AST/EIR integration, terminology, and diagnostics metadata guidance
-- [Editor Extensions](docs/editor-extensions.md) — VSCode and Zed setup
+- [Language Design](docs/language-design.md) - Full specification, contracts, and implementation status
+- [Type Inference Plan](docs/type-inference-plan.md) - HM-style inference + bidirectional extensions roadmap
+- [AST Reference](docs/ast.md) - Node structure documentation
+- [External Frontend Path](docs/external-frontend-path.md) - Binary AST/EIR integration, terminology, and diagnostics metadata guidance
+- [Editor Extensions](docs/editor-extensions.md) - VSCode and Zed setup
 
 ---
 
 ## Status
 
-Elevate is **v0.4.0** — a fully functional compiler with a broad feature set, not a toy or proof-of-concept. The pipeline compiles real programs, the test suite is comprehensive, and the generated Rust output is clean and correct.
+Elevate is **v0.4.0** - a fully functional compiler with a broad feature set, not a toy or proof-of-concept. The pipeline compiles real programs, the test suite is comprehensive, and the generated Rust output is clean and correct.
 
 That said, some areas are still evolving:
 - Ownership lowering is strong but not globally optimal
