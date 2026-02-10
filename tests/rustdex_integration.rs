@@ -1,4 +1,5 @@
 use elevate::compile_source;
+use elevate::rustdex_backend;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -37,6 +38,17 @@ fn integration_rustdex_is_operational_and_drives_signature_detection() {
     );
 
     let _env_guard = ScopedEnvVar::set("ELEVATE_RUSTDEX_BIN", harness.shim_path.clone().into());
+    let _backend_guard = ScopedEnvVar::set("ELEVATE_RUSTDEX_BACKEND", OsString::from("cli"));
+    assert_eq!(
+        rustdex_backend::type_implements("HashMap", "FromIterator"),
+        Some(true),
+        "expected backend trait lookup to report HashMap::FromIterator"
+    );
+    assert_eq!(
+        rustdex_backend::type_has_associated_method("HashMap", "from_iter"),
+        Some(true),
+        "expected backend associated-method lookup to resolve method from rustdex index"
+    );
 
     let associated_call_source = r#"
         use std::collections::HashMap;

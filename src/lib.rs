@@ -7,6 +7,7 @@ pub mod lexer;
 pub mod ownership_planner;
 pub mod parser;
 pub mod passes;
+pub mod rustdex_backend;
 pub mod source;
 pub mod source_map;
 pub mod test_runner;
