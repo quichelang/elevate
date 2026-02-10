@@ -168,6 +168,7 @@ pub struct RustStatic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RustExpr {
     Int(i64),
+    Float(String),
     Bool(bool),
     Char(char),
     String(String),

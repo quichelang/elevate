@@ -226,6 +226,7 @@ fn emit_static(def: &RustStatic, out: &mut String) {
 fn emit_expr(expr: &RustExpr) -> String {
     match expr {
         RustExpr::Int(value) => value.to_string(),
+        RustExpr::Float(value) => value.clone(),
         RustExpr::Bool(value) => value.to_string(),
         RustExpr::Char(value) => emit_char_literal(*value),
         RustExpr::String(value) => format!("::std::string::String::from({value:?})"),
@@ -967,6 +968,7 @@ fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::Ha
             collect_mutated_paths_in_expr(inner, out)
         }
         RustExpr::Int(_)
+        | RustExpr::Float(_)
         | RustExpr::Bool(_)
         | RustExpr::Char(_)
         | RustExpr::String(_)

@@ -173,6 +173,7 @@ pub struct TypedExpr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedExprKind {
     Int(i64),
+    Float(String),
     Bool(bool),
     Char(char),
     String(String),

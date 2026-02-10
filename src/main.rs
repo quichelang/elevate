@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::process;
 use std::process::Command;
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use elevate::{CompileOptions, ExperimentFlags};
 
@@ -18,6 +19,7 @@ fn main() {
 
     match args[0].as_str() {
         "build" => run_build(&args[1..]),
+        "run" => run_run(&args[1..]),
         "test" => run_test(&args[1..]),
         "bench" => run_bench(&args[1..]),
         "init" => run_init(&args[1..]),
@@ -27,39 +29,327 @@ fn main() {
 
 fn run_build(args: &[String]) {
     if args.is_empty() {
-        eprintln!("usage: elevate build <crate-root> [--release] [experiment flags]");
+        eprintln!(
+            "usage: elevate build <crate-root|script.ers> [--release] [--out <output-file>] [experiment flags]"
+        );
         process::exit(2);
     }
-    let crate_root = PathBuf::from(&args[0]);
+    let target_path = PathBuf::from(&args[0]);
     let mut release = false;
-    let mut non_flag_args = Vec::new();
-    for arg in &args[1..] {
-        if arg == "--release" {
-            release = true;
-            continue;
+    let mut out: Option<PathBuf> = None;
+    let mut options_args = Vec::new();
+    let mut index = 1usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--release" => {
+                release = true;
+                index += 1;
+            }
+            "--out" => {
+                if index + 1 >= args.len() {
+                    eprintln!("error: `--out` expects a file path");
+                    process::exit(2);
+                }
+                out = Some(PathBuf::from(&args[index + 1]));
+                index += 2;
+            }
+            _ => {
+                options_args.push(args[index].clone());
+                index += 1;
+            }
         }
-        non_flag_args.push(arg.clone());
     }
-    let options = parse_compile_options(&non_flag_args).unwrap_or_else(|error| {
+    let options = parse_compile_options(&options_args).unwrap_or_else(|error| {
         eprintln!("error: {error}");
         process::exit(2);
     });
 
-    match elevate::crate_builder::build_ers_crate_with_options(&crate_root, release, &options) {
-        Ok(summary) => {
+    match detect_target_kind(&target_path).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        process::exit(2);
+    }) {
+        TargetKind::Crate => {
+            if out.is_some() {
+                eprintln!("error: `--out` is only supported when building a single .ers script");
+                process::exit(2);
+            }
+            match elevate::crate_builder::build_ers_crate_with_options(
+                &target_path,
+                release,
+                &options,
+            ) {
+                Ok(summary) => {
+                    println!(
+                        "built generated crate at {} (transpiled {}, copied {}), artifacts in {}",
+                        summary.generated_root.display(),
+                        summary.transpiled_files,
+                        summary.copied_files,
+                        summary.source_root.join("target").display()
+                    );
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    process::exit(1);
+                }
+            }
+        }
+        TargetKind::Script => {
+            let output_path = out.unwrap_or_else(|| default_script_binary_path(&target_path));
+            build_script_binary(&target_path, &output_path, release, &options).unwrap_or_else(
+                |error| {
+                    eprintln!("{error}");
+                    process::exit(1);
+                },
+            );
             println!(
-                "built generated crate at {} (transpiled {}, copied {}), artifacts in {}",
-                summary.generated_root.display(),
-                summary.transpiled_files,
-                summary.copied_files,
-                summary.source_root.join("target").display()
+                "built script binary {} -> {}",
+                target_path.display(),
+                output_path.display()
             );
         }
-        Err(error) => {
-            eprintln!("{error}");
-            process::exit(1);
+    }
+}
+
+fn run_run(args: &[String]) {
+    if args.is_empty() {
+        eprintln!(
+            "usage: elevate run <crate-root|script.ers> [--release] [experiment flags] [-- <program args>]"
+        );
+        process::exit(2);
+    }
+    let target_path = PathBuf::from(&args[0]);
+    let mut release = false;
+    let mut options_args = Vec::new();
+    let mut program_args = Vec::new();
+    let mut index = 1usize;
+    while index < args.len() {
+        if args[index] == "--" {
+            program_args.extend_from_slice(&args[index + 1..]);
+            break;
+        }
+        if args[index] == "--release" {
+            release = true;
+            index += 1;
+            continue;
+        }
+        options_args.push(args[index].clone());
+        index += 1;
+    }
+    let options = parse_compile_options(&options_args).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        process::exit(2);
+    });
+
+    match detect_target_kind(&target_path).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        process::exit(2);
+    }) {
+        TargetKind::Crate => {
+            let summary = elevate::crate_builder::build_ers_crate_with_options(
+                &target_path,
+                release,
+                &options,
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("{error}");
+                process::exit(1);
+            });
+            let mut cmd = Command::new("cargo");
+            cmd.arg("run")
+                .arg("--manifest-path")
+                .arg(summary.generated_root.join("Cargo.toml"))
+                .arg("--target-dir")
+                .arg(summary.source_root.join("target"));
+            if release {
+                cmd.arg("--release");
+            }
+            if !program_args.is_empty() {
+                cmd.arg("--");
+                cmd.args(program_args.iter());
+            }
+            let status = cmd.status().unwrap_or_else(|error| {
+                eprintln!(
+                    "failed to run cargo for {}: {error}",
+                    summary.generated_root.display()
+                );
+                process::exit(1);
+            });
+            if !status.success() {
+                process::exit(status.code().unwrap_or(1));
+            }
+        }
+        TargetKind::Script => {
+            run_script(&target_path, release, &options, &program_args).unwrap_or_else(|error| {
+                eprintln!("{error}");
+                process::exit(1);
+            });
         }
     }
+}
+
+fn run_script(
+    script_path: &Path,
+    release: bool,
+    options: &CompileOptions,
+    program_args: &[String],
+) -> Result<(), String> {
+    let rust_code = compile_script_to_rust(script_path, options)?;
+    let rust_path = unique_temp_path("elevate-script-runner", "rs");
+    let binary_path = unique_temp_path("elevate-script-runner", binary_ext());
+    if let Some(parent) = rust_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create temp directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(&rust_path, rust_code.as_bytes())
+        .map_err(|error| format!("failed to write {}: {error}", rust_path.display()))?;
+    compile_rust_to_binary(&rust_path, &binary_path, release)?;
+    let mut cmd = Command::new(&binary_path);
+    cmd.args(program_args.iter());
+    let status = cmd
+        .status()
+        .map_err(|error| format!("failed to execute {}: {error}", binary_path.display()))?;
+    let _ = fs::remove_file(&rust_path);
+    let _ = fs::remove_file(&binary_path);
+    if !status.success() {
+        process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+fn build_script_binary(
+    script_path: &Path,
+    output_path: &Path,
+    release: bool,
+    options: &CompileOptions,
+) -> Result<(), String> {
+    let rust_code = compile_script_to_rust(script_path, options)?;
+    let rust_path = unique_temp_path("elevate-script-build", "rs");
+    if let Some(parent) = rust_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create temp directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create output directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(&rust_path, rust_code.as_bytes())
+        .map_err(|error| format!("failed to write {}: {error}", rust_path.display()))?;
+    let result = compile_rust_to_binary(&rust_path, output_path, release);
+    let _ = fs::remove_file(&rust_path);
+    result
+}
+
+fn compile_script_to_rust(script_path: &Path, options: &CompileOptions) -> Result<String, String> {
+    let source = elevate::source::load_file(script_path)?;
+    let mut compile_options = options.clone();
+    compile_options.source_name = Some(script_path.display().to_string());
+    let output = elevate::compile_source_with_options(&source, &compile_options)
+        .map_err(|error| error.to_string())?;
+    for warning in &output.warnings {
+        eprintln!(
+            "warning: {}",
+            elevate::source_map::render_diagnostic(
+                warning,
+                compile_options.source_name.as_deref(),
+                Some(&source)
+            )
+        );
+    }
+    Ok(output.rust_code)
+}
+
+fn compile_rust_to_binary(
+    rust_path: &Path,
+    output_path: &Path,
+    release: bool,
+) -> Result<(), String> {
+    let mut cmd = Command::new("rustc");
+    cmd.arg("--edition=2021")
+        .arg(rust_path)
+        .arg("-o")
+        .arg(output_path);
+    if release {
+        cmd.arg("-O");
+    }
+    let output = cmd
+        .output()
+        .map_err(|error| format!("failed to run rustc for {}: {error}", rust_path.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "rustc failed for {} (status: {})\n{}",
+            rust_path.display(),
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+fn default_script_binary_path(script_path: &Path) -> PathBuf {
+    let stem = script_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("app");
+    script_path.with_file_name(format!("{stem}{}", binary_ext()))
+}
+
+fn unique_temp_path(prefix: &str, ext: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let pid = process::id();
+    let suffix = if ext.is_empty() {
+        format!("{prefix}-{pid}-{nanos}")
+    } else {
+        format!("{prefix}-{pid}-{nanos}.{ext}")
+    };
+    env::temp_dir().join(suffix)
+}
+
+fn binary_ext() -> &'static str {
+    if cfg!(windows) { "exe" } else { "" }
+}
+
+enum TargetKind {
+    Crate,
+    Script,
+}
+
+fn detect_target_kind(path: &Path) -> Result<TargetKind, String> {
+    if path.is_dir() {
+        return Ok(TargetKind::Crate);
+    }
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext == "ers")
+    {
+        return Ok(TargetKind::Script);
+    }
+    if path.is_file() {
+        return Err(format!(
+            "expected a crate directory or .ers script path, got file {}",
+            path.display()
+        ));
+    }
+    Err(format!(
+        "path does not exist or is unsupported: {} (expected crate directory or .ers script)",
+        path.display()
+    ))
 }
 
 fn run_test(args: &[String]) {
@@ -650,7 +940,12 @@ fn benchmark_cases() -> Vec<BenchCase> {
 fn usage() {
     eprintln!("usage:");
     eprintln!("  elevate <input-file.ers> [--emit-rust [output-file]] [experiment flags]");
-    eprintln!("  elevate build <crate-root> [--release] [experiment flags]");
+    eprintln!(
+        "  elevate build <crate-root|script.ers> [--release] [--out <output-file>] [experiment flags]"
+    );
+    eprintln!(
+        "  elevate run <crate-root|script.ers> [--release] [experiment flags] [-- <program args>]"
+    );
     eprintln!("  elevate test <crate-root> [experiment flags]");
     eprintln!(
         "  elevate bench [--iters N] [--warmup N] [--out report.csv] [--compare baseline.csv] [--fail-on-regression] [experiment flags]"

@@ -86,7 +86,11 @@ fn structural_method_required_trait(method: &str, arity: usize) -> Option<SemTyp
         }),
         ("clone", 0) => Some(named_type("Clone")),
         ("into_iter", 0) => Some(SemType::Path {
-            path: vec!["std".to_string(), "iter".to_string(), "IntoIterator".to_string()],
+            path: vec![
+                "std".to_string(),
+                "iter".to_string(),
+                "IntoIterator".to_string(),
+            ],
             args: Vec::new(),
         }),
         _ => None,
@@ -779,6 +783,7 @@ fn validate_expr_method_capabilities(
         }
         TypedExprKind::Path(_)
         | TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
         | TypedExprKind::Bool(_)
         | TypedExprKind::String(_)
         | TypedExprKind::Char(_) => {}
@@ -946,6 +951,7 @@ fn direct_effects_for_expr(expr: &TypedExpr, row: &mut EffectRow) {
         TypedExprKind::Cast { expr, .. } => direct_effects_for_expr(expr, row),
         TypedExprKind::Path(_)
         | TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
         | TypedExprKind::Bool(_)
         | TypedExprKind::String(_)
         | TypedExprKind::Char(_) => {}
@@ -1749,8 +1755,11 @@ fn collect_definitions(module: &Module, context: &mut Context, diagnostics: &mut
                         )
                     })
                     .collect::<HashMap<_, _>>();
-                let structural_requirements =
-                    collect_structural_requirements_for_function(&def.type_params, &def.params, &def.body);
+                let structural_requirements = collect_structural_requirements_for_function(
+                    &def.type_params,
+                    &def.params,
+                    &def.body,
+                );
                 merge_structural_method_bounds(&mut type_param_bounds, &structural_requirements);
                 let sig = FunctionSig {
                     type_params: def
@@ -1822,7 +1831,10 @@ fn collect_definitions(module: &Module, context: &mut Context, diagnostics: &mut
                     } else {
                         HashMap::new()
                     };
-                    merge_structural_method_bounds(&mut type_param_bounds, &structural_requirements);
+                    merge_structural_method_bounds(
+                        &mut type_param_bounds,
+                        &structural_requirements,
+                    );
                     let sig = FunctionSig {
                         type_params: all_type_params
                             .iter()
@@ -2271,6 +2283,7 @@ fn substitute_type_in_assign_target(
 fn substitute_type_in_expr(expr: &Expr, bindings: &HashMap<String, SemType>) -> Expr {
     match expr {
         Expr::Int(value) => Expr::Int(*value),
+        Expr::Float(value) => Expr::Float(value.clone()),
         Expr::Bool(value) => Expr::Bool(*value),
         Expr::Char(value) => Expr::Char(*value),
         Expr::String(value) => Expr::String(value.clone()),
@@ -2604,6 +2617,7 @@ fn rewrite_structural_calls_in_expr(
         TypedExprKind::Try(inner) => rewrite_structural_calls_in_expr(inner, lookup),
         TypedExprKind::Path(_)
         | TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
         | TypedExprKind::Bool(_)
         | TypedExprKind::String(_)
         | TypedExprKind::Char(_) => {}
@@ -3687,6 +3701,13 @@ fn infer_expr(
             },
             named_type("i64"),
         ),
+        Expr::Float(value) => (
+            TypedExpr {
+                kind: TypedExprKind::Float(value.clone()),
+                ty: "f64".to_string(),
+            },
+            named_type("f64"),
+        ),
         Expr::Bool(value) => (
             TypedExpr {
                 kind: TypedExprKind::Bool(*value),
@@ -4594,6 +4615,7 @@ fn diagnose_const_mutations_in_expr(
             diagnose_const_mutations_in_expr(inner, immutable_locals, diagnostics);
         }
         TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
         | TypedExprKind::Bool(_)
         | TypedExprKind::Char(_)
         | TypedExprKind::String(_)
@@ -6227,7 +6249,12 @@ fn collect_structural_requirements_in_expr(
         Expr::Try(inner) => {
             collect_structural_requirements_in_expr(inner, param_bindings, self_field_bindings, out)
         }
-        Expr::Int(_) | Expr::Bool(_) | Expr::Char(_) | Expr::String(_) | Expr::Path(_) => {}
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Char(_)
+        | Expr::String(_)
+        | Expr::Path(_) => {}
     }
 }
 
@@ -7595,6 +7622,7 @@ fn count_exact_place_uses_in_expr_rec(
         | TypedExprKind::Index { .. }
         | TypedExprKind::Path(_)
         | TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
         | TypedExprKind::Bool(_)
         | TypedExprKind::String(_)
         | TypedExprKind::Char(_) => {}
@@ -7686,6 +7714,7 @@ fn lower_expr_with_context(
 ) -> RustExpr {
     match &expr.kind {
         TypedExprKind::Int(value) => RustExpr::Int(*value),
+        TypedExprKind::Float(value) => RustExpr::Float(value.clone()),
         TypedExprKind::Bool(value) => RustExpr::Bool(*value),
         TypedExprKind::String(value) => RustExpr::String(value.clone()),
         TypedExprKind::Char(value) => RustExpr::Char(*value),
@@ -9148,6 +9177,7 @@ fn collect_place_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<OwnershipPlac
         }
         TypedExprKind::Try(inner) => collect_place_uses_in_expr(inner, uses),
         TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
         | TypedExprKind::Bool(_)
         | TypedExprKind::String(_)
         | TypedExprKind::Char(_)

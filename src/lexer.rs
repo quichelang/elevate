@@ -38,6 +38,7 @@ pub enum TokenKind {
     Underscore,
     Identifier(String),
     IntLiteral(i64),
+    FloatLiteral(String),
     CharLiteral(char),
     StringLiteral(String),
     LBrace,
@@ -502,17 +503,142 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_number(&mut self, start: usize, first: char) {
+        if first == '0' && self.peek_char().is_some_and(is_numeric_base_prefix) {
+            self.lex_prefixed_integer(start, first);
+            return;
+        }
+
         let mut value = String::new();
         value.push(first);
         while let Some(c) = self.peek_char() {
-            if c.is_ascii_digit() {
+            if c.is_ascii_digit() || c == '_' {
                 value.push(c);
                 self.advance();
             } else {
                 break;
             }
         }
-        match value.parse::<i64>() {
+
+        let mut is_float = false;
+        if self.peek_char() == Some('.')
+            && self.peek_next_char() != Some('.')
+            && self
+                .peek_next_char()
+                .is_some_and(|c| c.is_ascii_digit() || c == '_')
+        {
+            is_float = true;
+            value.push('.');
+            self.advance();
+            while let Some(c) = self.peek_char() {
+                if c.is_ascii_digit() || c == '_' {
+                    value.push(c);
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if self.peek_char().is_some_and(|c| c == 'e' || c == 'E') {
+            let mut lookahead = self.cursor + 1;
+            if self
+                .chars
+                .get(lookahead)
+                .is_some_and(|c| *c == '+' || *c == '-')
+            {
+                lookahead += 1;
+            }
+            let mut saw_digit = false;
+            while let Some(c) = self.chars.get(lookahead).copied() {
+                if c.is_ascii_digit() {
+                    saw_digit = true;
+                    lookahead += 1;
+                } else if c == '_' {
+                    lookahead += 1;
+                } else {
+                    break;
+                }
+            }
+            if saw_digit {
+                is_float = true;
+                value.push(self.advance());
+                if self.peek_char().is_some_and(|c| c == '+' || c == '-') {
+                    value.push(self.advance());
+                }
+                while let Some(c) = self.peek_char() {
+                    if c.is_ascii_digit() || c == '_' {
+                        value.push(c);
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let normalized = strip_numeric_separators(&value);
+        if is_float {
+            match normalized.parse::<f64>() {
+                Ok(_) => self.tokens.push(Token {
+                    kind: TokenKind::FloatLiteral(normalized),
+                    span: Span::new(start, self.cursor),
+                }),
+                Err(_) => self.diagnostics.push(Diagnostic::new(
+                    "Invalid float literal",
+                    Span::new(start, self.cursor),
+                )),
+            }
+            return;
+        }
+
+        match normalized.parse::<i64>() {
+            Ok(number) => self.tokens.push(Token {
+                kind: TokenKind::IntLiteral(number),
+                span: Span::new(start, self.cursor),
+            }),
+            Err(_) => self.diagnostics.push(Diagnostic::new(
+                "Invalid integer literal",
+                Span::new(start, self.cursor),
+            )),
+        }
+    }
+
+    fn lex_prefixed_integer(&mut self, start: usize, first: char) {
+        let mut value = String::new();
+        value.push(first);
+        let prefix = self.advance();
+        value.push(prefix);
+        let radix = match prefix {
+            'b' | 'B' => 2,
+            'o' | 'O' => 8,
+            'x' | 'X' => 16,
+            _ => unreachable!("validated base prefix before dispatch"),
+        };
+
+        let mut saw_digit = false;
+        while let Some(c) = self.peek_char() {
+            if c == '_' {
+                value.push(c);
+                self.advance();
+                continue;
+            }
+            if is_digit_for_radix(c, radix) {
+                saw_digit = true;
+                value.push(c);
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        if !saw_digit {
+            self.diagnostics.push(Diagnostic::new(
+                "Invalid integer literal",
+                Span::new(start, self.cursor),
+            ));
+            return;
+        }
+        let digits = strip_numeric_separators(&value[2..]);
+        match i64::from_str_radix(&digits, radix) {
             Ok(number) => self.tokens.push(Token {
                 kind: TokenKind::IntLiteral(number),
                 span: Span::new(start, self.cursor),
@@ -734,6 +860,18 @@ fn is_identifier_start(c: char) -> bool {
 
 fn is_identifier_continue(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
+}
+
+fn is_numeric_base_prefix(c: char) -> bool {
+    matches!(c, 'b' | 'B' | 'o' | 'O' | 'x' | 'X')
+}
+
+fn is_digit_for_radix(c: char, radix: u32) -> bool {
+    c.is_digit(radix)
+}
+
+fn strip_numeric_separators(value: &str) -> String {
+    value.chars().filter(|c| *c != '_').collect()
 }
 
 #[cfg(test)]
@@ -963,5 +1101,58 @@ last line"#;"##;
         assert!(literal.contains('\\'));
         assert!(literal.contains('\u{1b}'));
         assert!(!literal.contains("\\x1b"));
+    }
+
+    #[test]
+    fn lex_float_literals() {
+        let source = "const x = 5.1; const y = 6.0; const z = 1..3; const sci = 1_2.5_0e+1_0;";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::FloatLiteral(ref value) if value == "5.1"))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::FloatLiteral(ref value) if value == "6.0"))
+        );
+        assert!(
+            tokens.iter().any(
+                |t| matches!(t.kind, TokenKind::FloatLiteral(ref value) if value == "12.50e+10")
+            )
+        );
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::DotDot)));
+    }
+
+    #[test]
+    fn lex_prefixed_integers_and_weird_separators() {
+        let source = "const a = 0b10_10; const b = 0o7_7; const c = 0xF_F; const d = 1_000_000; const e = 5_00.100_5;";
+        let tokens = lex(source).expect("expected lex success");
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::IntLiteral(10)))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::IntLiteral(63)))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::IntLiteral(255)))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::IntLiteral(1_000_000)))
+        );
+        assert!(
+            tokens.iter().any(
+                |t| matches!(t.kind, TokenKind::FloatLiteral(ref value) if value == "500.1005")
+            )
+        );
     }
 }

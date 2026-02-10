@@ -57,8 +57,8 @@ fn integration_rustdex_is_operational_and_drives_signature_detection() {
             return HashMap::from_iter(pairs.into_iter());
         }
     "#;
-    let associated_output =
-        compile_source(associated_call_source).expect("rustdex-backed associated call should compile");
+    let associated_output = compile_source(associated_call_source)
+        .expect("rustdex-backed associated call should compile");
     assert!(
         associated_output
             .rust_code
@@ -272,7 +272,11 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
             continue;
         }
         fs::copy(&from, &to).map_err(|err| {
-            format!("failed to copy {} -> {}: {err}", from.display(), to.display())
+            format!(
+                "failed to copy {} -> {}: {err}",
+                from.display(),
+                to.display()
+            )
         })?;
     }
     Ok(())

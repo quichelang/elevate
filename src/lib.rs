@@ -2358,7 +2358,11 @@ mod tests {
 
         let output = compile_source(source)
             .expect("expected structural trait method checks to honor inferred Display bound");
-        assert!(output.rust_code.contains("fn describe<T: Display>(point: Point<T>) -> String"));
+        assert!(
+            output
+                .rust_code
+                .contains("fn describe<T: Display>(point: Point<T>) -> String")
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -3501,9 +3505,9 @@ mod tests {
         let output = compile_source(source).expect("expected std trait signature inference");
         assert!(output.rust_code.contains("impl Display for Token"));
         assert!(
-            output
-                .rust_code
-                .contains("fn fmt(self: &Token, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result")
+            output.rust_code.contains(
+                "fn fmt(self: &Token, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result"
+            )
         );
         assert_rust_code_compiles(&output.rust_code);
     }

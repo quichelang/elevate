@@ -75,10 +75,8 @@ pub fn type_has_associated_method(type_name: &str, method: &str) -> Option<bool>
 pub fn trait_method_signature(trait_name: &str, method_name: &str) -> Option<TraitMethodSignature> {
     match backend_preference() {
         BackendPreference::Cli => cli_trait_method_signature(trait_name, method_name),
-        BackendPreference::Direct => {
-            direct_trait_method_signature(trait_name, method_name)
-                .or_else(|| cli_trait_method_signature(trait_name, method_name))
-        }
+        BackendPreference::Direct => direct_trait_method_signature(trait_name, method_name)
+            .or_else(|| cli_trait_method_signature(trait_name, method_name)),
     }
 }
 
@@ -113,7 +111,10 @@ fn direct_type_has_associated_method(type_name: &str, method: &str) -> Option<bo
     )
 }
 
-fn direct_trait_method_signature(_trait_name: &str, _method_name: &str) -> Option<TraitMethodSignature> {
+fn direct_trait_method_signature(
+    _trait_name: &str,
+    _method_name: &str,
+) -> Option<TraitMethodSignature> {
     None
 }
 

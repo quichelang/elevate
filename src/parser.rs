@@ -1063,6 +1063,10 @@ impl Parser {
                 self.advance();
                 Some(Expr::Int(value))
             }
+            TokenKind::FloatLiteral(value) => {
+                self.advance();
+                Some(Expr::Float(value))
+            }
             TokenKind::True => {
                 self.advance();
                 Some(Expr::Bool(true))
@@ -1521,6 +1525,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (Underscore, Underscore)
             | (Identifier(_), Identifier(_))
             | (IntLiteral(_), IntLiteral(_))
+            | (FloatLiteral(_), FloatLiteral(_))
             | (CharLiteral(_), CharLiteral(_))
             | (StringLiteral(_), StringLiteral(_))
             | (LBrace, LBrace)
@@ -2119,6 +2124,23 @@ world"#;
                     'a' => 1;
                     _ => 0;
                 };
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_float_literals_in_expressions() {
+        let source = r#"
+            fn value() -> f64 {
+                const a = 5.25;
+                const b = 1_2.5_0e+1_0;
+                const c = 0b10_10;
+                const d = 0o7_7;
+                const e = 0xF_F;
+                return a;
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

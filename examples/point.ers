@@ -5,32 +5,26 @@ struct Point<T> {
     x: T;
     y: T;
 }
-impl<T> Point<T> {
-  fn new(x: T, y: T) -> Point<T> {
-    Point { x: x, y: y }
+impl<T: Display> Point<T> {
+  fn new(x: T, y: T) -> Self {
+    Point { x: x; y: y; }
   }
-}
 
-impl<T: Display> Display for Point<T> {
-  fn fmt(self, f: Formatter) -> std::fmt::Result {
-    write!(f, "Point({}, {})", self.x, self.y)
+  fn to_string(self) -> String{
+    format!("Point({}, {})", self.x, self.y)
   }
-}
-
-fn print_display<T: Display>(item: T) {
-    println!("{}", item);
 }
 
 fn main() {
-    let p: Point<i32> = Point::new(5, 6);
-    // print_display(p);
+    const p = Point::new(5, 6);
+    println!("{}", p.to_string());
     
-    let p2: Point<u32> = Point::new(5, 6);
-    // print_display(p2);
+    const p2 = Point::new(-1, 6);
+    println!("{}", p2.to_string());
     
-    let p3: Point<u64> = Point::new(5, 6);
-    // print_display(p3);
+    const p3 = Point::new(5.1, 6.5);
+    // println!("{}", p3.to_string());
         
-    let p4 = Point::new(5, 6);
-    // print_display(p4);
+    // const p4 = Point::new(-15, -6);
+    // println!("{}", p4.to_string());
 }

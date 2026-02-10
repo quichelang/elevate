@@ -1106,7 +1106,12 @@ fn validate_expr_adapter_calls(
                 validate_expr_adapter_calls(end, alias_arity, alias_param_types, diagnostics);
             }
         }
-        Expr::Path(_) | Expr::Int(_) | Expr::Bool(_) | Expr::Char(_) | Expr::String(_) => {}
+        Expr::Path(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Char(_)
+        | Expr::String(_) => {}
     }
 }
 
@@ -1152,6 +1157,7 @@ fn parse_contract_type(raw: &str) -> ContractType {
 fn infer_contract_expr_type(expr: &Expr) -> ContractType {
     match expr {
         Expr::Int(_) => ContractType::I64,
+        Expr::Float(_) => ContractType::Unknown,
         Expr::Bool(_) => ContractType::Bool,
         Expr::Char(_) => ContractType::Unknown,
         Expr::String(_) => ContractType::String,
@@ -1314,7 +1320,7 @@ fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec
                 rewrite_expr_adapter_calls(end, adapter_map);
             }
         }
-        Expr::Int(_) | Expr::Bool(_) | Expr::Char(_) | Expr::String(_) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Char(_) | Expr::String(_) => {}
     }
 }
 
