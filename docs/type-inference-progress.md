@@ -42,6 +42,69 @@ Target experience:
 4. Structural specialization path improving nested generic cases
 - Structural generic nested-object access can now compile via specialization paths in profile mode.
 
+5. Capability cutover for method/index resolution
+- Core type/lowering paths now resolve container method/index behavior via capability logic instead of legacy per-method direct-borrow tables.
+- Map subscript is now safe-option semantics:
+  - `map[key]` lowers to `map.get(key)` style behavior.
+  - result type is `Option<V>`.
+- Key compatibility for index expressions is now target/capability-derived.
+- Capability failures are now reported at Elevate level instead of leaking rustc-only failures in covered paths.
+
+## Capability Cutover (Expectation vs Reality)
+
+### A) Map subscript should be safe and typed, not Vec-only or rustc-fallback
+
+Expectation:
+```ers
+use std::collections::HashMap;
+
+fn score(scores: HashMap<String, i64>) -> Option<i64> {
+  scores["Alice"]
+}
+```
+
+Previous reality:
+- `[]` handling was effectively Vec-centric.
+- Non-Vec indexing often failed later in generated Rust, reducing diagnostic quality.
+
+Current reality:
+- Map-like `[]` resolves through capability path and returns `Option<V>`.
+- Lowering uses `get` semantics, preserving safe access behavior.
+
+Status: **Closed**
+
+---
+
+### B) Method/index typing should not require per-method compiler wiring
+
+Expectation:
+- Borrow/move/type behavior should derive from a unified capability model.
+
+Previous reality:
+- Several std-container paths were manually hardcoded, which made drift/regressions likely.
+
+Current reality:
+- Capability resolution is now the primary method/index typing path.
+- Direct hardcoded std-container borrow tables for old method lowering path are removed from the active flow.
+
+Status: **Substantially closed**
+
+---
+
+### C) Failures should be diagnosed in Elevate with actionable context
+
+Expectation:
+- Errors should identify capability mismatch/metadata gaps before rustc.
+
+Previous reality:
+- Some unsupported paths surfaced only as rustc type errors.
+
+Current reality:
+- Capability resolution failures and key-type mismatch cases are emitted directly by Elevate in covered paths.
+- Numeric/index mismatch diagnostics are more targeted for vector/key-style misuse.
+
+Status: **Closed for covered capability paths**
+
 ## Expectation vs Reality
 
 ### 1) “If it looks like Rust generic call syntax, it should compile”
@@ -178,6 +241,30 @@ fn run() -> i64 {
 
 ## Remaining Work (Clear Next Steps)
 
+## Stabilization Checklist (Post-Cutover)
+
+1. Document-level lock-in
+- Ensure language spec remains aligned with:
+  - map `[]` => `Option<V>` safe semantics
+  - capability-first method/index typing
+  - rustdex metadata dependency diagnostics
+
+2. Story/integration coverage expansion
+- Extend consolidated OCaml story coverage for:
+  - map + vector + nested-structure mixed access
+  - capability failure diagnostics for custom/non-capability paths
+  - mixed inference + ownership + numeric coercion scenarios
+
+3. Regression hygiene
+- Keep `cargo test -q` and benchmark cadence mandatory for `passes.rs`/ownership-sensitive changes.
+- Watch clone/hot-clone counters and p95 drift after capability refactors.
+
+4. Remaining risk
+- rustdex metadata availability remains an operational dependency for capability resolution.
+- Structural generic expressiveness still needs further default-mode hardening to match OCaml-like consistency targets.
+
+## Remaining Work (Clear Next Steps)
+
 ### P0: Make OCaml-like inference default-quality (not profile-dependent)
 
 1. Principal typing consistency
@@ -230,4 +317,3 @@ fn run() -> i64 {
 - Ergonomic trajectory: **strong in profile mode**
 - Default-mode parity with OCaml expectations: **not complete yet**
 - Risk to product promise (“simpler than Rust” illusion break): **medium until default-mode consistency is hardened**
-
