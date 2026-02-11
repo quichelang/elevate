@@ -5308,6 +5308,12 @@ fn resolve_field_type(
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SemType {
+    if *base_ty == SemType::Unknown {
+        // Keep structural-generic field accesses deferrable until call-site
+        // specialization resolves concrete receiver types.
+        return SemType::Unknown;
+    }
+
     if let SemType::Path { path, .. } = base_ty {
         if let Some(struct_name) = path.last() {
             if let Some(fields) = context.structs.get(struct_name) {

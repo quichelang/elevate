@@ -8,9 +8,12 @@ fn compile_with_ocaml_profile(
     // - local bidirectional inference
     // - principal fallback diagnostics
     // - numeric coercion for expected-type literal steering
+    // - effect-row analysis (surface + internal)
     options.experiments.infer_local_bidi = true;
     options.experiments.infer_principal_fallback = true;
     options.experiments.numeric_coercion = true;
+    options.experiments.effect_rows = true;
+    options.experiments.effect_rows_internal = true;
     compile_source_with_options(source, &options)
 }
 
@@ -151,7 +154,7 @@ fn structural_polymorphism_handles_nested_object_properties() {
 }
 
 #[test]
-fn structural_generic_nested_object_access_is_a_known_gap_for_now() {
+fn structural_generic_nested_object_access_compiles_in_profile_mode() {
     let source = r#"
         struct Child {
             values: Vec<i64>;
@@ -171,13 +174,9 @@ fn structural_generic_nested_object_access_is_a_known_gap_for_now() {
         }
     "#;
 
-    let error = compile_with_ocaml_profile(source)
-        .expect_err("nested structural generic field access is not fully supported yet");
-    let rendered = error.to_string();
-    assert!(
-        rendered.contains("Unable to resolve structural type parameter")
-            || rendered.contains("Field access requires a known struct type")
-    );
+    let output = compile_with_ocaml_profile(source)
+        .expect("nested structural generic field access should compile in profile mode");
+    assert!(output.rust_code.contains("__elevate_row_first_value_"));
 }
 
 // Checklist Story: Section 3

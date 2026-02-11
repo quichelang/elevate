@@ -137,6 +137,8 @@ fn cli_accepts_ocaml_infer_profile_flag_for_compile() {
     assert!(stdout.contains("experimental flag enabled: exp_infer_local_bidi"));
     assert!(stdout.contains("experimental flag enabled: exp_infer_principal_fallback"));
     assert!(stdout.contains("experimental flag enabled: exp_numeric_coercion"));
+    assert!(stdout.contains("experimental flag enabled: exp_effect_rows"));
+    assert!(stdout.contains("experimental flag enabled: exp_effect_rows_internal"));
 }
 
 #[test]

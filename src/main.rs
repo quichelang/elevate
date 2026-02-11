@@ -959,7 +959,9 @@ fn usage() {
     eprintln!("  --exp-effect-rows-internal");
     eprintln!("  --exp-infer-principal-fallback");
     eprintln!("  --exp-numeric-coercion");
-    eprintln!("  --exp-ocaml-infer (enables local bidi + principal fallback + numeric coercion)");
+    eprintln!(
+        "  --exp-ocaml-infer (enables local bidi + principal fallback + numeric coercion + effect rows)"
+    );
     eprintln!("  --warn-missing-types");
     eprintln!("  --fail-on-hot-clone");
     eprintln!("  --allow-hot-clone-place <place>");
@@ -1099,6 +1101,8 @@ fn apply_experiment_flag(flag: &str, experiments: &mut ExperimentFlags) -> bool 
             experiments.infer_local_bidi = true;
             experiments.infer_principal_fallback = true;
             experiments.numeric_coercion = true;
+            experiments.effect_rows = true;
+            experiments.effect_rows_internal = true;
             true
         }
         _ => false,

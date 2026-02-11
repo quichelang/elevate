@@ -18,7 +18,18 @@ pub enum TypedItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedRustUse {
-    pub path: Vec<String>,
+    pub tree: TypedUseTree,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedUseTree {
+    Name(String),
+    Glob,
+    Path {
+        segment: String,
+        next: Box<TypedUseTree>,
+    },
+    Group(Vec<TypedUseTree>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

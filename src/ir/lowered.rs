@@ -19,7 +19,18 @@ pub enum RustItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustUse {
-    pub path: Vec<String>,
+    pub tree: RustUseTree,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustUseTree {
+    Name(String),
+    Glob,
+    Path {
+        segment: String,
+        next: Box<RustUseTree>,
+    },
+    Group(Vec<RustUseTree>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

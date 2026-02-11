@@ -2,6 +2,7 @@ use crate::ir::lowered::{
     RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
     RustExpr, RustFunction, RustImpl, RustItem, RustModule, RustPattern, RustPatternField,
     RustStatic, RustStmt, RustStruct, RustStructLiteralField, RustTrait, RustUnaryOp, RustUse,
+    RustUseTree,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -38,8 +39,24 @@ pub fn emit_rust_module(module: &RustModule) -> String {
 
 fn emit_use(def: &RustUse, out: &mut String) {
     out.push_str("use ");
-    out.push_str(&def.path.join("::"));
+    out.push_str(&emit_use_tree(&def.tree));
     out.push_str(";\n");
+}
+
+fn emit_use_tree(tree: &RustUseTree) -> String {
+    match tree {
+        RustUseTree::Name(name) => name.clone(),
+        RustUseTree::Glob => "*".to_string(),
+        RustUseTree::Path { segment, next } => format!("{segment}::{}", emit_use_tree(next)),
+        RustUseTree::Group(items) => {
+            let rendered = items
+                .iter()
+                .map(emit_use_tree)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{rendered}}}")
+        }
+    }
 }
 
 fn emit_raw_item(code: &str, out: &mut String) {

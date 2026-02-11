@@ -1,0 +1,12 @@
+#!/bin/bash
+
+cargo run -- $@ \
+  --exp-move-mut-args \
+  --exp-effect-rows \
+  --exp-effect-rows-internal \
+  --exp-infer-principal-fallback \
+  --exp-numeric-coercion \
+  --warn-missing-types \
+  --exp-literal-bidi \
+  --fail-on-hot-clone
+  # --exp-infer-local-bidi \
