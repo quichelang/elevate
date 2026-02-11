@@ -5,21 +5,21 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use crate::DirectBorrowHint;
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, Expr, GenericParam, Item, Module,
-    Pattern, Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp, Visibility,
+    Pattern, Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp, UseTree, Visibility,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
     RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
     RustExpr, RustField, RustFunction, RustImpl, RustItem, RustMatchArm, RustModule, RustParam,
     RustPattern, RustPatternField, RustStatic, RustStmt, RustStruct, RustStructLiteralField,
-    RustTrait, RustTraitMethod, RustTypeParam, RustUnaryOp, RustUse, RustVariant,
+    RustTrait, RustTraitMethod, RustTypeParam, RustUnaryOp, RustUse, RustUseTree, RustVariant,
 };
 use crate::ir::typed::{
     TypedAssignOp, TypedAssignTarget, TypedBinaryOp, TypedConst, TypedDestructurePattern,
     TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedItem,
     TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedPatternField, TypedRustUse,
     TypedStatic, TypedStmt, TypedStruct, TypedStructLiteralField, TypedTrait, TypedTraitMethod,
-    TypedTypeParam, TypedUnaryOp, TypedVariant,
+    TypedTypeParam, TypedUnaryOp, TypedUseTree, TypedVariant,
 };
 use crate::ownership_planner::{CloneDecision, ClonePlannerInput, decide_clone};
 use crate::rustdex_backend;
@@ -282,7 +282,7 @@ fn emit_strict_hole_once(key: String, message: String, diagnostics: &mut Vec<Dia
 
 fn emit_strict_unknown_operand_hint_once(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
     match expr {
-        Expr::Path(path) if path.len() == 1 => {
+        Expr::Path(path) | Expr::PathWithTypeArgs { path, .. } if path.len() == 1 => {
             let name = &path[0];
             emit_strict_hole_once(
                 format!("strict:arith:path:{name}"),
@@ -985,7 +985,7 @@ pub fn lower_to_rust_with_hints(
     for item in &module.items {
         let lowered = match item {
             TypedItem::RustUse(def) => RustItem::Use(RustUse {
-                path: def.path.clone(),
+                tree: typed_use_tree_to_rust(&def.tree),
             }),
             TypedItem::RustBlock(code) => RustItem::Raw(code.clone()),
             TypedItem::Struct(def) => RustItem::Struct(RustStruct {
@@ -1286,14 +1286,18 @@ impl LoweringState {
         for item in &module.items {
             match item {
                 TypedItem::RustUse(def) => {
-                    if let Some(name) = def.path.last() {
-                        state
-                            .imported_rust_paths
-                            .entry(name.clone())
-                            .or_default()
-                            .push(def.path.clone());
+                    for path in flatten_typed_use_tree_paths(&def.tree) {
+                        if let Some(name) = path.last()
+                            && name != "*"
+                        {
+                            state
+                                .imported_rust_paths
+                                .entry(name.clone())
+                                .or_default()
+                                .push(path.clone());
+                        }
+                        state.registry.observe_import_path(&path);
                     }
-                    state.registry.observe_import_path(&def.path);
                 }
                 TypedItem::Struct(def) => {
                     state.registry.register_user_cloneable_type(&def.name);
@@ -1379,6 +1383,50 @@ impl LoweringState {
         place_for_expr(expr)
             .map(|place| self.forced_clone_places.contains(&place.display_name()))
             .unwrap_or(false)
+    }
+}
+
+fn flatten_typed_use_tree_paths(tree: &TypedUseTree) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    let mut prefix = Vec::<String>::new();
+    flatten_typed_use_tree_paths_into(tree, &mut prefix, &mut out);
+    out
+}
+
+fn flatten_typed_use_tree_paths_into(
+    tree: &TypedUseTree,
+    prefix: &mut Vec<String>,
+    out: &mut Vec<Vec<String>>,
+) {
+    match tree {
+        TypedUseTree::Name(name) => {
+            if name == "self" {
+                if !prefix.is_empty() {
+                    out.push(prefix.clone());
+                }
+                return;
+            }
+            let mut full = prefix.clone();
+            full.push(name.clone());
+            out.push(full);
+        }
+        TypedUseTree::Glob => {
+            if !prefix.is_empty() {
+                let mut full = prefix.clone();
+                full.push("*".to_string());
+                out.push(full);
+            }
+        }
+        TypedUseTree::Path { segment, next } => {
+            prefix.push(segment.clone());
+            flatten_typed_use_tree_paths_into(next, prefix, out);
+            prefix.pop();
+        }
+        TypedUseTree::Group(items) => {
+            for item in items {
+                flatten_typed_use_tree_paths_into(item, prefix, out);
+            }
+        }
     }
 }
 
@@ -2288,6 +2336,10 @@ fn substitute_type_in_expr(expr: &Expr, bindings: &HashMap<String, SemType>) -> 
         Expr::Char(value) => Expr::Char(*value),
         Expr::String(value) => Expr::String(value.clone()),
         Expr::Path(path) => Expr::Path(path.clone()),
+        Expr::PathWithTypeArgs { path, type_args } => Expr::PathWithTypeArgs {
+            path: path.clone(),
+            type_args: type_args.clone(),
+        },
         Expr::Call { callee, args } => Expr::Call {
             callee: Box::new(substitute_type_in_expr(callee, bindings)),
             args: args
@@ -2656,7 +2708,7 @@ fn lower_item(
 ) -> Option<TypedItem> {
     match item {
         Item::RustUse(def) => Some(TypedItem::RustUse(TypedRustUse {
-            path: def.path.clone(),
+            tree: ast_use_tree_to_typed(&def.tree),
         })),
         Item::RustBlock(code) => Some(TypedItem::RustBlock(code.clone())),
         Item::Struct(def) => Some(TypedItem::Struct(TypedStruct {
@@ -3144,6 +3196,34 @@ fn lower_item(
                 body,
             }))
         }),
+    }
+}
+
+fn ast_use_tree_to_typed(tree: &UseTree) -> TypedUseTree {
+    match tree {
+        UseTree::Name(name) => TypedUseTree::Name(name.clone()),
+        UseTree::Glob => TypedUseTree::Glob,
+        UseTree::Path { segment, next } => TypedUseTree::Path {
+            segment: segment.clone(),
+            next: Box::new(ast_use_tree_to_typed(next)),
+        },
+        UseTree::Group(items) => {
+            TypedUseTree::Group(items.iter().map(ast_use_tree_to_typed).collect())
+        }
+    }
+}
+
+fn typed_use_tree_to_rust(tree: &TypedUseTree) -> RustUseTree {
+    match tree {
+        TypedUseTree::Name(name) => RustUseTree::Name(name.clone()),
+        TypedUseTree::Glob => RustUseTree::Glob,
+        TypedUseTree::Path { segment, next } => RustUseTree::Path {
+            segment: segment.clone(),
+            next: Box::new(typed_use_tree_to_rust(next)),
+        },
+        TypedUseTree::Group(items) => {
+            RustUseTree::Group(items.iter().map(typed_use_tree_to_rust).collect())
+        }
     }
 }
 
@@ -3748,6 +3828,16 @@ fn infer_expr(
                 ty,
             )
         }
+        Expr::PathWithTypeArgs { path, type_args: _ } => {
+            let ty = resolve_path_value(path, context).unwrap_or(SemType::Unknown);
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Path(path.clone()),
+                    ty: type_to_string(&ty),
+                },
+                ty,
+            )
+        }
         Expr::StructLiteral { path, fields } => {
             let mut typed_fields = Vec::new();
             let mut seen = HashSet::new();
@@ -3900,6 +3990,15 @@ fn infer_expr(
                 );
             }
 
+            let explicit_type_args = match callee.as_ref() {
+                Expr::PathWithTypeArgs { type_args, .. } => Some(
+                    type_args
+                        .iter()
+                        .map(|ty| type_from_ast_in_context(ty, context))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            };
             let (typed_callee, callee_ty) =
                 infer_expr(callee, context, locals, return_ty, diagnostics);
             let resolved = resolve_call_type(
@@ -3907,6 +4006,7 @@ fn infer_expr(
                 &callee_ty,
                 args,
                 &arg_types,
+                explicit_type_args.as_deref(),
                 context,
                 locals,
                 diagnostics,
@@ -5238,6 +5338,7 @@ fn resolve_call_type(
     callee_ty: &SemType,
     arg_exprs: &[Expr],
     args: &[SemType],
+    explicit_type_args: Option<&[SemType]>,
     context: &Context,
     locals: &HashMap<String, SemType>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -5284,12 +5385,19 @@ fn resolve_call_type(
                 &resolved_name,
                 Some(arg_exprs),
                 args,
+                explicit_type_args,
                 context,
                 diagnostics,
             );
         }
 
-        if let Some(resolved) = resolve_constructor_call(path, args, context, diagnostics) {
+        if let Some(resolved) = resolve_constructor_call(
+            path,
+            args,
+            explicit_type_args,
+            context,
+            diagnostics,
+        ) {
             return resolved;
         }
 
@@ -5491,6 +5599,7 @@ fn resolve_named_function_call(
     name: &str,
     arg_exprs: Option<&[Expr]>,
     args: &[SemType],
+    explicit_type_args: Option<&[SemType]>,
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SemType {
@@ -5508,23 +5617,42 @@ fn resolve_named_function_call(
 
     let type_param_set = sig.type_params.iter().cloned().collect::<HashSet<_>>();
     let mut generic_bindings = HashMap::new();
+    if let Some(explicit) = explicit_type_args {
+        if explicit.len() != sig.type_params.len() {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "Function `{name}` expects {} explicit type argument(s), got {}",
+                    sig.type_params.len(),
+                    explicit.len()
+                ),
+                default_diag_span(),
+            ));
+        }
+        for (index, ty) in explicit.iter().enumerate() {
+            if let Some(type_param) = sig.type_params.get(index) {
+                generic_bindings.insert(type_param.clone(), ty.clone());
+            }
+        }
+    }
 
     for (index, (actual, expected)) in args.iter().zip(&sig.params).enumerate() {
         let actual_expr = arg_exprs.and_then(|exprs| exprs.get(index));
         let adjusted_actual = literal_bidi_adjusted_numeric_arg_type(actual_expr, actual, expected)
             .unwrap_or_else(|| actual.clone());
+        let expected_with_known =
+            substitute_bound_generic_type(expected, &type_param_set, &generic_bindings);
         if !bind_generic_params(
-            expected,
+            &expected_with_known,
             &adjusted_actual,
             &type_param_set,
             &mut generic_bindings,
-        ) && !is_compatible(&adjusted_actual, expected)
+        ) && !is_compatible(&adjusted_actual, &expected_with_known)
         {
             diagnostics.push(Diagnostic::new(
                 format!(
                     "Arg {} for `{name}`: expected `{}`, got `{}`",
                     index + 1,
-                    type_to_string(expected),
+                    type_to_string(&expected_with_known),
                     type_to_string(actual)
                 ),
                 default_diag_span(),
@@ -6254,7 +6382,8 @@ fn collect_structural_requirements_in_expr(
         | Expr::Bool(_)
         | Expr::Char(_)
         | Expr::String(_)
-        | Expr::Path(_) => {}
+        | Expr::Path(_)
+        | Expr::PathWithTypeArgs { .. } => {}
     }
 }
 
@@ -6265,6 +6394,9 @@ fn resolve_structural_type_param_for_expr(
 ) -> Option<String> {
     match expr {
         Expr::Path(path) if path.len() == 1 => param_bindings.get(&path[0]).cloned(),
+        Expr::PathWithTypeArgs { path, .. } if path.len() == 1 => {
+            param_bindings.get(&path[0]).cloned()
+        }
         Expr::Field { base, field } if matches!(base.as_ref(), Expr::Path(path) if path.len() == 1 && path[0] == "self") => {
             self_field_bindings.get(field).cloned()
         }
@@ -6700,6 +6832,7 @@ fn resolve_method_call_type(
                     &lookup,
                     None,
                     &call_args,
+                    None,
                     context,
                     diagnostics,
                 );
@@ -6710,6 +6843,7 @@ fn resolve_method_call_type(
                     &lookup,
                     Some(arg_exprs),
                     args,
+                    None,
                     context,
                     diagnostics,
                 );
@@ -6831,6 +6965,7 @@ fn expect_method_arity(
 fn resolve_constructor_call(
     path: &[String],
     args: &[SemType],
+    explicit_type_args: Option<&[SemType]>,
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<SemType> {
@@ -6924,6 +7059,23 @@ fn resolve_constructor_call(
                     .unwrap_or_default();
                 let type_param_set = type_param_names.iter().cloned().collect::<HashSet<_>>();
                 let mut generic_bindings = HashMap::new();
+                if let Some(explicit) = explicit_type_args {
+                    if explicit.len() != type_param_names.len() {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Enum variant `{enum_name}::{variant_name}` expects {} explicit type argument(s), got {}",
+                                type_param_names.len(),
+                                explicit.len()
+                            ),
+                            default_diag_span(),
+                        ));
+                    }
+                    for (index, ty) in explicit.iter().enumerate() {
+                        if let Some(name) = type_param_names.get(index) {
+                            generic_bindings.insert(name.clone(), ty.clone());
+                        }
+                    }
+                }
                 if args.len() != expected_payload.len() {
                     diagnostics.push(Diagnostic::new(
                         format!(
@@ -6936,18 +7088,23 @@ fn resolve_constructor_call(
                 } else {
                     for (index, (actual, expected)) in args.iter().zip(expected_payload).enumerate()
                     {
-                        let bound = bind_generic_params(
+                        let expected_with_known = substitute_bound_generic_type(
                             expected,
+                            &type_param_set,
+                            &generic_bindings,
+                        );
+                        let bound = bind_generic_params(
+                            &expected_with_known,
                             actual,
                             &type_param_set,
                             &mut generic_bindings,
                         );
-                        if !bound && !is_compatible(actual, expected) {
+                        if !bound && !is_compatible(actual, &expected_with_known) {
                             diagnostics.push(Diagnostic::new(
                                 format!(
                                     "Enum variant `{enum_name}::{variant_name}` arg {} expected `{}`, got `{}`",
                                     index + 1,
-                                    type_to_string(expected),
+                                    type_to_string(&expected_with_known),
                                     type_to_string(actual)
                                 ),
                                 default_diag_span(),
@@ -7111,12 +7268,17 @@ fn refine_expr_type_hint(
     if *expr_ty != SemType::Unknown || *hint_ty == SemType::Unknown {
         return;
     }
-    if let Expr::Path(path) = expr
-        && path.len() == 1
-        && let Some(existing) = locals.get(&path[0]).cloned()
-        && existing == SemType::Unknown
-    {
-        locals.insert(path[0].clone(), hint_ty.clone());
+    match expr {
+        Expr::Path(path) | Expr::PathWithTypeArgs { path, .. }
+            if path.len() == 1
+                && locals
+                    .get(&path[0])
+                    .cloned()
+                    .is_some_and(|existing| existing == SemType::Unknown) =>
+        {
+            locals.insert(path[0].clone(), hint_ty.clone());
+        }
+        _ => {}
     }
     *expr_ty = hint_ty.clone();
     typed_expr.ty = type_to_string(expr_ty);
@@ -9250,6 +9412,13 @@ fn quiche_macro_target_type(expr: &Expr, context: &Context) -> SemType {
             },
             context,
         ),
+        Expr::PathWithTypeArgs { path, type_args } => promote_trait_shorthand(
+            SemType::Path {
+                path: path.clone(),
+                args: type_args.iter().map(type_from_ast).collect(),
+            },
+            context,
+        ),
         _ => SemType::Unknown,
     }
 }
@@ -10154,6 +10323,53 @@ fn substitute_generic_type(
                 .collect(),
         ),
         SemType::Iter(item) => SemType::Iter(Box::new(substitute_generic_type(
+            item,
+            type_params,
+            bindings,
+        ))),
+        SemType::Unit | SemType::Unknown => ty.clone(),
+    }
+}
+
+fn substitute_bound_generic_type(
+    ty: &SemType,
+    type_params: &HashSet<String>,
+    bindings: &HashMap<String, SemType>,
+) -> SemType {
+    match ty {
+        SemType::Path { path, args } if path.len() == 1 && args.is_empty() => {
+            if type_params.contains(&path[0]) {
+                return bindings.get(&path[0]).cloned().unwrap_or_else(|| ty.clone());
+            }
+            ty.clone()
+        }
+        SemType::Path { path, args } => SemType::Path {
+            path: path.clone(),
+            args: args
+                .iter()
+                .map(|arg| substitute_bound_generic_type(arg, type_params, bindings))
+                .collect(),
+        },
+        SemType::Tuple(items) => SemType::Tuple(
+            items
+                .iter()
+                .map(|item| substitute_bound_generic_type(item, type_params, bindings))
+                .collect(),
+        ),
+        SemType::Fn { params, ret } => SemType::Fn {
+            params: params
+                .iter()
+                .map(|param| substitute_bound_generic_type(param, type_params, bindings))
+                .collect(),
+            ret: Box::new(substitute_bound_generic_type(ret, type_params, bindings)),
+        },
+        SemType::TraitObject(bounds) => SemType::TraitObject(
+            bounds
+                .iter()
+                .map(|bound| substitute_bound_generic_type(bound, type_params, bindings))
+                .collect(),
+        ),
+        SemType::Iter(item) => SemType::Iter(Box::new(substitute_bound_generic_type(
             item,
             type_params,
             bindings,

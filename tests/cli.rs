@@ -118,6 +118,45 @@ fn cli_accepts_literal_bidi_flag_for_compile() {
 }
 
 #[test]
+fn cli_accepts_ocaml_infer_profile_flag_for_compile() {
+    let root = temp_dir("elevate-cli-exp-ocaml-infer");
+    let src = root.join("input.ers");
+    fs::write(
+        &src,
+        "fn take_u64(v: u64) -> u64 { v }\nfn run() -> u64 { take_u64(7) }\n",
+    )
+    .expect("write source should succeed");
+
+    let output = Command::new(bin())
+        .arg(&src)
+        .arg("--exp-ocaml-infer")
+        .output()
+        .expect("run cli should succeed");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("experimental flag enabled: exp_infer_local_bidi"));
+    assert!(stdout.contains("experimental flag enabled: exp_infer_principal_fallback"));
+    assert!(stdout.contains("experimental flag enabled: exp_numeric_coercion"));
+}
+
+#[test]
+fn cli_compiles_explicit_type_application_in_expression_paths() {
+    let root = temp_dir("elevate-cli-explicit-type-app");
+    let src = root.join("input.ers");
+    fs::write(
+        &src,
+        "use std::fmt::Display;\nstruct Point<T> { x: T; y: T; }\nimpl<T: Display> Point<T> { fn new(x: T, y: T) -> Self { Point { x: x; y: y; } } }\nfn run() { const p = Point<i64>::new(1, 2); std::mem::drop(p); }\n",
+    )
+    .expect("write source should succeed");
+
+    let output = Command::new(bin())
+        .arg(&src)
+        .output()
+        .expect("run cli should succeed");
+    assert!(output.status.success());
+}
+
+#[test]
 fn cli_rejects_mutually_exclusive_bidi_flags() {
     let root = temp_dir("elevate-cli-exp-bidi-conflict");
     let src = root.join("input.ers");

@@ -1014,7 +1014,12 @@ fn validate_expr_adapter_calls(
 ) {
     match expr {
         Expr::Call { callee, args } => {
-            if let Expr::Path(path) = callee.as_ref() {
+            let callee_path = match callee.as_ref() {
+                Expr::Path(path) => Some(path),
+                Expr::PathWithTypeArgs { path, .. } => Some(path),
+                _ => None,
+            };
+            if let Some(path) = callee_path {
                 let alias = path.join("::");
                 if let Some(expected) = alias_arity.get(&alias)
                     && args.len() != *expected
@@ -1107,6 +1112,7 @@ fn validate_expr_adapter_calls(
             }
         }
         Expr::Path(_)
+        | Expr::PathWithTypeArgs { .. }
         | Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
@@ -1267,6 +1273,12 @@ fn rewrite_stmt_adapter_calls(stmt: &mut Stmt, adapter_map: &HashMap<String, Vec
 fn rewrite_expr_adapter_calls(expr: &mut Expr, adapter_map: &HashMap<String, Vec<String>>) {
     match expr {
         Expr::Path(path) => {
+            let alias = path.join("::");
+            if let Some(rewrite) = adapter_map.get(&alias) {
+                *path = rewrite.clone();
+            }
+        }
+        Expr::PathWithTypeArgs { path, .. } => {
             let alias = path.join("::");
             if let Some(rewrite) = adapter_map.get(&alias) {
                 *path = rewrite.clone();
@@ -1615,12 +1627,9 @@ fn validate_interop_contract_for_source(
     }
 
     let mut violations = Vec::new();
-    for (line_idx, line) in source.lines().enumerate() {
-        let Some((path, col)) = parse_use_import_line(line) else {
-            continue;
-        };
+    for (path, line, col) in collect_use_imports_for_contract(source) {
         if !path_allowed_by_contract(&path, &contract.allowed_paths) {
-            violations.push((line_idx + 1, col, path));
+            violations.push((line, col, path));
         }
     }
 
@@ -1643,15 +1652,67 @@ fn validate_interop_contract_for_source(
     Err(message)
 }
 
-fn parse_use_import_line(line: &str) -> Option<(String, usize)> {
-    let indent = line.len() - line.trim_start().len();
-    let trimmed = line.trim_start();
-    let (rest, prefix_len) = (trimmed.strip_prefix("use ")?, "use ".len());
-    let path = rest.strip_suffix(';')?.trim();
-    if !is_valid_rust_path(path) {
-        return None;
+fn collect_use_imports_for_contract(source: &str) -> Vec<(String, usize, usize)> {
+    let Ok(tokens) = crate::lexer::lex(source) else {
+        return Vec::new();
+    };
+    let Ok(module) = crate::parser::parse_module(tokens) else {
+        return Vec::new();
+    };
+    let mut imports = Vec::new();
+    for item in module.items {
+        let crate::ast::Item::RustUse(def) = item else {
+            continue;
+        };
+        let (line, col) = def
+            .span
+            .map(|span| crate::source_map::byte_to_line_col_clamped(source, span.start))
+            .unwrap_or((1, 1));
+        for path in flatten_use_tree_paths(&def.tree) {
+            imports.push((path, line, col));
+        }
     }
-    Some((path.to_string(), indent + prefix_len + 1))
+    imports
+}
+
+fn flatten_use_tree_paths(tree: &crate::ast::UseTree) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut prefix = Vec::<String>::new();
+    flatten_use_tree_paths_into(tree, &mut prefix, &mut out);
+    out
+}
+
+fn flatten_use_tree_paths_into(
+    tree: &crate::ast::UseTree,
+    prefix: &mut Vec<String>,
+    out: &mut Vec<String>,
+) {
+    match tree {
+        crate::ast::UseTree::Name(name) => {
+            if name != "self" {
+                let mut full = prefix.clone();
+                full.push(name.clone());
+                out.push(full.join("::"));
+            } else if !prefix.is_empty() {
+                out.push(prefix.join("::"));
+            }
+        }
+        crate::ast::UseTree::Glob => {
+            if !prefix.is_empty() {
+                out.push(format!("{}::*", prefix.join("::")));
+            }
+        }
+        crate::ast::UseTree::Path { segment, next } => {
+            prefix.push(segment.clone());
+            flatten_use_tree_paths_into(next, prefix, out);
+            prefix.pop();
+        }
+        crate::ast::UseTree::Group(items) => {
+            for item in items {
+                flatten_use_tree_paths_into(item, prefix, out);
+            }
+        }
+    }
 }
 
 fn path_allowed_by_contract(path: &str, allowed: &BTreeSet<String>) -> bool {

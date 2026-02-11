@@ -1,10 +1,10 @@
 use std::fmt::Display;
-use std::fmt::Formatter;
 
 struct Point<T> {
     x: T;
     y: T;
 }
+
 impl<T: Display> Point<T> {
   fn new(x: T, y: T) -> Self {
     Point { x: x; y: y; }
@@ -16,14 +16,14 @@ impl<T: Display> Point<T> {
 }
 
 fn main() {
-    const p = Point::new(5, 6);
+    const p = Point<i32>::new(5, 6); // Rust syntax, should work
     println!("{}", p.to_string());
     
-    const p2 = Point::new(-1, 6);
+    const p2 = Point::new(-1, 6); // Type inference should work here, but doesn't
     println!("{}", p2.to_string());
     
-    const p3 = Point::new(5.1, 6.5);
-    // println!("{}", p3.to_string());
+    const p3 = Point::new(5.1, 6.5); // Polymorphism / Monomorphization
+    println!("{}", p3.to_string());
         
     // const p4 = Point::new(-15, -6);
     // println!("{}", p4.to_string());

@@ -26,7 +26,16 @@ pub enum Item {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustUse {
-    pub path: Vec<String>,
+    pub tree: UseTree,
+    pub span: Option<Span>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UseTree {
+    Name(String),
+    Glob,
+    Path { segment: String, next: Box<UseTree> },
+    Group(Vec<UseTree>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +204,10 @@ pub enum Expr {
     Char(char),
     String(String),
     Path(Vec<String>),
+    PathWithTypeArgs {
+        path: Vec<String>,
+        type_args: Vec<Type>,
+    },
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,

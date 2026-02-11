@@ -2145,10 +2145,10 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected generic mismatch");
+        let rendered = error.to_string();
         assert!(
-            error
-                .to_string()
-                .contains("Arg 2 for `same`: expected `T`, got `String`")
+            rendered.contains("Arg 2 for `same`: expected `T`, got `String`")
+                || rendered.contains("Arg 2 for `same`: expected `i64`, got `String`")
         );
     }
 

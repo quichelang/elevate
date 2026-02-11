@@ -108,9 +108,60 @@ impl Parser {
     }
 
     fn parse_use_item(&mut self) -> Option<RustUse> {
-        let path = self.parse_path("Expected import path after `use`")?;
+        let start = self.previous_span_end();
+        let tree = self.parse_use_tree()?;
         self.expect(TokenKind::Semicolon, "Expected ';' after use import")?;
-        Some(RustUse { path })
+        Some(RustUse {
+            tree,
+            span: Some(self.span_from_start(start)),
+        })
+    }
+
+    fn parse_use_tree(&mut self) -> Option<crate::ast::UseTree> {
+        let segment = self.expect_ident("Expected import path after `use`")?;
+        self.parse_use_tree_tail(segment)
+    }
+
+    fn parse_use_tree_tail(&mut self, segment: String) -> Option<crate::ast::UseTree> {
+        if !self.match_kind(TokenKind::ColonColon) {
+            return Some(crate::ast::UseTree::Name(segment));
+        }
+        if self.match_kind(TokenKind::Star) {
+            return Some(crate::ast::UseTree::Path {
+                segment,
+                next: Box::new(crate::ast::UseTree::Glob),
+            });
+        }
+        if self.match_kind(TokenKind::LBrace) {
+            return Some(crate::ast::UseTree::Path {
+                segment,
+                next: Box::new(self.parse_use_group()?),
+            });
+        }
+        let next = self.expect_ident("Expected identifier after '::'")?;
+        Some(crate::ast::UseTree::Path {
+            segment,
+            next: Box::new(self.parse_use_tree_tail(next)?),
+        })
+    }
+
+    fn parse_use_group(&mut self) -> Option<crate::ast::UseTree> {
+        let mut imports = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            imports.push(self.parse_use_tree()?);
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+            if self.at(TokenKind::RBrace) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "Expected '}' to close grouped import")?;
+        if imports.is_empty() {
+            self.error_current("Expected at least one import inside grouped import");
+            return None;
+        }
+        Some(crate::ast::UseTree::Group(imports))
     }
 
     fn parse_struct(&mut self, visibility: Visibility) -> Option<StructDef> {
@@ -1084,7 +1135,12 @@ impl Parser {
                 Some(Expr::Char(value))
             }
             TokenKind::Identifier(_) => {
-                let path = self.parse_path("Expected identifier path")?;
+                let path_expr = self.parse_expr_path_with_optional_type_args()?;
+                let path = match &path_expr {
+                    Expr::Path(path) => path.clone(),
+                    Expr::PathWithTypeArgs { path, .. } => path.clone(),
+                    _ => unreachable!("identifier path parser should only return path expressions"),
+                };
                 if self.at(TokenKind::LBrace)
                     && path_looks_like_type_name(&path)
                     && self.looks_like_struct_literal_body()
@@ -1092,7 +1148,7 @@ impl Parser {
                     self.advance();
                     return self.parse_struct_literal_expr(path);
                 }
-                Some(Expr::Path(path))
+                Some(path_expr)
             }
             TokenKind::LParen => {
                 self.advance();
@@ -1272,6 +1328,62 @@ impl Parser {
             path.push(self.expect_ident("Expected identifier after '::'")?);
         }
         Some(path)
+    }
+
+    fn parse_expr_path_with_optional_type_args(&mut self) -> Option<Expr> {
+        let mut path = Vec::new();
+        path.push(self.expect_ident("Expected identifier path")?);
+
+        let mut type_args = Vec::new();
+        if self.at(TokenKind::Lt) && self.looks_like_expr_path_type_args() {
+            self.advance();
+            while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
+                type_args.push(self.parse_type()?);
+                if !self.match_kind(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt, "Expected '>' to close generic arguments")?;
+        }
+
+        while self.match_kind(TokenKind::ColonColon) {
+            path.push(self.expect_ident("Expected identifier after '::'")?);
+        }
+
+        if type_args.is_empty() {
+            Some(Expr::Path(path))
+        } else {
+            Some(Expr::PathWithTypeArgs { path, type_args })
+        }
+    }
+
+    fn looks_like_expr_path_type_args(&self) -> bool {
+        if !self.at(TokenKind::Lt) {
+            return false;
+        }
+        let mut idx = self.cursor;
+        let mut depth = 0usize;
+        while let Some(token) = self.tokens.get(idx) {
+            match token.kind {
+                TokenKind::Lt => depth += 1,
+                TokenKind::Gt => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(
+                            self.tokens.get(idx + 1).map(|next| &next.kind),
+                            Some(TokenKind::ColonColon) | Some(TokenKind::LParen)
+                        );
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            idx += 1;
+        }
+        false
     }
 
     fn parse_destructure_pattern_tuple(&mut self) -> Option<DestructurePattern> {
@@ -1566,6 +1678,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::ast::{Item, UseTree};
     use crate::lexer::lex;
 
     use super::parse_module;
@@ -1598,6 +1711,86 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 2);
+    }
+
+    #[test]
+    fn parse_grouped_use_imports() {
+        let source = r#"
+            use std::fmt::{Display, Formatter};
+            use std::fmt::{self, Display};
+            fn read_value() -> i64 { return 1; }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 3);
+        match &module.items[0] {
+            Item::RustUse(def) => {
+                assert_eq!(
+                    def.tree,
+                    UseTree::Path {
+                        segment: "std".to_string(),
+                        next: Box::new(UseTree::Path {
+                            segment: "fmt".to_string(),
+                            next: Box::new(UseTree::Group(vec![
+                                UseTree::Name("Display".to_string()),
+                                UseTree::Name("Formatter".to_string())
+                            ]))
+                        })
+                    }
+                );
+            }
+            _ => panic!("expected first item to be a use import"),
+        }
+        match &module.items[1] {
+            Item::RustUse(def) => {
+                assert_eq!(
+                    def.tree,
+                    UseTree::Path {
+                        segment: "std".to_string(),
+                        next: Box::new(UseTree::Path {
+                            segment: "fmt".to_string(),
+                            next: Box::new(UseTree::Group(vec![
+                                UseTree::Name("self".to_string()),
+                                UseTree::Name("Display".to_string())
+                            ]))
+                        })
+                    }
+                );
+            }
+            _ => panic!("expected second item to be a use import"),
+        }
+    }
+
+    #[test]
+    fn parse_nested_grouped_use_imports() {
+        let source = r#"
+            use std::{fmt::{self, Display}, io};
+            fn run() { return; }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
+        match &module.items[0] {
+            Item::RustUse(def) => {
+                assert_eq!(
+                    def.tree,
+                    UseTree::Path {
+                        segment: "std".to_string(),
+                        next: Box::new(UseTree::Group(vec![
+                            UseTree::Path {
+                                segment: "fmt".to_string(),
+                                next: Box::new(UseTree::Group(vec![
+                                    UseTree::Name("self".to_string()),
+                                    UseTree::Name("Display".to_string()),
+                                ])),
+                            },
+                            UseTree::Name("io".to_string()),
+                        ]))
+                    }
+                );
+            }
+            _ => panic!("expected use item"),
+        }
     }
 
     #[test]
@@ -1868,6 +2061,32 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 2);
+    }
+
+    #[test]
+    fn parse_expression_paths_with_explicit_type_args() {
+        let source = r#"
+            fn id<T>(value: T) -> T {
+                value
+            }
+
+            struct Point<T> { x: T; y: T; }
+            impl<T> Point<T> {
+                fn new(x: T, y: T) -> Self {
+                    Point { x: x; y: y; }
+                }
+            }
+
+            fn run() {
+                const a = id<i64>(1);
+                const p = Point<i64>::new(1, 2);
+                std::mem::drop(a);
+                std::mem::drop(p);
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 4);
     }
 
     #[test]
