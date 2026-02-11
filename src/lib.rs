@@ -3063,6 +3063,39 @@ mod tests {
     }
 
     #[test]
+    fn compile_accepts_strict_implicit_tail_if_else_return() {
+        let source = r#"
+            fn choose(flag: bool) -> i64 {
+                if flag {
+                    1
+                } else {
+                    0
+                }
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected implicit tail if/else return");
+        assert!(output.rust_code.contains("return match flag"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_rejects_if_else_statement_with_trailing_semicolon_when_value_expected() {
+        let source = r#"
+            fn choose(flag: bool) -> i64 {
+                if flag {
+                    1
+                } else {
+                    0
+                };
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected trailing semicolon parse error");
+        assert!(error.to_string().contains("Expected expression"));
+    }
+
+    #[test]
     fn compile_supports_loop_break_continue() {
         let source = r#"
             fn spin(flag: bool) -> i64 {

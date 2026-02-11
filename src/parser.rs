@@ -520,6 +520,29 @@ impl Parser {
             } else {
                 None
             };
+            let should_rewrite_as_tail_if = self.at(TokenKind::RBrace)
+                && block_ends_with_tail_expr(&then_block)
+                && else_block
+                    .as_ref()
+                    .is_some_and(block_ends_with_tail_expr);
+            if should_rewrite_as_tail_if {
+                let else_block = else_block.expect("tail-if rewrite requires else branch");
+                return Some(Stmt::TailExpr(Expr::Match {
+                    scrutinee: Box::new(condition),
+                    arms: vec![
+                        MatchArm {
+                            pattern: Pattern::Bool(true),
+                            guard: None,
+                            value: Expr::Block(then_block),
+                        },
+                        MatchArm {
+                            pattern: Pattern::Bool(false),
+                            guard: None,
+                            value: Expr::Block(else_block),
+                        },
+                    ],
+                }));
+            }
             return Some(Stmt::If {
                 condition,
                 then_block,
@@ -1589,6 +1612,10 @@ impl Parser {
     }
 }
 
+fn block_ends_with_tail_expr(block: &Block) -> bool {
+    matches!(block.statements.last(), Some(Stmt::TailExpr(_)))
+}
+
 fn inferred_placeholder_type() -> Type {
     Type {
         path: vec!["_".to_string()],
@@ -1678,7 +1705,7 @@ fn same_variant(left: &TokenKind, right: &TokenKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::{Item, UseTree};
+    use crate::ast::{Expr, Item, Stmt, UseTree};
     use crate::lexer::lex;
 
     use super::parse_module;
@@ -1993,6 +2020,30 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_final_if_else_as_tail_expression() {
+        let source = r#"
+            fn choose(flag: bool) -> i64 {
+                if flag {
+                    1
+                } else {
+                    2
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+        let Item::Function(def) = &module.items[0] else {
+            panic!("expected function");
+        };
+        let last = def.body.statements.last().expect("expected statement");
+        match last {
+            Stmt::TailExpr(Expr::Match { .. }) => {}
+            _ => panic!("expected final if/else to parse as tail-expression match"),
+        }
     }
 
     #[test]
