@@ -43,6 +43,33 @@ enum SemType {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapabilityReceiverMode {
+    Owned,
+    Borrowed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapabilityIndexMode {
+    DirectIndex,
+    GetLikeOption,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MethodCapability {
+    receiver_mode: CapabilityReceiverMode,
+    arg_modes: Vec<CallArgMode>,
+    expected_args: Vec<SemType>,
+    return_ty: SemType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexCapability {
+    mode: CapabilityIndexMode,
+    key_ty: SemType,
+    value_ty: SemType,
+}
+
 #[derive(Debug, Clone)]
 struct FunctionSig {
     type_params: Vec<String>,
@@ -152,6 +179,24 @@ struct Context {
     rust_block_functions: HashSet<String>,
     structural_specializations: RefCell<HashMap<String, Vec<StructuralSpecialization>>>,
     structural_specialization_lookup: RefCell<HashMap<(String, Vec<String>), String>>,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            functions: HashMap::new(),
+            structs: HashMap::new(),
+            struct_type_params: HashMap::new(),
+            enums: HashMap::new(),
+            enum_type_params: HashMap::new(),
+            traits: HashMap::new(),
+            trait_impls: HashMap::new(),
+            globals: HashMap::new(),
+            rust_block_functions: HashSet::new(),
+            structural_specializations: RefCell::new(HashMap::new()),
+            structural_specialization_lookup: RefCell::new(HashMap::new()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1426,7 +1471,6 @@ impl InteropPolicyRegistry {
     fn with_builtins() -> Self {
         let mut registry = Self::default();
         registry.register_builtin_shims();
-        registry.register_builtin_direct_borrows();
         registry.register_builtin_cloneable_types();
         registry
     }
@@ -1500,57 +1544,6 @@ impl InteropPolicyRegistry {
             &[0, 1],
             InteropShimBody::StrSplitOnceKnown,
         );
-    }
-
-    fn register_builtin_direct_borrows(&mut self) {
-        for path in [
-            "String::len",
-            "String::is_empty",
-            "std::string::String::len",
-            "std::string::String::is_empty",
-            "alloc::string::String::len",
-            "alloc::string::String::is_empty",
-            "Option::is_some",
-            "Option::is_none",
-            "std::option::Option::is_some",
-            "std::option::Option::is_none",
-            "core::option::Option::is_some",
-            "core::option::Option::is_none",
-            "Result::is_ok",
-            "Result::is_err",
-            "std::result::Result::is_ok",
-            "std::result::Result::is_err",
-            "core::result::Result::is_ok",
-            "core::result::Result::is_err",
-            "Vec::len",
-            "Vec::is_empty",
-            "std::vec::Vec::len",
-            "std::vec::Vec::is_empty",
-            "alloc::vec::Vec::len",
-            "alloc::vec::Vec::is_empty",
-            "HashMap::len",
-            "HashMap::is_empty",
-            "std::collections::HashMap::len",
-            "std::collections::HashMap::is_empty",
-            "BTreeMap::len",
-            "BTreeMap::is_empty",
-            "std::collections::BTreeMap::len",
-            "std::collections::BTreeMap::is_empty",
-        ] {
-            self.register_direct_borrow_policy(path, &[0]);
-        }
-        for path in [
-            "HashMap::contains_key",
-            "std::collections::HashMap::contains_key",
-            "BTreeMap::contains_key",
-            "std::collections::BTreeMap::contains_key",
-            "HashSet::contains",
-            "std::collections::HashSet::contains",
-            "BTreeSet::contains",
-            "std::collections::BTreeSet::contains",
-        ] {
-            self.register_direct_borrow_policy(path, &[0, 1]);
-        }
     }
 
     fn register_builtin_cloneable_types(&mut self) {
@@ -3799,27 +3792,59 @@ fn infer_assign_target(
             }
             let (typed_index, index_ty) =
                 infer_expr(index, context, locals, return_ty, diagnostics);
-            let resolved_ty = match &base_ty {
-                SemType::Path { path, args }
-                    if path.len() == 1 && path[0] == "Vec" && args.len() == 1 =>
-                {
-                    if is_vector_index_type(&index_ty) {
-                        args[0].clone()
-                    } else {
+            let resolved_ty = match resolve_index_capability(&base_ty, diagnostics) {
+                Some(IndexCapability {
+                    mode: CapabilityIndexMode::DirectIndex,
+                    key_ty,
+                    value_ty,
+                }) => {
+                    let vec_like = matches!(
+                        &base_ty,
+                        SemType::Path { path, .. } if path.last().is_some_and(|segment| segment == "Vec")
+                    );
+                    if is_vector_index_type(&index_ty)
+                        && index_key_type_compatible(&index_ty, &key_ty)
+                    {
+                        value_ty
+                    } else if vec_like && !matches!(typed_index.kind, TypedExprKind::Range { .. }) {
                         diagnostics.push(Diagnostic::new(
                             format!(
-                                "Vector index assignment expects integer index, got `{}`",
+                                "Vector indexing expects integer index (or range), got `{}`",
                                 type_to_string(&index_ty)
+                            ),
+                            default_diag_span(),
+                        ));
+                        SemType::Unknown
+                    } else {
+                        diagnostics.push(Diagnostic::new(
+                            mismatch_message(
+                                format!(
+                                    "Index assignment key mismatch: expected `{}`, got `{}`",
+                                    type_to_string(&key_ty),
+                                    type_to_string(&index_ty)
+                                ),
+                                &index_ty,
+                                &key_ty,
                             ),
                             default_diag_span(),
                         ));
                         SemType::Unknown
                     }
                 }
-                _ => {
+                Some(IndexCapability {
+                    mode: CapabilityIndexMode::GetLikeOption,
+                    ..
+                }) => {
+                    diagnostics.push(Diagnostic::new(
+                        "Map-like subscript assignment is not supported; use insert/update APIs",
+                        default_diag_span(),
+                    ));
+                    SemType::Unknown
+                }
+                None => {
                     diagnostics.push(Diagnostic::new(
                         format!(
-                            "Index assignment target expects `Vec<T>`, got `{}`",
+                            "Capability resolution failed for index assignment on `{}`",
                             type_to_string(&base_ty)
                         ),
                         default_diag_span(),
@@ -4241,20 +4266,36 @@ fn infer_expr(
             let (typed_index, index_ty) =
                 infer_expr(index, context, locals, return_ty, diagnostics);
 
-            let resolved = match &base_ty {
-                SemType::Path { path, args }
-                    if path.len() == 1 && path[0] == "Vec" && args.len() == 1 =>
-                {
+            let resolved = match resolve_index_capability(&base_ty, diagnostics) {
+                Some(IndexCapability {
+                    mode: CapabilityIndexMode::DirectIndex,
+                    key_ty,
+                    value_ty,
+                }) => {
+                    let vec_like = matches!(
+                        &base_ty,
+                        SemType::Path { path, .. } if path.last().is_some_and(|segment| segment == "Vec")
+                    );
                     if matches!(typed_index.kind, TypedExprKind::Range { .. }) {
-                        SemType::Path {
-                            path: vec!["Vec".to_string()],
-                            args: vec![args[0].clone()],
+                        if let SemType::Path { path, .. } = &base_ty
+                            && path.last().is_some_and(|segment| segment == "Vec")
+                        {
+                            SemType::Path {
+                                path: vec!["Vec".to_string()],
+                                args: vec![value_ty],
+                            }
+                        } else {
+                            diagnostics.push(Diagnostic::new(
+                                "Range indexing is only supported for Vec-like index capabilities",
+                                default_diag_span(),
+                            ));
+                            SemType::Unknown
                         }
-                    } else if is_vector_index_type(&index_ty) {
-                        args[0].clone()
-                    } else if index_ty == SemType::Unknown {
-                        SemType::Unknown
-                    } else {
+                    } else if is_vector_index_type(&index_ty)
+                        && index_key_type_compatible(&index_ty, &key_ty)
+                    {
+                        value_ty
+                    } else if vec_like {
                         diagnostics.push(Diagnostic::new(
                             format!(
                                 "Vector indexing expects integer index (or range), got `{}`",
@@ -4263,13 +4304,63 @@ fn infer_expr(
                             default_diag_span(),
                         ));
                         SemType::Unknown
+                    } else if index_ty == SemType::Unknown {
+                        SemType::Unknown
+                    } else {
+                        diagnostics.push(Diagnostic::new(
+                            mismatch_message(
+                                format!(
+                                    "Type supports indexing, but key type mismatch: expected `{}`, got `{}`",
+                                    type_to_string(&key_ty),
+                                    type_to_string(&index_ty)
+                                ),
+                                &index_ty,
+                                &key_ty,
+                            ),
+                            default_diag_span(),
+                        ));
+                        SemType::Unknown
                     }
                 }
-                SemType::Unknown => SemType::Unknown,
-                _ => {
+                Some(IndexCapability {
+                    mode: CapabilityIndexMode::GetLikeOption,
+                    key_ty,
+                    value_ty,
+                }) => {
+                    if matches!(typed_index.kind, TypedExprKind::Range { .. }) {
+                        diagnostics.push(Diagnostic::new(
+                            "Map-like subscript does not support range keys",
+                            default_diag_span(),
+                        ));
+                        SemType::Unknown
+                    } else if index_ty == SemType::Unknown {
+                        option_type(value_ty)
+                    } else if is_compatible(&index_ty, &key_ty)
+                        || literal_bidi_adjusted_numeric_arg_type(Some(index), &index_ty, &key_ty)
+                            .is_some()
+                    {
+                        option_type(value_ty)
+                    } else {
+                        diagnostics.push(Diagnostic::new(
+                            mismatch_message(
+                                format!(
+                                    "Type supports indexing, but key type mismatch: expected `{}`, got `{}`",
+                                    type_to_string(&key_ty),
+                                    type_to_string(&index_ty)
+                                ),
+                                &index_ty,
+                                &key_ty,
+                            ),
+                            default_diag_span(),
+                        ));
+                        SemType::Unknown
+                    }
+                }
+                None if base_ty == SemType::Unknown => SemType::Unknown,
+                None => {
                     diagnostics.push(Diagnostic::new(
                         format!(
-                            "Indexing requires `Vec<T>` value, got `{}`",
+                            "Capability resolution failed for indexing on `{}`",
                             type_to_string(&base_ty)
                         ),
                         default_diag_span(),
@@ -5664,33 +5755,14 @@ fn expected_method_arg_types_for_coercion(
     args: &[SemType],
     context: &Context,
 ) -> Option<Vec<SemType>> {
-    if let SemType::Path { path, args: base_args } = base_ty {
+    let mut capability_diags = Vec::new();
+    if let Some(capability) =
+        resolve_method_capability(base_ty, method, args.len(), context, &mut capability_diags)
+    {
+        return Some(capability.expected_args);
+    }
+    if let SemType::Path { path, .. } = base_ty {
         let type_name = path.last().map(|segment| segment.as_str()).unwrap_or_default();
-        let builtin = match type_name {
-            "String" if method == "push_str" && args.len() == 1 => Some(vec![named_type("String")]),
-            "Vec" if method == "push" && args.len() == 1 => base_args.first().cloned().map(|ty| vec![ty]),
-            "Vec" if method == "contains" && args.len() == 1 => {
-                base_args.first().cloned().map(|ty| vec![ty])
-            }
-            "Vec" if method == "get" && args.len() == 1 => Some(vec![named_type("usize")]),
-            "Option" if method == "unwrap_or" && args.len() == 1 => {
-                base_args.first().cloned().map(|ty| vec![ty])
-            }
-            "Result" if method == "unwrap_or" && args.len() == 1 => {
-                base_args.first().cloned().map(|ty| vec![ty])
-            }
-            "HashMap" | "BTreeMap" if method == "contains_key" && args.len() == 1 => {
-                base_args.first().cloned().map(|ty| vec![ty])
-            }
-            "HashSet" | "BTreeSet" if method == "contains" && args.len() == 1 => {
-                base_args.first().cloned().map(|ty| vec![ty])
-            }
-            _ => None,
-        };
-        if builtin.is_some() {
-            return builtin;
-        }
-
         let lookup = format!("{type_name}::{method}");
         if let Some(sig) = context.functions.get(&lookup) {
             if sig.params.len() == args.len() + 1 {
@@ -6107,7 +6179,9 @@ fn structural_type_supports_method(
     {
         return true;
     }
-    if method_is_builtin_for_type(type_name, method, arity) {
+    let mut capability_diagnostics = Vec::new();
+    if resolve_method_capability(ty, method, arity, context, &mut capability_diagnostics).is_some()
+    {
         return true;
     }
     if method == "to_string" && arity == 0 && builtin_value_supports_to_string(type_name) {
@@ -6123,42 +6197,6 @@ fn structural_type_supports_method(
 
 fn builtin_value_supports_to_string(type_name: &str) -> bool {
     type_name == "String" || type_name == "str" || is_copy_primitive_type(type_name)
-}
-
-fn method_is_builtin_for_type(type_name: &str, method: &str, arity: usize) -> bool {
-    match type_name {
-        "String" => match method {
-            "len" | "is_empty" | "into_bytes" | "chars" | "to_string" => arity == 0,
-            "starts_with" | "contains" | "ends_with" | "strip_prefix" | "split_once" => arity == 1,
-            "push_str" => arity == 1,
-            _ => false,
-        },
-        "Vec" => match method {
-            "len" | "is_empty" | "first" | "last" | "into_iter" | "iter" => arity == 0,
-            "contains" | "push" | "get" => arity == 1,
-            _ => false,
-        },
-        "Option" => match method {
-            "is_some" | "is_none" | "into_iter" => arity == 0,
-            _ => false,
-        },
-        "Result" => match method {
-            "is_ok" | "is_err" | "into_iter" => arity == 0,
-            _ => false,
-        },
-        "HashMap" | "BTreeMap" => match method {
-            "len" | "is_empty" | "keys" | "values" | "into_iter" => arity == 0,
-            "contains_key" | "get" => arity == 1,
-            "insert" => arity == 2,
-            _ => false,
-        },
-        "HashSet" | "BTreeSet" => match method {
-            "len" | "is_empty" | "into_iter" => arity == 0,
-            "contains" | "insert" => arity == 1,
-            _ => false,
-        },
-        _ => false,
-    }
 }
 
 fn register_structural_specialization(
@@ -6769,352 +6807,6 @@ fn resolve_method_call_type(
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SemType {
-    if let SemType::Path { path, .. } = base_ty {
-        let type_name = path.last().map(|s| s.as_str()).unwrap_or("");
-        match type_name {
-            "String" => match method {
-                "len" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("usize");
-                }
-                "is_empty" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("bool");
-                }
-                "starts_with" | "contains" | "ends_with" | "strip_prefix" | "split_once" => {
-                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    return if method == "strip_prefix" {
-                        option_type(named_type("String"))
-                    } else if method == "split_once" {
-                        option_type(SemType::Tuple(vec![
-                            named_type("String"),
-                            named_type("String"),
-                        ]))
-                    } else {
-                        named_type("bool")
-                    };
-                }
-                "push_str" => {
-                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    if args.len() == 1
-                        && !method_arg_type_compatible(
-                            arg_exprs.first(),
-                            &args[0],
-                            &named_type("String"),
-                        )
-                    {
-                        diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Method `String::push_str` expects `String`, got `{}`",
-                                type_to_string(&args[0])
-                            ),
-                            default_diag_span(),
-                        ));
-                    }
-                    return SemType::Unit;
-                }
-                "into_bytes" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return SemType::Path {
-                        path: vec!["Vec".to_string()],
-                        args: vec![named_type("u8")],
-                    };
-                }
-                "chars" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return SemType::Iter(Box::new(named_type("char")));
-                }
-                "to_string" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("String");
-                }
-                _ => {}
-            },
-            "Vec" => match method {
-                "len" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("usize");
-                }
-                "is_empty" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("bool");
-                }
-                "contains" => {
-                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    return named_type("bool");
-                }
-                "push" => {
-                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    if let SemType::Path {
-                        args: item_args, ..
-                    } = base_ty
-                        && let (Some(item_ty), Some(arg_ty)) = (item_args.first(), args.first())
-                        && !method_arg_type_compatible(arg_exprs.first(), arg_ty, item_ty)
-                    {
-                        diagnostics.push(Diagnostic::new(
-                            mismatch_message(
-                                format!(
-                                    "Arg 1 for method `Vec::push`: expected `{}`, got `{}`",
-                                    type_to_string(item_ty),
-                                    type_to_string(arg_ty)
-                                ),
-                                arg_ty,
-                                item_ty,
-                            ),
-                            default_diag_span(),
-                        ));
-                    }
-                    return SemType::Unit;
-                }
-                "first" | "last" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    if let SemType::Path { args, .. } = base_ty
-                        && let Some(item_ty) = args.first()
-                    {
-                        return option_type(item_ty.clone());
-                    }
-                    return option_type(SemType::Unknown);
-                }
-                "get" => {
-                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    if args.len() == 1 && !is_vector_index_type(&args[0]) {
-                        diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Method `Vec::get` expects integer index, got `{}`",
-                                type_to_string(&args[0])
-                            ),
-                            default_diag_span(),
-                        ));
-                    }
-                    if let SemType::Path { args, .. } = base_ty
-                        && let Some(item_ty) = args.first()
-                    {
-                        return option_type(item_ty.clone());
-                    }
-                    return option_type(SemType::Unknown);
-                }
-                "into_iter" | "iter" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    if let SemType::Path { args, .. } = base_ty
-                        && let Some(item_ty) = args.first()
-                    {
-                        return SemType::Iter(Box::new(item_ty.clone()));
-                    }
-                    return SemType::Iter(Box::new(SemType::Unknown));
-                }
-                _ => {}
-            },
-            "Option" => match method {
-                "is_some" | "is_none" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("bool");
-                }
-                "into_iter" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    if let SemType::Path { args, .. } = base_ty
-                        && let Some(item_ty) = args.first()
-                    {
-                        return SemType::Iter(Box::new(item_ty.clone()));
-                    }
-                    return SemType::Iter(Box::new(SemType::Unknown));
-                }
-                "unwrap_or" => {
-                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    if let SemType::Path {
-                        args: inner_args, ..
-                    } = base_ty
-                        && let Some(inner_ty) = inner_args.first()
-                    {
-                        if let Some(arg_ty) = args.first()
-                            && !method_arg_type_compatible(arg_exprs.first(), arg_ty, inner_ty)
-                        {
-                            diagnostics.push(Diagnostic::new(
-                                format!(
-                                    "Method `Option::unwrap_or` expects `{}`, got `{}`",
-                                    type_to_string(inner_ty),
-                                    type_to_string(arg_ty)
-                                ),
-                                default_diag_span(),
-                            ));
-                        }
-                        return inner_ty.clone();
-                    }
-                    return SemType::Unknown;
-                }
-                _ => {}
-            },
-            "Result" => match method {
-                "is_ok" | "is_err" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("bool");
-                }
-                "into_iter" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    if let SemType::Path { args, .. } = base_ty
-                        && let Some(ok_ty) = args.first()
-                    {
-                        return SemType::Iter(Box::new(ok_ty.clone()));
-                    }
-                    return SemType::Iter(Box::new(SemType::Unknown));
-                }
-                "unwrap_or" => {
-                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    if let SemType::Path {
-                        args: result_args, ..
-                    } = base_ty
-                        && let Some(ok_ty) = result_args.first()
-                    {
-                        if let Some(arg_ty) = args.first()
-                            && !method_arg_type_compatible(arg_exprs.first(), arg_ty, ok_ty)
-                        {
-                            diagnostics.push(Diagnostic::new(
-                                format!(
-                                    "Method `Result::unwrap_or` expects `{}`, got `{}`",
-                                    type_to_string(ok_ty),
-                                    type_to_string(arg_ty)
-                                ),
-                                default_diag_span(),
-                            ));
-                        }
-                        return ok_ty.clone();
-                    }
-                    return SemType::Unknown;
-                }
-                _ => {}
-            },
-            "HashMap" | "BTreeMap" => match method {
-                "len" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("usize");
-                }
-                "is_empty" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("bool");
-                }
-                "contains_key" => {
-                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    return named_type("bool");
-                }
-                "keys" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    if let SemType::Path { args, .. } = base_ty
-                        && let Some(key_ty) = args.first()
-                    {
-                        return SemType::Iter(Box::new(key_ty.clone()));
-                    }
-                    return SemType::Iter(Box::new(SemType::Unknown));
-                }
-                "values" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    if let SemType::Path { args, .. } = base_ty
-                        && let Some(value_ty) = args.get(1)
-                    {
-                        return SemType::Iter(Box::new(value_ty.clone()));
-                    }
-                    return SemType::Iter(Box::new(SemType::Unknown));
-                }
-                "iter" | "into_iter" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    if let SemType::Path { args, .. } = base_ty
-                        && args.len() >= 2
-                    {
-                        return SemType::Iter(Box::new(SemType::Tuple(vec![
-                            args[0].clone(),
-                            args[1].clone(),
-                        ])));
-                    }
-                    return SemType::Iter(Box::new(SemType::Unknown));
-                }
-                _ => {}
-            },
-            "HashSet" | "BTreeSet" => match method {
-                "len" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("usize");
-                }
-                "is_empty" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    return named_type("bool");
-                }
-                "contains" => {
-                    expect_method_arity(type_name, method, args.len(), 1, diagnostics);
-                    return named_type("bool");
-                }
-                "iter" | "into_iter" => {
-                    expect_method_arity(type_name, method, args.len(), 0, diagnostics);
-                    if let SemType::Path { args, .. } = base_ty
-                        && let Some(item_ty) = args.first()
-                    {
-                        return SemType::Iter(Box::new(item_ty.clone()));
-                    }
-                    return SemType::Iter(Box::new(SemType::Unknown));
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-
-    if let SemType::Iter(item_ty) = base_ty {
-        match method {
-            "map" => {
-                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
-                if let Some(SemType::Fn { ret, .. }) = args.first() {
-                    return SemType::Iter(ret.clone());
-                }
-                return SemType::Iter(Box::new(SemType::Unknown));
-            }
-            "flat_map" => {
-                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
-                if let Some(SemType::Fn { ret, .. }) = args.first()
-                    && let SemType::Iter(inner) = ret.as_ref()
-                {
-                    return SemType::Iter(inner.clone());
-                }
-                return SemType::Iter(Box::new(SemType::Unknown));
-            }
-            "filter" => {
-                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
-                return SemType::Iter(item_ty.clone());
-            }
-            "collect" => {
-                expect_method_arity("Iter", method, args.len(), 0, diagnostics);
-                return SemType::Path {
-                    path: vec!["Vec".to_string()],
-                    args: vec![item_ty.as_ref().clone()],
-                };
-            }
-            "fold" => {
-                expect_method_arity("Iter", method, args.len(), 2, diagnostics);
-                return args.first().cloned().unwrap_or(SemType::Unknown);
-            }
-            "enumerate" => {
-                expect_method_arity("Iter", method, args.len(), 0, diagnostics);
-                return SemType::Iter(Box::new(SemType::Tuple(vec![
-                    named_type("usize"),
-                    item_ty.as_ref().clone(),
-                ])));
-            }
-            "count" => {
-                expect_method_arity("Iter", method, args.len(), 0, diagnostics);
-                return named_type("usize");
-            }
-            "sum" | "product" => {
-                expect_method_arity("Iter", method, args.len(), 0, diagnostics);
-                return item_ty.as_ref().clone();
-            }
-            "any" | "all" => {
-                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
-                return named_type("bool");
-            }
-            "for_each" => {
-                expect_method_arity("Iter", method, args.len(), 1, diagnostics);
-                return SemType::Unit;
-            }
-            _ => {}
-        }
-    }
-
     if let SemType::Path { path, .. } = base_ty
         && let Some(type_name) = path.last()
     {
@@ -7157,88 +6849,562 @@ fn resolve_method_call_type(
         }
     }
 
-    if is_external_method_candidate(base_ty, context) {
-        return infer_external_method_call_type(method, args);
+    if let Some(capability) =
+        resolve_method_capability(base_ty, method, args.len(), context, diagnostics)
+    {
+        for (index, expected) in capability.expected_args.iter().enumerate() {
+            let Some(actual) = args.get(index) else {
+                break;
+            };
+            if !method_arg_type_compatible(arg_exprs.get(index), actual, expected) {
+                let vec_get_index_error = index == 0
+                    && method == "get"
+                    && matches!(
+                        base_ty,
+                        SemType::Path { path, .. } if path.last().is_some_and(|segment| segment == "Vec")
+                    )
+                    && !is_vector_index_type(actual);
+                diagnostics.push(Diagnostic::new(
+                    if vec_get_index_error {
+                        format!(
+                            "Method `Vec::get` expects integer index, got `{}`",
+                            type_to_string(actual)
+                        )
+                    } else {
+                        mismatch_message(
+                            format!(
+                                "Arg {} for method `{}`: expected `{}`, got `{}`",
+                                index + 1,
+                                method,
+                                type_to_string(expected),
+                                type_to_string(actual)
+                            ),
+                            actual,
+                            expected,
+                        )
+                    },
+                    default_diag_span(),
+                ));
+            }
+        }
+        return capability.return_ty;
     }
 
-    if let SemType::Path { path, .. } = base_ty
-        && let Some(type_name) = path.last()
-        && matches!(type_name.as_str(), "Option" | "Result")
-    {
-        return infer_external_method_call_type(method, args);
+    if is_abstract_structural_symbol(base_ty, context) {
+        if method == "to_string" && args.is_empty() {
+            return named_type("String");
+        }
+        if method.starts_with("is_") || method.starts_with("has_") {
+            return named_type("bool");
+        }
+        return SemType::Unknown;
     }
 
     diagnostics.push(Diagnostic::new(
-        format!(
-            "Unsupported method call `{}` on type `{}`",
-            method,
-            type_to_string(base_ty)
-        ),
+        format!("Capability resolution failed for method `{method}` on `{}`", type_to_string(base_ty)),
         default_diag_span(),
     ));
     SemType::Unknown
 }
 
-fn is_external_method_candidate(base_ty: &SemType, context: &Context) -> bool {
-    match base_ty {
-        SemType::TraitObject(_) => true,
-        SemType::Path { path, .. } => {
-            let Some(type_name) = path.last() else {
-                return false;
-            };
-            let type_name = type_name.as_str();
-            if is_builtin_method_carrier(type_name) {
-                return false;
-            }
-            !context.structs.contains_key(type_name) && !context.enums.contains_key(type_name)
-        }
-        _ => false,
+fn is_abstract_structural_symbol(ty: &SemType, context: &Context) -> bool {
+    let SemType::Path { path, args } = ty else {
+        return false;
+    };
+    if path.len() != 1 || !args.is_empty() {
+        return false;
     }
-}
-
-fn is_builtin_method_carrier(type_name: &str) -> bool {
-    matches!(
-        type_name,
-        "String" | "Vec" | "Option" | "Result" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
-    )
-}
-
-fn infer_external_method_call_type(method: &str, args: &[SemType]) -> SemType {
-    if matches!(
-        method,
-        "contains"
-            | "contains_key"
-            | "starts_with"
-            | "ends_with"
-            | "is_empty"
-            | "is_some"
-            | "is_none"
-            | "is_ok"
-            | "is_err"
-    ) || method.starts_with("is_")
-        || method.starts_with("has_")
+    let name = path[0].as_str();
+    if is_numeric_type_name(name)
+        || is_copy_primitive_type(name)
+        || matches!(
+            name,
+            "String" | "str" | "Vec" | "Option" | "Result" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
+        )
     {
-        return named_type("bool");
+        return false;
     }
-    if method == "len" {
-        return named_type("usize");
+    !context.structs.contains_key(name) && !context.enums.contains_key(name)
+}
+
+fn rustdex_has_method_strict(
+    type_name: &str,
+    method: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<bool> {
+    let mut observed_metadata = false;
+    for candidate in rustdex_type_name_candidates(type_name) {
+        match rustdex_backend::type_has_associated_method(&candidate, method) {
+            Some(true) => return Some(true),
+            Some(false) => {
+                observed_metadata = true;
+            }
+            None => {}
+        }
     }
-    if method == "to_string" {
-        return named_type("String");
+    if observed_metadata {
+        Some(false)
+    } else {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "rustdex metadata unavailable for `{type_name}::{method}`; capability resolution requires rustdex"
+            ),
+            default_diag_span(),
+        ));
+        None
     }
-    if matches!(method, "first" | "last" | "get") {
-        return option_type(SemType::Unknown);
+}
+
+fn rustdex_type_name_candidates(type_name: &str) -> Vec<String> {
+    let mut candidates = vec![type_name.to_string()];
+    match type_name {
+        "String" => {
+            candidates.push("std::string::String".to_string());
+            candidates.push("alloc::string::String".to_string());
+        }
+        "Vec" => {
+            candidates.push("std::vec::Vec".to_string());
+            candidates.push("alloc::vec::Vec".to_string());
+        }
+        "Option" => {
+            candidates.push("std::option::Option".to_string());
+            candidates.push("core::option::Option".to_string());
+        }
+        "Result" => {
+            candidates.push("std::result::Result".to_string());
+            candidates.push("core::result::Result".to_string());
+        }
+        "HashMap" => {
+            candidates.push("std::collections::HashMap".to_string());
+        }
+        "BTreeMap" => {
+            candidates.push("std::collections::BTreeMap".to_string());
+        }
+        "HashSet" => {
+            candidates.push("std::collections::HashSet".to_string());
+        }
+        "BTreeSet" => {
+            candidates.push("std::collections::BTreeSet".to_string());
+        }
+        _ => {}
     }
-    if matches!(method, "iter" | "into_iter" | "keys" | "values") {
-        return SemType::Iter(Box::new(SemType::Unknown));
+    candidates
+}
+
+fn resolve_method_capability(
+    base_ty: &SemType,
+    method: &str,
+    actual_arity: usize,
+    _context: &Context,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<MethodCapability> {
+    if let SemType::Iter(item_ty) = base_ty {
+        let capability = match method {
+            "map" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![CallArgMode::Owned],
+                expected_args: vec![SemType::Unknown],
+                return_ty: SemType::Iter(Box::new(SemType::Unknown)),
+            },
+            "flat_map" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![CallArgMode::Owned],
+                expected_args: vec![SemType::Unknown],
+                return_ty: SemType::Iter(Box::new(SemType::Unknown)),
+            },
+            "filter" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![CallArgMode::Owned],
+                expected_args: vec![SemType::Unknown],
+                return_ty: SemType::Iter(item_ty.clone()),
+            },
+            "collect" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: SemType::Path {
+                    path: vec!["Vec".to_string()],
+                    args: vec![item_ty.as_ref().clone()],
+                },
+            },
+            "fold" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![CallArgMode::Owned, CallArgMode::Owned],
+                expected_args: vec![SemType::Unknown, SemType::Unknown],
+                return_ty: SemType::Unknown,
+            },
+            "enumerate" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: SemType::Iter(Box::new(SemType::Tuple(vec![
+                    named_type("usize"),
+                    item_ty.as_ref().clone(),
+                ]))),
+            },
+            "count" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: named_type("usize"),
+            },
+            "sum" | "product" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: item_ty.as_ref().clone(),
+            },
+            "any" | "all" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![CallArgMode::Owned],
+                expected_args: vec![SemType::Unknown],
+                return_ty: named_type("bool"),
+            },
+            "for_each" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![CallArgMode::Owned],
+                expected_args: vec![SemType::Unknown],
+                return_ty: SemType::Unit,
+            },
+            _ => return None,
+        };
+        expect_method_arity("Iter", method, actual_arity, capability.expected_args.len(), diagnostics);
+        return Some(capability);
     }
-    if method_name_suggests_mutating(method) {
-        return SemType::Unit;
+
+    let (type_name, generic_args): (&str, &[SemType]) = match base_ty {
+        SemType::Path { path, args } => (
+            path.last().map(|segment| segment.as_str()).unwrap_or_default(),
+            args.as_slice(),
+        ),
+        _ => ("", &[]),
+    };
+    if type_name.is_empty() {
+        return None;
     }
-    if args.is_empty() {
-        return SemType::Unknown;
+
+    if method == "to_string" && actual_arity == 0 && builtin_value_supports_to_string(type_name) {
+        return Some(MethodCapability {
+            receiver_mode: CapabilityReceiverMode::Borrowed,
+            arg_modes: vec![],
+            expected_args: vec![],
+            return_ty: named_type("String"),
+        });
     }
-    SemType::Unknown
+
+    let _ = rustdex_has_method_strict(type_name, method, diagnostics)?;
+
+    let capability = match type_name {
+        "String" => match method {
+            "len" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Borrowed,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: named_type("usize"),
+            },
+            "is_empty" | "contains" | "starts_with" | "ends_with" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Borrowed,
+                arg_modes: if method == "is_empty" {
+                    vec![]
+                } else {
+                    vec![CallArgMode::Borrowed]
+                },
+                expected_args: if method == "is_empty" {
+                    vec![]
+                } else {
+                    vec![named_type("String")]
+                },
+                return_ty: named_type("bool"),
+            },
+            "strip_prefix" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Borrowed,
+                arg_modes: vec![CallArgMode::Borrowed],
+                expected_args: vec![named_type("String")],
+                return_ty: option_type(named_type("String")),
+            },
+            "split_once" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Borrowed,
+                arg_modes: vec![CallArgMode::Borrowed],
+                expected_args: vec![named_type("String")],
+                return_ty: option_type(SemType::Tuple(vec![named_type("String"), named_type("String")])),
+            },
+            "push_str" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Borrowed,
+                arg_modes: vec![CallArgMode::Borrowed],
+                expected_args: vec![named_type("String")],
+                return_ty: SemType::Unit,
+            },
+            "into_bytes" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: SemType::Path {
+                    path: vec!["Vec".to_string()],
+                    args: vec![named_type("u8")],
+                },
+            },
+            "chars" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Borrowed,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: SemType::Iter(Box::new(named_type("char"))),
+            },
+            "to_string" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Borrowed,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: named_type("String"),
+            },
+            _ => return None,
+        },
+        "Vec" => {
+            let item_ty = generic_args.first().cloned().unwrap_or(SemType::Unknown);
+            match method {
+                "len" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: named_type("usize"),
+                },
+                "is_empty" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: named_type("bool"),
+                },
+                "contains" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![CallArgMode::Borrowed],
+                    expected_args: vec![item_ty.clone()],
+                    return_ty: named_type("bool"),
+                },
+                "push" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![CallArgMode::Owned],
+                    expected_args: vec![item_ty.clone()],
+                    return_ty: SemType::Unit,
+                },
+                "first" | "last" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: option_type(item_ty.clone()),
+                },
+                "get" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![CallArgMode::Owned],
+                    expected_args: vec![named_type("usize")],
+                    return_ty: option_type(item_ty),
+                },
+                "iter" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(generic_args.first().cloned().unwrap_or(SemType::Unknown))),
+                },
+                "into_iter" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Owned,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(generic_args.first().cloned().unwrap_or(SemType::Unknown))),
+                },
+                _ => return None,
+            }
+        }
+        "Option" => {
+            let inner = generic_args.first().cloned().unwrap_or(SemType::Unknown);
+            match method {
+                "is_some" | "is_none" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: named_type("bool"),
+                },
+                "into_iter" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Owned,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(inner)),
+                },
+                "unwrap_or" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Owned,
+                    arg_modes: vec![CallArgMode::Owned],
+                    expected_args: vec![inner.clone()],
+                    return_ty: inner,
+                },
+                _ => return None,
+            }
+        }
+        "Result" => {
+            let ok_ty = generic_args.first().cloned().unwrap_or(SemType::Unknown);
+            match method {
+                "is_ok" | "is_err" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: named_type("bool"),
+                },
+                "into_iter" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Owned,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(ok_ty.clone())),
+                },
+                "unwrap_or" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Owned,
+                    arg_modes: vec![CallArgMode::Owned],
+                    expected_args: vec![ok_ty.clone()],
+                    return_ty: ok_ty,
+                },
+                _ => return None,
+            }
+        }
+        "HashMap" | "BTreeMap" => {
+            let key_ty = generic_args.first().cloned().unwrap_or(SemType::Unknown);
+            let value_ty = generic_args.get(1).cloned().unwrap_or(SemType::Unknown);
+            match method {
+                "len" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: named_type("usize"),
+                },
+                "is_empty" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: named_type("bool"),
+                },
+                "contains_key" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![CallArgMode::Borrowed],
+                    expected_args: vec![key_ty.clone()],
+                    return_ty: named_type("bool"),
+                },
+                "get" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![CallArgMode::Borrowed],
+                    expected_args: vec![key_ty.clone()],
+                    return_ty: option_type(value_ty.clone()),
+                },
+                "keys" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(key_ty.clone())),
+                },
+                "values" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(value_ty.clone())),
+                },
+                "iter" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(SemType::Tuple(vec![key_ty, value_ty]))),
+                },
+                "into_iter" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Owned,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(SemType::Tuple(vec![key_ty, value_ty]))),
+                },
+                _ => return None,
+            }
+        }
+        "HashSet" | "BTreeSet" => {
+            let item_ty = generic_args.first().cloned().unwrap_or(SemType::Unknown);
+            match method {
+                "len" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: named_type("usize"),
+                },
+                "is_empty" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: named_type("bool"),
+                },
+                "contains" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![CallArgMode::Borrowed],
+                    expected_args: vec![item_ty.clone()],
+                    return_ty: named_type("bool"),
+                },
+                "iter" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(item_ty.clone())),
+                },
+                "into_iter" => MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Owned,
+                    arg_modes: vec![],
+                    expected_args: vec![],
+                    return_ty: SemType::Iter(Box::new(item_ty)),
+                },
+                _ => return None,
+            }
+        }
+        _ => {
+            if method.starts_with("is_") || method.starts_with("has_") {
+                MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![CallArgMode::Borrowed; actual_arity],
+                    expected_args: vec![SemType::Unknown; actual_arity],
+                    return_ty: named_type("bool"),
+                }
+            } else if method_name_suggests_mutating(method) {
+                MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Borrowed,
+                    arg_modes: vec![CallArgMode::Owned; actual_arity],
+                    expected_args: vec![SemType::Unknown; actual_arity],
+                    return_ty: SemType::Unit,
+                }
+            } else {
+                return None;
+            }
+        }
+    };
+
+    expect_method_arity(
+        type_name,
+        method,
+        actual_arity,
+        capability.expected_args.len(),
+        diagnostics,
+    );
+    Some(capability)
+}
+
+fn resolve_index_capability(
+    base_ty: &SemType,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<IndexCapability> {
+    let SemType::Path { path, args } = base_ty else {
+        return None;
+    };
+    let type_name = path.last().map(|segment| segment.as_str()).unwrap_or_default();
+    match type_name {
+        "Vec" => Some(IndexCapability {
+            mode: CapabilityIndexMode::DirectIndex,
+            key_ty: named_type("usize"),
+            value_ty: args.first().cloned().unwrap_or(SemType::Unknown),
+        }),
+        "HashMap" | "BTreeMap" => {
+            let _ = rustdex_has_method_strict(type_name, "get", diagnostics)?;
+            Some(IndexCapability {
+                mode: CapabilityIndexMode::GetLikeOption,
+                key_ty: args.first().cloned().unwrap_or(SemType::Unknown),
+                value_ty: args.get(1).cloned().unwrap_or(SemType::Unknown),
+            })
+        }
+        _ => None,
+    }
 }
 
 fn expect_method_arity(
@@ -7257,6 +7423,16 @@ fn expect_method_arity(
             default_diag_span(),
         ));
     }
+}
+
+fn index_key_type_compatible(actual: &SemType, expected_key: &SemType) -> bool {
+    if is_compatible(actual, expected_key) || is_compatible(expected_key, actual) {
+        return true;
+    }
+    if is_vector_index_type(actual) && is_vector_index_type(expected_key) {
+        return true;
+    }
+    false
 }
 
 fn resolve_constructor_call(
@@ -7746,7 +7922,26 @@ fn method_arg_type_compatible(expr: Option<&Expr>, actual: &SemType, expected: &
     if is_compatible(actual, expected) {
         return true;
     }
-    literal_bidi_adjusted_numeric_arg_type(expr, actual, expected).is_some()
+    if literal_bidi_adjusted_numeric_arg_type(expr, actual, expected).is_some() {
+        return true;
+    }
+    if expr.is_some_and(|value| matches!(value, Expr::Int(_)))
+        && canonical_numeric_name(expected).is_some_and(is_integral_numeric_type_name)
+        && canonical_numeric_name(actual) == Some("i64")
+    {
+        return true;
+    }
+    if !numeric_coercion_enabled() {
+        return false;
+    }
+    let (Some(actual_name), Some(expected_name)) =
+        (canonical_numeric_name(actual), canonical_numeric_name(expected))
+    else {
+        return false;
+    };
+    is_integral_numeric_type_name(actual_name)
+        && is_integral_numeric_type_name(expected_name)
+        && can_implicitly_coerce_integral_name(actual_name, expected_name)
 }
 
 fn literal_bidi_comparison_compatible(
@@ -8500,7 +8695,7 @@ fn lower_expr_with_context(
                 ));
             }
             let (lowered_callee, arg_modes) = lower_call_callee(callee, args, context, state);
-            RustExpr::Call {
+            let lowered_call = RustExpr::Call {
                 callee: Box::new(lowered_callee),
                 args: args
                     .iter()
@@ -8529,6 +8724,17 @@ fn lower_expr_with_context(
                         }
                     })
                     .collect(),
+            };
+            if method_returns_option_item_via_get(callee) {
+                RustExpr::Call {
+                    callee: Box::new(RustExpr::Field {
+                        base: Box::new(lowered_call),
+                        field: "cloned".to_string(),
+                    }),
+                    args: Vec::new(),
+                }
+            } else {
+                lowered_call
             }
         }
         TypedExprKind::MacroCall { path, args } => RustExpr::MacroCall {
@@ -8596,26 +8802,59 @@ fn lower_expr_with_context(
             };
             let place_name = place_for_expr(expr).map(|place| place.display_name());
             let base_ty = base.ty.clone();
-            let mut lowered_index_expr = RustExpr::Index {
-                base: Box::new(lower_expr_with_context(
-                    base,
-                    context,
-                    ExprPosition::ProjectionBase,
-                    state,
-                )),
-                index: Box::new(lower_index_expr(index, &base_ty, context, state)),
-            };
-            if matches!(index.kind, TypedExprKind::Range { .. })
-                && last_path_segment(&expr.ty) == "Vec"
-            {
-                lowered_index_expr = RustExpr::Call {
-                    callee: Box::new(RustExpr::Field {
-                        base: Box::new(lowered_index_expr),
-                        field: "to_vec".to_string(),
-                    }),
-                    args: Vec::new(),
+            let base_sem = sem_type_from_typed_type_string(&base_ty);
+            let lowered_base =
+                lower_expr_with_context(base, context, ExprPosition::ProjectionBase, state);
+            let lowered_index_expr =
+                if let Some(IndexCapability { mode, .. }) =
+                    resolve_index_capability(&base_sem, &mut Vec::new())
+                {
+                    match mode {
+                        CapabilityIndexMode::DirectIndex => {
+                            let mut lowered = RustExpr::Index {
+                                base: Box::new(lowered_base),
+                                index: Box::new(lower_index_expr(index, &base_ty, context, state)),
+                            };
+                            if matches!(index.kind, TypedExprKind::Range { .. })
+                                && last_path_segment(&expr.ty) == "Vec"
+                            {
+                                lowered = RustExpr::Call {
+                                    callee: Box::new(RustExpr::Field {
+                                        base: Box::new(lowered),
+                                        field: "to_vec".to_string(),
+                                    }),
+                                    args: Vec::new(),
+                                };
+                            }
+                            lowered
+                        }
+                        CapabilityIndexMode::GetLikeOption => RustExpr::Call {
+                            callee: Box::new(RustExpr::Field {
+                                base: Box::new(RustExpr::Call {
+                                    callee: Box::new(RustExpr::Field {
+                                        base: Box::new(lowered_base),
+                                        field: "get".to_string(),
+                                    }),
+                                    args: vec![borrow_expr(lower_index_expr(
+                                        index, &base_ty, context, state,
+                                    ))],
+                                }),
+                                field: "cloned".to_string(),
+                            }),
+                            args: Vec::new(),
+                        },
+                    }
+                } else {
+                    RustExpr::Index {
+                        base: Box::new(lower_expr_with_context(
+                            base,
+                            context,
+                            ExprPosition::ProjectionBase,
+                            state,
+                        )),
+                        index: Box::new(lower_index_expr(index, &base_ty, context, state)),
+                    }
                 };
-            }
             let (decision, forced_clone) = clone_decision_for_expr(
                 expr,
                 &expr.ty,
@@ -9057,6 +9296,12 @@ fn lower_call_callee(
             modes.args,
         );
     }
+    if let Some(modes) = resolve_associated_call_modes(callee, args) {
+        return (
+            lower_expr_with_context(callee, context, ExprPosition::Value, state),
+            modes,
+        );
+    }
     if let Some(modes) = resolve_direct_borrow_arg_modes(callee, state, arg_count) {
         return (
             lower_expr_with_context(callee, context, ExprPosition::Value, state),
@@ -9078,6 +9323,24 @@ fn lower_call_callee(
     (
         lower_expr_with_context(callee, context, ExprPosition::Value, state),
         vec![CallArgMode::Owned; arg_count],
+    )
+}
+
+fn method_returns_option_item_via_get(callee: &TypedExpr) -> bool {
+    let TypedExprKind::Field { base, field } = &callee.kind else {
+        return false;
+    };
+    if field != "get" {
+        return false;
+    }
+    let base_sem = sem_type_from_typed_type_string(&base.ty);
+    let mut diagnostics = Vec::new();
+    matches!(
+        resolve_index_capability(&base_sem, &mut diagnostics),
+        Some(IndexCapability {
+            mode: CapabilityIndexMode::GetLikeOption,
+            ..
+        })
     )
 }
 
@@ -9140,13 +9403,35 @@ fn resolve_method_call_modes(
         }
     }
 
-    let mut arg_modes = vec![CallArgMode::Owned; args.len()];
-    let receiver = if method_receiver_is_borrowed(&base.ty, field) {
-        if method_borrows_first_arg(&base.ty, field) {
-            set_borrowed(&mut arg_modes, 0);
+    let base_sem = sem_type_from_typed_type_string(&base.ty);
+    let arg_sem_types = args
+        .iter()
+        .map(|arg| sem_type_from_typed_type_string(&arg.ty))
+        .collect::<Vec<_>>();
+    let mut cap_diagnostics = Vec::new();
+    if let Some(capability) = resolve_method_capability(
+        &base_sem,
+        field,
+        arg_sem_types.len(),
+        &Context::default(),
+        &mut cap_diagnostics,
+    ) {
+        let receiver = match capability.receiver_mode {
+            CapabilityReceiverMode::Owned => CallArgMode::Owned,
+            CapabilityReceiverMode::Borrowed => CallArgMode::Borrowed,
+        };
+        let mut arg_modes = capability.arg_modes;
+        if arg_modes.len() < args.len() {
+            arg_modes.resize(args.len(), CallArgMode::Owned);
         }
-        CallArgMode::Borrowed
-    } else if method_receiver_should_borrow_heuristic(&base.ty, field) {
+        return Some(MethodCallModes {
+            receiver,
+            args: arg_modes,
+        });
+    }
+
+    let mut arg_modes = vec![CallArgMode::Owned; args.len()];
+    let receiver = if method_receiver_should_borrow_heuristic(&base.ty, field) {
         for (index, arg) in args.iter().enumerate() {
             if method_arg_should_borrow_heuristic(field, arg, context, state, true) {
                 set_borrowed(&mut arg_modes, index);
@@ -9161,6 +9446,57 @@ fn resolve_method_call_modes(
         receiver,
         args: arg_modes,
     })
+}
+
+fn resolve_associated_call_modes(callee: &TypedExpr, args: &[TypedExpr]) -> Option<Vec<CallArgMode>> {
+    let TypedExprKind::Path(path) = &callee.kind else {
+        return None;
+    };
+    if path.len() < 2 || args.is_empty() {
+        return None;
+    }
+    let method = path.last()?;
+    let receiver_sem = sem_type_from_typed_type_string(&args[0].ty);
+    if !uses_builtin_capability_catalog(&receiver_sem) {
+        return None;
+    }
+    let mut diagnostics = Vec::new();
+    let capability = resolve_method_capability(
+        &receiver_sem,
+        method,
+        args.len() - 1,
+        &Context::default(),
+        &mut diagnostics,
+    )?;
+    let mut modes = vec![CallArgMode::Owned; args.len()];
+    modes[0] = match capability.receiver_mode {
+        CapabilityReceiverMode::Owned => CallArgMode::Owned,
+        CapabilityReceiverMode::Borrowed => CallArgMode::Borrowed,
+    };
+    for (index, mode) in capability.arg_modes.iter().enumerate() {
+        if let Some(slot) = modes.get_mut(index + 1) {
+            *slot = *mode;
+        }
+    }
+    Some(modes)
+}
+
+fn uses_builtin_capability_catalog(ty: &SemType) -> bool {
+    match ty {
+        SemType::Iter(_) => true,
+        SemType::Path { path, .. } => matches!(
+            path.last().map(|segment| segment.as_str()),
+            Some("String")
+                | Some("Vec")
+                | Some("Option")
+                | Some("Result")
+                | Some("HashMap")
+                | Some("BTreeMap")
+                | Some("HashSet")
+                | Some("BTreeSet")
+        ),
+        _ => false,
+    }
 }
 
 fn method_base_type_name(base_ty: &str) -> Option<&str> {
@@ -9251,44 +9587,6 @@ fn lower_method_callee(
             state,
         )),
         field: field.clone(),
-    }
-}
-
-fn method_receiver_is_borrowed(base_ty: &str, field: &str) -> bool {
-    match last_path_segment(base_ty) {
-        "String" => matches!(
-            field,
-            "len"
-                | "is_empty"
-                | "contains"
-                | "starts_with"
-                | "ends_with"
-                | "strip_prefix"
-                | "split_once"
-                | "push_str"
-        ),
-        "Vec" => matches!(
-            field,
-            "len" | "is_empty" | "contains" | "first" | "last" | "get" | "push"
-        ),
-        "Option" => matches!(field, "is_some" | "is_none"),
-        "Result" => matches!(field, "is_ok" | "is_err"),
-        "HashMap" | "BTreeMap" => matches!(field, "len" | "is_empty" | "contains_key"),
-        "HashSet" | "BTreeSet" => matches!(field, "len" | "is_empty" | "contains"),
-        _ => false,
-    }
-}
-
-fn method_borrows_first_arg(base_ty: &str, field: &str) -> bool {
-    match last_path_segment(base_ty) {
-        "String" => matches!(
-            field,
-            "contains" | "starts_with" | "ends_with" | "strip_prefix" | "split_once" | "push_str"
-        ),
-        "Vec" => matches!(field, "contains"),
-        "HashMap" | "BTreeMap" => matches!(field, "contains_key"),
-        "HashSet" | "BTreeSet" => matches!(field, "contains"),
-        _ => false,
     }
 }
 
@@ -9674,6 +9972,40 @@ fn borrowed_param_indexes(params: &[TypedParam]) -> Vec<usize> {
 fn last_path_segment(path: &str) -> &str {
     let segment = path.rsplit("::").next().unwrap_or(path);
     segment.split('<').next().unwrap_or(segment)
+}
+
+fn sem_type_from_typed_type_string(ty: &str) -> SemType {
+    let trimmed = ty.trim();
+    if trimmed == "_" {
+        return SemType::Unknown;
+    }
+    if trimmed == "()" {
+        return SemType::Unit;
+    }
+    if let Some(items) = parse_tuple_items(trimmed) {
+        return SemType::Tuple(
+            items
+                .into_iter()
+                .map(sem_type_from_typed_type_string)
+                .collect(),
+        );
+    }
+    let (head, args) = split_type_head_and_args(trimmed);
+    let path = head
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect::<Vec<_>>();
+    if path.is_empty() {
+        return SemType::Unknown;
+    }
+    SemType::Path {
+        path,
+        args: args
+            .into_iter()
+            .map(sem_type_from_typed_type_string)
+            .collect(),
+    }
 }
 
 fn is_known_clone_container(head: &str) -> bool {

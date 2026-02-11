@@ -3763,20 +3763,52 @@ mod tests {
     }
 
     #[test]
-    fn compile_reports_hashmap_subscript_as_non_vec_indexing_error() {
+    fn compile_supports_hashmap_subscript_via_get_option_semantics() {
         let source = r#"
             use std::collections::HashMap;
 
-            pub fn score(scores: HashMap<String, i64>) -> i64 {
+            pub fn score(scores: HashMap<String, i64>) -> Option<i64> {
                 scores["Alice"]
             }
         "#;
 
-        let error = compile_source(source).expect_err("hash map subscripting should error early");
+        let output = compile_source(source).expect("hash map subscript should lower to get");
+        assert!(output.rust_code.contains("scores.get("));
+        assert!(output.rust_code.contains("Option<i64>"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_hashmap_get_method() {
+        let source = r#"
+            use std::collections::HashMap;
+
+            pub fn score(scores: HashMap<String, i64>, key: String) -> Option<i64> {
+                return scores.get(key);
+            }
+        "#;
+
+        let output = compile_source(source).expect("hash map get should compile");
+        assert!(output.rust_code.contains("scores.get("));
+        assert!(output.rust_code.contains("&key"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_rejects_hashmap_subscript_key_type_mismatch() {
+        let source = r#"
+            use std::collections::HashMap;
+
+            pub fn score(scores: HashMap<String, i64>) -> Option<i64> {
+                scores[1]
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("mismatched hashmap key should fail");
         assert!(
             error
                 .to_string()
-                .contains("Indexing requires `Vec<T>` value, got `HashMap<String, i64>`")
+                .contains("key type mismatch: expected `String`, got `i64`")
         );
     }
 
