@@ -3851,6 +3851,38 @@ mod tests {
     }
 
     #[test]
+    fn compile_hashmap_subscript_uses_copied_for_copy_values() {
+        let source = r#"
+            use std::collections::HashMap;
+
+            pub fn score(scores: HashMap<String, i64>, key: String) -> Option<i64> {
+                return scores[key];
+            }
+        "#;
+
+        let output = compile_source(source).expect("hash map subscript should compile");
+        assert!(output.rust_code.contains(".get(&key).copied()"));
+        assert!(!output.rust_code.contains(".get(&key).cloned()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_hashmap_subscript_uses_cloned_for_non_copy_values() {
+        let source = r#"
+            use std::collections::HashMap;
+
+            pub fn score(scores: HashMap<String, String>, key: String) -> Option<String> {
+                return scores[key];
+            }
+        "#;
+
+        let output = compile_source(source).expect("hash map subscript should compile");
+        assert!(output.rust_code.contains(".get(&key).cloned()"));
+        assert!(!output.rust_code.contains(".get(&key).copied()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_custom_get_like_index_capability() {
         let source = r#"
             pub struct Lookup {

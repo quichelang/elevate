@@ -9075,6 +9075,11 @@ fn lower_expr_with_context(
                             args: vec![lowered_base, lowered_key_arg],
                         }
                     } else {
+                        let option_finalize = if option_value_prefers_copied(&indexing.value_ty) {
+                            "copied"
+                        } else {
+                            "cloned"
+                        };
                         RustExpr::Call {
                             callee: Box::new(RustExpr::Field {
                                 base: Box::new(RustExpr::Call {
@@ -9084,7 +9089,7 @@ fn lower_expr_with_context(
                                     }),
                                     args: vec![lowered_key_arg],
                                 }),
-                                field: "cloned".to_string(),
+                                field: option_finalize.to_string(),
                             }),
                             args: Vec::new(),
                         }
@@ -10338,6 +10343,26 @@ fn is_copy_primitive_type(head: &str) -> bool {
             | "f32"
             | "f64"
     )
+}
+
+fn option_value_prefers_copied(ty: &str) -> bool {
+    let ty = ty.trim();
+    if ty.is_empty() || ty == "_" {
+        return false;
+    }
+    if ty.starts_with('&') {
+        return true;
+    }
+    if let Some(items) = parse_tuple_items(ty) {
+        return items
+            .iter()
+            .all(|item| option_value_prefers_copied(item));
+    }
+    let (head, args) = split_type_head_and_args(ty);
+    if !args.is_empty() {
+        return false;
+    }
+    is_copy_primitive_type(last_path_segment(head))
 }
 
 fn is_probably_nominal_type(head: &str) -> bool {
