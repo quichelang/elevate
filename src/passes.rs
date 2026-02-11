@@ -4303,7 +4303,12 @@ fn infer_expr(
                         mode: TypedIndexMode::DirectIndex,
                         key_ty: type_to_string(&key_ty),
                         value_ty: type_to_string(&value_ty),
-                        key_passing: TypedIndexKeyPassing::Owned,
+                        key_passing: match source {
+                            CapabilityIndexSource::Builtin => TypedIndexKeyPassing::Owned,
+                            CapabilityIndexSource::CustomMethod => {
+                                TypedIndexKeyPassing::CloneIfNeeded
+                            }
+                        },
                         source: match source {
                             CapabilityIndexSource::Builtin => TypedIndexSource::Builtin,
                             CapabilityIndexSource::CustomMethod => TypedIndexSource::CustomMethod,
@@ -4383,7 +4388,9 @@ fn infer_expr(
                         value_ty: type_to_string(&value_ty),
                         key_passing: match source {
                             CapabilityIndexSource::Builtin => TypedIndexKeyPassing::Borrowed,
-                            CapabilityIndexSource::CustomMethod => TypedIndexKeyPassing::Owned,
+                            CapabilityIndexSource::CustomMethod => {
+                                TypedIndexKeyPassing::CloneIfNeeded
+                            }
                         },
                         source: match source {
                             CapabilityIndexSource::Builtin => TypedIndexSource::Builtin,
@@ -9018,23 +9025,22 @@ fn lower_expr_with_context(
             let key_position = match indexing.key_passing {
                 TypedIndexKeyPassing::Borrowed => ExprPosition::CallArgBorrowed,
                 TypedIndexKeyPassing::Owned => ExprPosition::CallArgOwned,
-                TypedIndexKeyPassing::CloneIfNeeded => ExprPosition::Value,
+                TypedIndexKeyPassing::CloneIfNeeded => ExprPosition::CallArgOwned,
             };
-            let clone_reused_custom_key = indexing.source == TypedIndexSource::CustomMethod
-                && indexing.key_passing == TypedIndexKeyPassing::Owned
+            let clone_if_needed = indexing.key_passing == TypedIndexKeyPassing::CloneIfNeeded
                 && should_clone_for_reuse(index.ty.trim(), state)
                 && context.ownership_plan.remaining_conflicting_for_expr(index) > 0;
             let lowered_key = lower_index_expr(index, &base_ty, key_position, context, state);
             let lowered_key_arg = match indexing.key_passing {
                 TypedIndexKeyPassing::Borrowed => borrow_expr(lowered_key),
-                TypedIndexKeyPassing::Owned => {
-                    if clone_reused_custom_key {
+                TypedIndexKeyPassing::Owned => lowered_key,
+                TypedIndexKeyPassing::CloneIfNeeded => {
+                    if clone_if_needed {
                         clone_expr(lowered_key)
                     } else {
                         lowered_key
                     }
                 }
-                TypedIndexKeyPassing::CloneIfNeeded => clone_expr(lowered_key),
             };
             let lowered_index_expr = match indexing.mode {
                 TypedIndexMode::DirectIndex => {
