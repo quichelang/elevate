@@ -729,3 +729,37 @@ fn capability_story_inferred_map_via_from_iter_supports_get_method_path() {
     assert!(output.rust_code.contains("HashMap::from_iter"));
     assert!(output.rust_code.contains(".get("));
 }
+
+// Checklist Story: Section 12 (Strict Mode Robustness)
+// Goal: strict mode (no --exp-type-system) must keep auto-borrow/auto-clone behavior robust.
+#[test]
+fn strict_mode_still_autoborrows_string_contains() {
+    let source = r#"
+        fn probe(text: String, needle: String) -> bool {
+            return text.contains(needle);
+        }
+    "#;
+
+    let output = compile_source(source)
+        .expect("strict mode should keep string method autoborrow behavior");
+    assert!(output.rust_code.contains("text.contains(&needle)"));
+}
+
+#[test]
+fn strict_mode_still_autoclones_reused_owned_receiver_chain() {
+    let source = r#"
+        fn measure(text: String) -> usize {
+            return text.into_bytes().len() + text.into_bytes().len();
+        }
+    "#;
+
+    let output = compile_source(source)
+        .expect("strict mode should keep auto-clone behavior for reused owned receivers");
+    assert!(output.rust_code.contains("into_bytes()"));
+    assert!(
+        output
+            .ownership_notes
+            .iter()
+            .any(|note| note.contains("auto-clone") || note.contains("hot-clone"))
+    );
+}
