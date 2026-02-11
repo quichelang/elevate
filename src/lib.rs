@@ -2760,11 +2760,7 @@ mod tests {
         "#;
 
         let error = compile_source(source).expect_err("expected missing field error");
-        assert!(
-            error
-                .to_string()
-                .contains("Missing enum variant field `y`")
-        );
+        assert!(error.to_string().contains("Missing enum variant field `y`"));
     }
 
     #[test]
@@ -3799,6 +3795,45 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_hashmap_from_pairs_then_subscript() {
+        let source = r#"
+            use std::collections::HashMap;
+
+            pub fn score() -> Option<i64> {
+                const pairs = [("Alice", 100), ("Bob", 85)];
+                const scores = HashMap::from(pairs);
+                return scores["Alice"];
+            }
+        "#;
+
+        let output = compile_source(source).expect("HashMap::from should preserve map typing");
+        assert!(output.rust_code.contains("HashMap::from_iter"));
+        assert!(output.rust_code.contains("scores.get("));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_hashmap_from_pairs_then_subscript_in_type_system_mode() {
+        let source = r#"
+            use std::collections::HashMap;
+
+            pub fn score() -> Option<i64> {
+                const pairs = [("Alice", 100), ("Bob", 85)];
+                const scores = HashMap::from(pairs);
+                return scores["Alice"];
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.type_system = true;
+        let output = compile_source_with_options(source, &options)
+            .expect("type-system mode should resolve map subscript after HashMap::from");
+        assert!(output.rust_code.contains("HashMap::from_iter"));
+        assert!(output.rust_code.contains("scores.get("));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_hashmap_get_method() {
         let source = r#"
             use std::collections::HashMap;
@@ -3811,6 +3846,32 @@ mod tests {
         let output = compile_source(source).expect("hash map get should compile");
         assert!(output.rust_code.contains("scores.get("));
         assert!(output.rust_code.contains("&key"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_custom_get_like_index_capability() {
+        let source = r#"
+            pub struct Lookup {
+                value: i64;
+            }
+
+            impl Lookup {
+                pub fn get(self, key: String) -> Option<i64> {
+                    std::mem::drop(key);
+                    return Some(self.value);
+                }
+            }
+
+            pub fn pick(store: Lookup) -> Option<i64> {
+                return store["Alice"];
+            }
+        "#;
+
+        let output =
+            compile_source(source).expect("custom get-like index capability should compile");
+        assert!(output.rust_code.contains("Lookup::get("));
+        assert!(!output.rust_code.contains("store.get("));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -4216,7 +4277,11 @@ world"#;
         options.experiments.type_system = true;
         let error = compile_source_with_options(source, &options)
             .expect_err("narrowing unsigned conversion should be rejected");
-        assert!(error.to_string().contains("target `u32` is narrower than `u64`"));
+        assert!(
+            error
+                .to_string()
+                .contains("target `u32` is narrower than `u64`")
+        );
     }
 
     #[test]

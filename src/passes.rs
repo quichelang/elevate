@@ -26,6 +26,9 @@ use crate::ir::typed::{
 use crate::ownership_planner::{CloneDecision, ClonePlannerInput, decide_clone};
 use crate::rustdex_backend;
 
+mod index_capability;
+use index_capability::{CapabilityIndexMode, IndexCapability, resolve_index_capability};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SemType {
     Path {
@@ -49,25 +52,12 @@ enum CapabilityReceiverMode {
     Borrowed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CapabilityIndexMode {
-    DirectIndex,
-    GetLikeOption,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MethodCapability {
     receiver_mode: CapabilityReceiverMode,
     arg_modes: Vec<CallArgMode>,
     expected_args: Vec<SemType>,
     return_ty: SemType,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct IndexCapability {
-    mode: CapabilityIndexMode,
-    key_ty: SemType,
-    value_ty: SemType,
 }
 
 #[derive(Debug, Clone)]
@@ -1057,17 +1047,15 @@ pub fn lower_to_rust_with_hints(
                             TypedVariantFields::Tuple(items) => {
                                 RustVariantFields::Tuple(items.clone())
                             }
-                            TypedVariantFields::Named(fields) => {
-                                RustVariantFields::Named(
-                                    fields
-                                        .iter()
-                                        .map(|field| RustField {
-                                            name: field.name.clone(),
-                                            ty: field.ty.clone(),
-                                        })
-                                        .collect(),
-                                )
-                            }
+                            TypedVariantFields::Named(fields) => RustVariantFields::Named(
+                                fields
+                                    .iter()
+                                    .map(|field| RustField {
+                                        name: field.name.clone(),
+                                        ty: field.ty.clone(),
+                                    })
+                                    .collect(),
+                            ),
                         },
                     })
                     .collect(),
@@ -1765,7 +1753,10 @@ fn collect_definitions(module: &Module, context: &mut Context, diagnostics: &mut
                                 (items.iter().map(type_from_ast).collect::<Vec<_>>(), None)
                             }
                             EnumVariantFields::Named(fields) => (
-                                fields.iter().map(|field| type_from_ast(&field.ty)).collect(),
+                                fields
+                                    .iter()
+                                    .map(|field| type_from_ast(&field.ty))
+                                    .collect(),
                                 Some(fields.iter().map(|field| field.name.clone()).collect()),
                             ),
                         };
@@ -2842,12 +2833,11 @@ fn lower_item(
                                 diagnostics,
                             );
                             inferred_returns.push(inferred.clone());
-                            let literal_adjusted =
-                                literal_bidi_adjusted_numeric_arg_type(
-                                    Some(expr),
-                                    &inferred,
-                                    &provisional_return_ty,
-                                );
+                            let literal_adjusted = literal_bidi_adjusted_numeric_arg_type(
+                                Some(expr),
+                                &inferred,
+                                &provisional_return_ty,
+                            );
                             let compatible = is_compatible(&inferred, &provisional_return_ty)
                                 || literal_adjusted.is_some();
                             if provisional_return_ty != SemType::Unknown && !compatible {
@@ -3022,8 +3012,11 @@ fn lower_item(
                 .as_ref()
                 .map(|ty| type_from_ast_in_context(ty, context));
             let final_ty = if let Some(declared_ty) = declared {
-                let bidi_adjusted =
-                    literal_bidi_adjusted_numeric_arg_type(Some(&def.value), &inferred, &declared_ty);
+                let bidi_adjusted = literal_bidi_adjusted_numeric_arg_type(
+                    Some(&def.value),
+                    &inferred,
+                    &declared_ty,
+                );
                 let compatible = is_compatible(&inferred, &declared_ty) || bidi_adjusted.is_some();
                 if !compatible {
                     diagnostics.push(Diagnostic::new(
@@ -3093,7 +3086,8 @@ fn lower_item(
                     def.span.unwrap_or(default_diag_span()),
                 ));
             } else {
-                typed_value = maybe_insert_implicit_integral_cast(typed_value, &inferred, &declared);
+                typed_value =
+                    maybe_insert_implicit_integral_cast(typed_value, &inferred, &declared);
             }
             if contains_unknown(&declared) {
                 diagnostics.push(Diagnostic::new(
@@ -3391,7 +3385,8 @@ fn lower_stmt_with_types(
                     &inferred,
                     &declared_ty,
                 );
-                let compatible = is_compatible(&inferred, &declared_ty) || literal_adjusted.is_some();
+                let compatible =
+                    is_compatible(&inferred, &declared_ty) || literal_adjusted.is_some();
                 if !compatible {
                     diagnostics.push(Diagnostic::new(
                         mismatch_message(
@@ -3512,7 +3507,8 @@ fn lower_stmt_with_types(
                 AssignOp::Assign => {
                     let literal_adjusted =
                         literal_bidi_adjusted_numeric_arg_type(Some(value), &value_ty, &target_ty);
-                    let compatible = is_compatible(&value_ty, &target_ty) || literal_adjusted.is_some();
+                    let compatible =
+                        is_compatible(&value_ty, &target_ty) || literal_adjusted.is_some();
                     if !compatible {
                         diagnostics.push(Diagnostic::new(
                             mismatch_message(
@@ -3799,7 +3795,7 @@ fn infer_assign_target(
             }
             let (typed_index, index_ty) =
                 infer_expr(index, context, locals, return_ty, diagnostics);
-            let resolved_ty = match resolve_index_capability(&base_ty, diagnostics) {
+            let resolved_ty = match resolve_index_capability(&base_ty, Some(context), diagnostics) {
                 Some(IndexCapability {
                     mode: CapabilityIndexMode::DirectIndex,
                     key_ty,
@@ -4053,8 +4049,8 @@ fn infer_expr(
                         &value_ty,
                         &expected_with_known,
                     );
-                    let compatible =
-                        is_compatible(&value_ty, &expected_with_known) || literal_adjusted.is_some();
+                    let compatible = is_compatible(&value_ty, &expected_with_known)
+                        || literal_adjusted.is_some();
                     if !bound && !compatible {
                         diagnostics.push(Diagnostic::new(
                             mismatch_message(
@@ -4272,8 +4268,9 @@ fn infer_expr(
             let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
             let (typed_index, index_ty) =
                 infer_expr(index, context, locals, return_ty, diagnostics);
+            let mut desugar_get_like_call = false;
 
-            let resolved = match resolve_index_capability(&base_ty, diagnostics) {
+            let resolved = match resolve_index_capability(&base_ty, Some(context), diagnostics) {
                 Some(IndexCapability {
                     mode: CapabilityIndexMode::DirectIndex,
                     key_ty,
@@ -4341,11 +4338,13 @@ fn infer_expr(
                         ));
                         SemType::Unknown
                     } else if index_ty == SemType::Unknown {
+                        desugar_get_like_call = !is_builtin_map_like_sem_type(&base_ty);
                         option_type(value_ty)
                     } else if is_compatible(&index_ty, &key_ty)
                         || literal_bidi_adjusted_numeric_arg_type(Some(index), &index_ty, &key_ty)
                             .is_some()
                     {
+                        desugar_get_like_call = !is_builtin_map_like_sem_type(&base_ty);
                         option_type(value_ty)
                     } else {
                         diagnostics.push(Diagnostic::new(
@@ -4376,12 +4375,29 @@ fn infer_expr(
                 }
             };
 
+            let kind = if desugar_get_like_call {
+                let mut method_path = match &base_ty {
+                    SemType::Path { path, .. } => path.clone(),
+                    _ => vec!["get".to_string()],
+                };
+                method_path.push("get".to_string());
+                TypedExprKind::Call {
+                    callee: Box::new(TypedExpr {
+                        kind: TypedExprKind::Path(method_path),
+                        ty: "_".to_string(),
+                    }),
+                    args: vec![typed_base, typed_index],
+                }
+            } else {
+                TypedExprKind::Index {
+                    base: Box::new(typed_base),
+                    index: Box::new(typed_index),
+                }
+            };
+
             (
                 TypedExpr {
-                    kind: TypedExprKind::Index {
-                        base: Box::new(typed_base),
-                        index: Box::new(typed_index),
-                    },
+                    kind,
                     ty: type_to_string(&resolved),
                 },
                 resolved,
@@ -4664,18 +4680,18 @@ fn infer_expr(
                     continue;
                 }
                 if !is_compatible(ty, &elem_ty) || !is_compatible(&elem_ty, ty) {
-                        diagnostics.push(Diagnostic::new(
-                            mismatch_message(
-                                format!(
-                                    "Array literal element type mismatch: expected `{}`, got `{}`",
-                                    type_to_string(&elem_ty),
-                                    type_to_string(ty)
-                                ),
-                                ty,
-                                &elem_ty,
+                    diagnostics.push(Diagnostic::new(
+                        mismatch_message(
+                            format!(
+                                "Array literal element type mismatch: expected `{}`, got `{}`",
+                                type_to_string(&elem_ty),
+                                type_to_string(ty)
                             ),
-                            default_diag_span(),
-                        ));
+                            ty,
+                            &elem_ty,
+                        ),
+                        default_diag_span(),
+                    ));
                 }
             }
 
@@ -4748,18 +4764,18 @@ fn infer_expr(
                         if provisional_return_ty != SemType::Unknown
                             && !is_compatible(&inferred, &provisional_return_ty)
                         {
-                                diagnostics.push(Diagnostic::new(
-                                    mismatch_message(
-                                        format!(
-                                            "Closure return type mismatch: expected `{}`, got `{}`",
-                                            type_to_string(&provisional_return_ty),
-                                            type_to_string(&inferred)
-                                        ),
-                                        &inferred,
-                                        &provisional_return_ty,
+                            diagnostics.push(Diagnostic::new(
+                                mismatch_message(
+                                    format!(
+                                        "Closure return type mismatch: expected `{}`, got `{}`",
+                                        type_to_string(&provisional_return_ty),
+                                        type_to_string(&inferred)
                                     ),
-                                    default_diag_span(),
-                                ));
+                                    &inferred,
+                                    &provisional_return_ty,
+                                ),
+                                default_diag_span(),
+                            ));
                         }
                         typed_body.push(TypedStmt::Return(Some(typed_expr)));
                         continue;
@@ -5366,20 +5382,17 @@ fn finite_enum_variants_for_tuple_domain(
     if enum_name == "Result" {
         return Some(vec!["Ok".to_string(), "Err".to_string()]);
     }
-    context
-        .enums
-        .get(enum_name)
-        .and_then(|variants| {
-            let payload_free = variants
-                .iter()
-                .filter_map(|(name, info)| info.payload_types.is_empty().then_some(name.clone()))
-                .collect::<Vec<_>>();
-            if payload_free.is_empty() {
-                None
-            } else {
-                Some(payload_free)
-            }
-        })
+    context.enums.get(enum_name).and_then(|variants| {
+        let payload_free = variants
+            .iter()
+            .filter_map(|(name, info)| info.payload_types.is_empty().then_some(name.clone()))
+            .collect::<Vec<_>>();
+        if payload_free.is_empty() {
+            None
+        } else {
+            Some(payload_free)
+        }
+    })
 }
 
 fn collect_finite_tuple_coverage(
@@ -5694,13 +5707,9 @@ fn resolve_call_type(
             );
         }
 
-        if let Some(resolved) = resolve_constructor_call(
-            path,
-            args,
-            explicit_type_args,
-            context,
-            diagnostics,
-        ) {
+        if let Some(resolved) =
+            resolve_constructor_call(path, args, explicit_type_args, context, diagnostics)
+        {
             return resolved;
         }
 
@@ -5769,7 +5778,10 @@ fn expected_method_arg_types_for_coercion(
         return Some(capability.expected_args);
     }
     if let SemType::Path { path, .. } = base_ty {
-        let type_name = path.last().map(|segment| segment.as_str()).unwrap_or_default();
+        let type_name = path
+            .last()
+            .map(|segment| segment.as_str())
+            .unwrap_or_default();
         let lookup = format!("{type_name}::{method}");
         if let Some(sig) = context.functions.get(&lookup) {
             if sig.params.len() == args.len() + 1 {
@@ -5864,7 +5876,7 @@ fn resolve_trait_associated_call(
                 default_diag_span(),
             ));
         }
-        return Some(SemType::Unknown);
+        return Some(resolve_from_associated_type(type_name, args));
     }
     if assoc_name == "try_from" {
         if args.len() != 1 {
@@ -5882,6 +5894,57 @@ fn resolve_trait_associated_call(
         });
     }
     Some(SemType::Unknown)
+}
+
+fn resolve_from_associated_type(type_name: &str, args: &[SemType]) -> SemType {
+    if args.len() != 1 {
+        return SemType::Unknown;
+    }
+    let input = &args[0];
+    match type_name {
+        "Vec" => {
+            if let SemType::Path { path, args } = input
+                && path.last().is_some_and(|segment| segment == "Vec")
+                && args.len() == 1
+            {
+                return SemType::Path {
+                    path: vec!["Vec".to_string()],
+                    args: vec![args[0].clone()],
+                };
+            }
+            SemType::Path {
+                path: vec!["Vec".to_string()],
+                args: vec![SemType::Unknown],
+            }
+        }
+        "HashSet" | "BTreeSet" => {
+            if let SemType::Path { path, args } = input
+                && path.last().is_some_and(|segment| segment == "Vec")
+                && args.len() == 1
+            {
+                return SemType::Path {
+                    path: vec![type_name.to_string()],
+                    args: vec![args[0].clone()],
+                };
+            }
+            SemType::Unknown
+        }
+        "HashMap" | "BTreeMap" => {
+            if let SemType::Path { path, args } = input
+                && path.last().is_some_and(|segment| segment == "Vec")
+                && let Some(SemType::Tuple(items)) = args.first()
+                && items.len() == 2
+            {
+                return SemType::Path {
+                    path: vec![type_name.to_string()],
+                    args: vec![items[0].clone(), items[1].clone()],
+                };
+            }
+            SemType::Unknown
+        }
+        "String" => named_type("String"),
+        _ => named_type(type_name),
+    }
 }
 
 fn resolve_from_iter_associated_type(
@@ -6907,7 +6970,10 @@ fn resolve_method_call_type(
     }
 
     diagnostics.push(Diagnostic::new(
-        format!("Capability resolution failed for method `{method}` on `{}`", type_to_string(base_ty)),
+        format!(
+            "Capability resolution failed for method `{method}` on `{}`",
+            type_to_string(base_ty)
+        ),
         default_diag_span(),
     ));
     SemType::Unknown
@@ -6925,7 +6991,15 @@ fn is_abstract_structural_symbol(ty: &SemType, context: &Context) -> bool {
         || is_copy_primitive_type(name)
         || matches!(
             name,
-            "String" | "str" | "Vec" | "Option" | "Result" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
+            "String"
+                | "str"
+                | "Vec"
+                | "Option"
+                | "Result"
+                | "HashMap"
+                | "BTreeMap"
+                | "HashSet"
+                | "BTreeSet"
         )
     {
         return false;
@@ -7083,13 +7157,21 @@ fn resolve_method_capability(
             },
             _ => return None,
         };
-        expect_method_arity("Iter", method, actual_arity, capability.expected_args.len(), diagnostics);
+        expect_method_arity(
+            "Iter",
+            method,
+            actual_arity,
+            capability.expected_args.len(),
+            diagnostics,
+        );
         return Some(capability);
     }
 
     let (type_name, generic_args): (&str, &[SemType]) = match base_ty {
         SemType::Path { path, args } => (
-            path.last().map(|segment| segment.as_str()).unwrap_or_default(),
+            path.last()
+                .map(|segment| segment.as_str())
+                .unwrap_or_default(),
             args.as_slice(),
         ),
         _ => ("", &[]),
@@ -7143,7 +7225,10 @@ fn resolve_method_capability(
                 receiver_mode: CapabilityReceiverMode::Borrowed,
                 arg_modes: vec![CallArgMode::Borrowed],
                 expected_args: vec![named_type("String")],
-                return_ty: option_type(SemType::Tuple(vec![named_type("String"), named_type("String")])),
+                return_ty: option_type(SemType::Tuple(vec![
+                    named_type("String"),
+                    named_type("String"),
+                ])),
             },
             "push_str" => MethodCapability {
                 receiver_mode: CapabilityReceiverMode::Borrowed,
@@ -7217,13 +7302,17 @@ fn resolve_method_capability(
                     receiver_mode: CapabilityReceiverMode::Borrowed,
                     arg_modes: vec![],
                     expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(generic_args.first().cloned().unwrap_or(SemType::Unknown))),
+                    return_ty: SemType::Iter(Box::new(
+                        generic_args.first().cloned().unwrap_or(SemType::Unknown),
+                    )),
                 },
                 "into_iter" => MethodCapability {
                     receiver_mode: CapabilityReceiverMode::Owned,
                     arg_modes: vec![],
                     expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(generic_args.first().cloned().unwrap_or(SemType::Unknown))),
+                    return_ty: SemType::Iter(Box::new(
+                        generic_args.first().cloned().unwrap_or(SemType::Unknown),
+                    )),
                 },
                 _ => return None,
             }
@@ -7398,34 +7487,6 @@ fn resolve_method_capability(
     Some(capability)
 }
 
-fn resolve_index_capability(
-    base_ty: &SemType,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<IndexCapability> {
-    let SemType::Path { path, args } = base_ty else {
-        return None;
-    };
-    let type_name = path.last().map(|segment| segment.as_str()).unwrap_or_default();
-    match type_name {
-        "Vec" => Some(IndexCapability {
-            mode: CapabilityIndexMode::DirectIndex,
-            key_ty: named_type("usize"),
-            value_ty: args.first().cloned().unwrap_or(SemType::Unknown),
-        }),
-        "HashMap" | "BTreeMap" => {
-            if rustdex_has_method_strict(type_name, "get", diagnostics).is_err() {
-                return None;
-            }
-            Some(IndexCapability {
-                mode: CapabilityIndexMode::GetLikeOption,
-                key_ty: args.first().cloned().unwrap_or(SemType::Unknown),
-                value_ty: args.get(1).cloned().unwrap_or(SemType::Unknown),
-            })
-        }
-        _ => None,
-    }
-}
-
 fn expect_method_arity(
     type_name: &str,
     method: &str,
@@ -7452,6 +7513,14 @@ fn index_key_type_compatible(actual: &SemType, expected_key: &SemType) -> bool {
         return true;
     }
     false
+}
+
+fn is_builtin_map_like_sem_type(ty: &SemType) -> bool {
+    matches!(
+        ty,
+        SemType::Path { path, .. }
+            if path.last().is_some_and(|segment| segment == "HashMap" || segment == "BTreeMap")
+    )
 }
 
 fn resolve_constructor_call(
@@ -7953,9 +8022,10 @@ fn method_arg_type_compatible(expr: Option<&Expr>, actual: &SemType, expected: &
     if !numeric_coercion_enabled() {
         return false;
     }
-    let (Some(actual_name), Some(expected_name)) =
-        (canonical_numeric_name(actual), canonical_numeric_name(expected))
-    else {
+    let (Some(actual_name), Some(expected_name)) = (
+        canonical_numeric_name(actual),
+        canonical_numeric_name(expected),
+    ) else {
         return false;
     };
     is_integral_numeric_type_name(actual_name)
@@ -8134,9 +8204,10 @@ fn integral_coercion_hint(actual: &SemType, expected: &SemType) -> Option<String
     if !numeric_coercion_enabled() {
         return None;
     }
-    let (Some(actual_name), Some(expected_name)) =
-        (canonical_numeric_name(actual), canonical_numeric_name(expected))
-    else {
+    let (Some(actual_name), Some(expected_name)) = (
+        canonical_numeric_name(actual),
+        canonical_numeric_name(expected),
+    ) else {
         return None;
     };
     if !is_integral_numeric_type_name(actual_name) || !is_integral_numeric_type_name(expected_name)
@@ -8186,16 +8257,18 @@ fn maybe_insert_implicit_integral_cast(
     if !numeric_coercion_enabled() {
         return typed_expr;
     }
-    let (Some(actual_name), Some(expected_name)) =
-        (canonical_numeric_name(actual), canonical_numeric_name(expected))
-    else {
+    let (Some(actual_name), Some(expected_name)) = (
+        canonical_numeric_name(actual),
+        canonical_numeric_name(expected),
+    ) else {
         return typed_expr;
     };
     if !is_integral_numeric_type_name(actual_name) || !is_integral_numeric_type_name(expected_name)
     {
         return typed_expr;
     }
-    if actual_name == expected_name || !can_implicitly_coerce_integral_name(actual_name, expected_name)
+    if actual_name == expected_name
+        || !can_implicitly_coerce_integral_name(actual_name, expected_name)
     {
         return typed_expr;
     }
@@ -8204,7 +8277,10 @@ fn maybe_insert_implicit_integral_cast(
     let expected_spec = integral_type_spec(expected_name);
     let cast_input = if matches!(
         (actual_spec, expected_spec),
-        (Some(IntegralTypeSpec { signed: true, .. }), Some(IntegralTypeSpec { signed: false, .. }))
+        (
+            Some(IntegralTypeSpec { signed: true, .. }),
+            Some(IntegralTypeSpec { signed: false, .. })
+        )
     ) {
         let abs_base = TypedExpr {
             kind: TypedExprKind::Cast {
@@ -8713,6 +8789,11 @@ fn lower_expr_with_context(
                     state,
                 ));
             }
+            if let Some(rewritten) =
+                lower_map_from_vec_associated_from_call(callee, args, context, state)
+            {
+                return rewritten;
+            }
             let (lowered_callee, arg_modes) = lower_call_callee(callee, args, context, state);
             let lowered_call = RustExpr::Call {
                 callee: Box::new(lowered_callee),
@@ -8824,51 +8905,50 @@ fn lower_expr_with_context(
             let base_sem = sem_type_from_typed_type_string(&base_ty);
             let lowered_base =
                 lower_expr_with_context(base, context, ExprPosition::ProjectionBase, state);
-            let lowered_index_expr =
-                if let Some(IndexCapability { mode, .. }) =
-                    resolve_index_capability(&base_sem, &mut Vec::new())
-                {
-                    match mode {
-                        CapabilityIndexMode::DirectIndex => {
-                            let mut lowered = RustExpr::Index {
-                                base: Box::new(lowered_base),
-                                index: Box::new(lower_index_expr(index, &base_ty, context, state)),
-                            };
-                            if matches!(index.kind, TypedExprKind::Range { .. })
-                                && last_path_segment(&expr.ty) == "Vec"
-                            {
-                                lowered = RustExpr::Call {
-                                    callee: Box::new(RustExpr::Field {
-                                        base: Box::new(lowered),
-                                        field: "to_vec".to_string(),
-                                    }),
-                                    args: Vec::new(),
-                                };
-                            }
-                            lowered
-                        }
-                        CapabilityIndexMode::GetLikeOption => RustExpr::Call {
-                            callee: Box::new(RustExpr::Field {
-                                base: Box::new(RustExpr::Call {
-                                    callee: Box::new(RustExpr::Field {
-                                        base: Box::new(lowered_base),
-                                        field: "get".to_string(),
-                                    }),
-                                    args: vec![borrow_expr(lower_index_expr(
-                                        index, &base_ty, context, state,
-                                    ))],
+            let lowered_index_expr = if let Some(IndexCapability { mode, .. }) =
+                resolve_index_capability(&base_sem, None, &mut Vec::new())
+            {
+                match mode {
+                    CapabilityIndexMode::DirectIndex => {
+                        let mut lowered = RustExpr::Index {
+                            base: Box::new(lowered_base),
+                            index: Box::new(lower_index_expr(index, &base_ty, context, state)),
+                        };
+                        if matches!(index.kind, TypedExprKind::Range { .. })
+                            && last_path_segment(&expr.ty) == "Vec"
+                        {
+                            lowered = RustExpr::Call {
+                                callee: Box::new(RustExpr::Field {
+                                    base: Box::new(lowered),
+                                    field: "to_vec".to_string(),
                                 }),
-                                field: "cloned".to_string(),
-                            }),
-                            args: Vec::new(),
-                        },
+                                args: Vec::new(),
+                            };
+                        }
+                        lowered
                     }
-                } else {
-                    panic!(
-                        "index capability unresolved during lowering for `{}` in strict capability mode",
-                        base_ty
-                    )
-                };
+                    CapabilityIndexMode::GetLikeOption => RustExpr::Call {
+                        callee: Box::new(RustExpr::Field {
+                            base: Box::new(RustExpr::Call {
+                                callee: Box::new(RustExpr::Field {
+                                    base: Box::new(lowered_base),
+                                    field: "get".to_string(),
+                                }),
+                                args: vec![borrow_expr(lower_index_expr(
+                                    index, &base_ty, context, state,
+                                ))],
+                            }),
+                            field: "cloned".to_string(),
+                        }),
+                        args: Vec::new(),
+                    },
+                }
+            } else {
+                panic!(
+                    "index capability unresolved during lowering for `{}` in strict capability mode",
+                    base_ty
+                )
+            };
             let (decision, forced_clone) = clone_decision_for_expr(
                 expr,
                 &expr.ty,
@@ -9124,6 +9204,53 @@ fn lower_expr_with_context(
     }
 }
 
+fn lower_map_from_vec_associated_from_call(
+    callee: &TypedExpr,
+    args: &[TypedExpr],
+    context: &mut LoweringContext,
+    state: &mut LoweringState,
+) -> Option<RustExpr> {
+    let TypedExprKind::Path(path) = &callee.kind else {
+        return None;
+    };
+    if args.len() != 1 || path.len() < 2 {
+        return None;
+    }
+    if path.last().is_none_or(|segment| segment != "from") {
+        return None;
+    }
+    let receiver = path[path.len() - 2].as_str();
+    if receiver != "HashMap" && receiver != "BTreeMap" {
+        return None;
+    }
+    let arg_sem = sem_type_from_typed_type_string(&args[0].ty);
+    let takes_vec_tuple = matches!(
+        arg_sem,
+        SemType::Path { path, args }
+            if path.last().is_some_and(|segment| segment == "Vec")
+                && matches!(args.first(), Some(SemType::Tuple(items)) if items.len() == 2)
+    );
+    if !takes_vec_tuple {
+        return None;
+    }
+    let lowered_arg = lower_expr_with_context(&args[0], context, ExprPosition::CallArgOwned, state);
+    let iter_arg = RustExpr::Call {
+        callee: Box::new(RustExpr::Field {
+            base: Box::new(lowered_arg),
+            field: "into_iter".to_string(),
+        }),
+        args: Vec::new(),
+    };
+    let mut from_iter_path = path.clone();
+    if let Some(last) = from_iter_path.last_mut() {
+        *last = "from_iter".to_string();
+    }
+    Some(RustExpr::Call {
+        callee: Box::new(RustExpr::Path(from_iter_path)),
+        args: vec![iter_arg],
+    })
+}
+
 fn lower_path_expr(
     expr: &TypedExpr,
     path: &[String],
@@ -9350,7 +9477,7 @@ fn method_returns_option_item_via_get(callee: &TypedExpr) -> bool {
     let base_sem = sem_type_from_typed_type_string(&base.ty);
     let mut diagnostics = Vec::new();
     matches!(
-        resolve_index_capability(&base_sem, &mut diagnostics),
+        resolve_index_capability(&base_sem, None, &mut diagnostics),
         Some(IndexCapability {
             mode: CapabilityIndexMode::GetLikeOption,
             ..
@@ -9462,7 +9589,10 @@ fn resolve_method_call_modes(
     })
 }
 
-fn resolve_associated_call_modes(callee: &TypedExpr, args: &[TypedExpr]) -> Option<Vec<CallArgMode>> {
+fn resolve_associated_call_modes(
+    callee: &TypedExpr,
+    args: &[TypedExpr],
+) -> Option<Vec<CallArgMode>> {
     let TypedExprKind::Path(path) = &callee.kind else {
         return None;
     };
@@ -11314,7 +11444,10 @@ fn substitute_bound_generic_type(
     match ty {
         SemType::Path { path, args } if path.len() == 1 && args.is_empty() => {
             if type_params.contains(&path[0]) {
-                return bindings.get(&path[0]).cloned().unwrap_or_else(|| ty.clone());
+                return bindings
+                    .get(&path[0])
+                    .cloned()
+                    .unwrap_or_else(|| ty.clone());
             }
             ty.clone()
         }
@@ -11402,8 +11535,10 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
             },
         ) => {
             if numeric_coercion_enabled()
-                && let (Some(actual_name), Some(expected_name)) =
-                    (canonical_numeric_name(actual), canonical_numeric_name(expected))
+                && let (Some(actual_name), Some(expected_name)) = (
+                    canonical_numeric_name(actual),
+                    canonical_numeric_name(expected),
+                )
                 && is_integral_numeric_type_name(actual_name)
                 && is_integral_numeric_type_name(expected_name)
                 && can_implicitly_coerce_integral_name(actual_name, expected_name)
