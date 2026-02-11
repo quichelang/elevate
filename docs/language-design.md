@@ -110,8 +110,13 @@ Type policy:
 - Errors must include concrete expected vs actual details.
 
 Capability-driven method/index policy:
+- Mode definitions:
+- strict mode = `--exp-type-system` disabled.
+- type-system mode = `--exp-type-system` enabled.
 - Method typing and index typing are capability-resolved (no per-method ad hoc typing branches for standard containers).
-- Capability resolution uses rustdex metadata as an explicit dependency; when metadata is unavailable, Elevate emits a capability-resolution diagnostic and fails early.
+- In strict mode, existing auto-borrow/auto-clone behavior remains active and must not regress.
+- In type-system mode, rustdex is a hard prerequisite for capability resolution; when metadata is unavailable, Elevate emits a hard failure diagnostic and stops compilation before lowering.
+- No silent fallback is permitted in type-system mode for rustdex-unavailable capability paths.
 - Map-like subscript semantics are safe-by-default:
 - `map[key]` desugars to `map.get(key)`.
 - Result type is `Option<V>` (not panic-index semantics).

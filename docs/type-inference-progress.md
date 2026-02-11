@@ -52,6 +52,13 @@ Target experience:
 
 ## Capability Cutover (Expectation vs Reality)
 
+### Mode Clarification (Locked)
+
+- strict mode = `--exp-type-system` off.
+- type-system mode = `--exp-type-system` on.
+- strict mode continues to require robust auto-borrow/auto-clone behavior.
+- rustdex hard-fail preflight applies to type-system mode capability resolution only.
+
 ### A) Map subscript should be safe and typed, not Vec-only or rustc-fallback
 
 Expectation:
