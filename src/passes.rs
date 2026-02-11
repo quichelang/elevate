@@ -4384,7 +4384,7 @@ fn infer_expr(
                         SemType::Unknown
                     } else if index_ty == SemType::Unknown {
                         option_type(value_ty)
-                    } else if is_compatible(&index_ty, &key_ty)
+                    } else if index_key_type_compatible(&index_ty, &key_ty)
                         || literal_bidi_adjusted_numeric_arg_type(Some(index), &index_ty, &key_ty)
                             .is_some()
                     {

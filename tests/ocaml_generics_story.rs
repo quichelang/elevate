@@ -846,6 +846,37 @@ fn capability_story_custom_get_index_with_enum_key_infers_key_type() {
 }
 
 #[test]
+fn capability_story_custom_get_index_with_struct_key_infers_key_type() {
+    let source = r#"
+        struct Key {
+            id: i64;
+        }
+
+        struct Lookup {
+            value: i64;
+        }
+
+        impl Lookup {
+            fn get(self, key: Key) -> Option<i64> {
+                if key.id > 0 {
+                    return Some(self.value);
+                }
+                return None;
+            }
+        }
+
+        fn pick(store: Lookup) -> Option<i64> {
+            return store[Key { id: 2 }];
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("custom get-like index should infer struct key type");
+    assert!(output.rust_code.contains("Lookup::get("));
+    assert!(output.rust_code.contains("Key { id: 2 }"));
+}
+
+#[test]
 fn capability_story_custom_direct_index_with_struct_key_infers_key_type() {
     let source = r#"
         struct Key {
