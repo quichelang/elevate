@@ -69,7 +69,7 @@ cargo run -q -- examples/point.ers --emit-rust /tmp/point.rs
 | **No `mut` keyword** | Mutability is detected heuristically - if you reassign or call `.push()`, it becomes `mut` |
 | **No `dyn` or `Box<dyn>`** | Trait-object lowering is inferred when you use trait types |
 | **Real Rust output** | Every `.ers` file compiles to clean `.rs` - you can read, audit, and ship the generated code |
-| **Zero dependencies** | The compiler itself has literally `[dependencies]` empty in `Cargo.toml` |
+| **Limited dependencies** | The only dependencies included are to provide robust checks and compilation to Rust |
 | **Full interop with Rust crates** | Use `use` imports, call Rust functions, or embed raw Rust with `rust { ... }` blocks |
 
 This is the practical value proposition for new users:
@@ -563,7 +563,7 @@ src/
 └── templates/           # Project scaffolding templates
 ```
 
-Zero external dependencies. The entire compiler is self-contained, built on `std` only.
+Few external dependencies for compilation support. The language itself does not use any - only using `std` to piggy-back off of Rust's fantastic core library.
 
 ---
 
