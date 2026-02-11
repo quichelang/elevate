@@ -634,3 +634,98 @@ fn pending_diagnostic_mentions_abs_for_index_intent_assignment() {
         .expect_err("pending abs(i*) diagnostics should reject index-intent signed mismatch");
     assert!(error.to_string().contains("abs("));
 }
+
+// Checklist Story: Section 11 (Capability Story)
+// Goal: capability-driven map/method/index behavior composes with OCaml-profile inference.
+#[test]
+fn capability_story_map_subscript_returns_option_and_composes_with_nested_vectors() {
+    let source = r#"
+        use std::collections::HashMap;
+
+        fn pick(store: HashMap<String, Vec<Vec<i64>>>) -> Option<Vec<Vec<i64>>> {
+            return store["board"];
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("map subscript should lower through get-like option capability");
+    assert!(output.rust_code.contains(".get("));
+    assert!(output.rust_code.contains("Option<Vec<Vec<i64>>>"));
+}
+
+#[test]
+fn capability_story_map_get_reports_key_type_mismatch_with_expected_actual() {
+    let source = r#"
+        use std::collections::HashMap;
+
+        fn pick(scores: HashMap<String, i64>) -> Option<i64> {
+            return scores.get(true);
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("bool key should fail against String-key map capability");
+    let rendered = error.to_string();
+    assert!(rendered.contains("Arg 1 for method `get`"));
+    assert!(rendered.contains("expected `String`"));
+    assert!(rendered.contains("got `bool`"));
+}
+
+#[test]
+fn capability_story_mixed_generics_map_vector_numeric_coercion_and_ownership() {
+    let source = r#"
+        use std::collections::HashMap;
+
+        fn pick(cache: HashMap<String, Vec<i64>>, idx: i32) -> Option<i64> {
+            const selected = match cache.get("nums") {
+                Some(values) => Some(values[idx]);
+                None => Some(0);
+            };
+            return selected;
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("mixed map/vector/index coercion path should compile in profile mode");
+    assert!(output.rust_code.contains(".get("));
+    assert!(output.rust_code.contains("as usize"));
+}
+
+#[test]
+fn capability_story_custom_type_method_without_capability_reports_elevate_error() {
+    let source = r#"
+        struct Bag {
+            value: i64;
+        }
+
+        fn run(bag: Bag) -> i64 {
+            return bag.get(0);
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("custom type without get capability should fail at Elevate layer");
+    assert!(
+        error
+            .to_string()
+            .contains("Capability resolution failed for method `get` on `Bag`")
+    );
+}
+
+#[test]
+fn capability_story_inferred_map_via_from_iter_supports_get_method_path() {
+    let source = r#"
+        use std::collections::HashMap;
+
+        fn run() -> Option<i64> {
+            const pairs = [("Alice", 100), ("Bob", 85)];
+            const scores = HashMap::from_iter(pairs.into_iter());
+            return scores.get("Alice");
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("inferred map value via from_iter should still resolve get capability");
+    assert!(output.rust_code.contains("HashMap::from_iter"));
+    assert!(output.rust_code.contains(".get("));
+}
