@@ -59,7 +59,14 @@ pub struct EnumDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumVariant {
     pub name: String,
-    pub payload: Vec<Type>,
+    pub fields: EnumVariantFields,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnumVariantFields {
+    Unit,
+    Tuple(Vec<Type>),
+    Named(Vec<Field>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

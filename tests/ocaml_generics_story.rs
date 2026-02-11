@@ -336,3 +336,212 @@ fn integrated_story_case_exercises_multiple_ocaml_like_patterns() {
     let _ = compile_with_ocaml_profile(source)
         .expect("integrated OCaml-style story case should compile");
 }
+
+// Checklist Story: Section 8
+// Goal: numeric policy matrix should stay explicit for non-literals while keeping literal ergonomics.
+#[test]
+fn ocaml_profile_accepts_contextual_uint_literals_across_widths() {
+    let source = r#"
+        fn need_u8(v: u8) -> u8 { return v; }
+        fn need_u16(v: u16) -> u16 { return v; }
+        fn need_u32(v: u32) -> u32 { return v; }
+        fn need_u64(v: u64) -> u64 { return v; }
+        fn need_usize(v: usize) -> usize { return v; }
+
+        fn run() -> usize {
+            const a = need_u8(7);
+            const b = need_u16(9);
+            const c = need_u32(11);
+            const d = need_u64(13);
+            const e = need_usize(15);
+            std::mem::drop(a);
+            std::mem::drop(b);
+            std::mem::drop(c);
+            std::mem::drop(d);
+            return e;
+        }
+    "#;
+
+    let _ = compile_with_ocaml_profile(source)
+        .expect("contextual typing for uint literal arguments should work in profile mode");
+}
+
+#[test]
+fn strict_mode_rejects_bool_where_uint_is_expected() {
+    let source = r#"
+        fn need_u64(v: u64) -> u64 {
+            return v;
+        }
+
+        fn run() -> u64 {
+            return need_u64(true);
+        }
+    "#;
+
+    let error = compile_source(source).expect_err("bool should not coerce to uint");
+    let rendered = error.to_string();
+    assert!(rendered.contains("expected `u64`"));
+    assert!(rendered.contains("got `bool`"));
+}
+
+#[test]
+fn strict_mode_rejects_vector_member_type_mismatch_for_uint_parameter() {
+    let source = r#"
+        fn first_u64(values: Vec<u64>) -> u64 {
+            return values[0];
+        }
+
+        fn run() -> u64 {
+            const flags = [true, false];
+            return first_u64(flags);
+        }
+    "#;
+
+    let error = compile_source(source).expect_err("Vec<bool> should not pass as Vec<u64>");
+    let rendered = error.to_string();
+    assert!(rendered.contains("expected `Vec<u64>`"));
+    assert!(rendered.contains("got `Vec<bool>`"));
+}
+
+#[test]
+fn strict_mode_rejects_struct_member_bool_for_uint_field() {
+    let source = r#"
+        struct Metrics {
+            count: u64;
+        }
+
+        fn run() -> u64 {
+            const m = Metrics { count: true };
+            return m.count;
+        }
+    "#;
+
+    let error = compile_source(source).expect_err("bool should not satisfy struct uint field");
+    let rendered = error.to_string();
+    assert!(rendered.contains("Struct field `count` expected `u64`, got `bool`"));
+}
+
+#[test]
+fn explicit_conversion_try_from_accepts_non_literal_signed_value() {
+    let source = r#"
+        fn to_u64(value: i64) -> u64 {
+            return u64::try_from(value).unwrap_or(u64::MIN);
+        }
+    "#;
+
+    let output = compile_source(source).expect("explicit conversion path should compile");
+    assert!(
+        output
+            .rust_code
+            .contains("u64::try_from(value).unwrap_or(u64::MIN)")
+    );
+}
+
+#[test]
+fn explicit_conversion_try_from_accepts_struct_member_value() {
+    let source = r#"
+        struct Input {
+            raw: i64;
+        }
+
+        fn to_u64(input: Input) -> u64 {
+            return u64::try_from(input.raw).unwrap_or(u64::MIN);
+        }
+    "#;
+
+    let output = compile_source(source).expect("struct member conversion should compile");
+    assert!(
+        output
+            .rust_code
+            .contains("u64::try_from(input.raw).unwrap_or(u64::MIN)")
+    );
+}
+
+#[test]
+fn explicit_conversion_try_from_accepts_vector_member_value() {
+    let source = r#"
+        fn first_u64(values: Vec<i64>) -> u64 {
+            return u64::try_from(values[0]).unwrap_or(u64::MIN);
+        }
+    "#;
+
+    let output = compile_source(source).expect("vector member conversion should compile");
+    assert!(
+        output
+            .rust_code
+            .contains("u64::try_from(values[(0) as usize]).unwrap_or(u64::MIN)")
+    );
+}
+
+#[test]
+fn ocaml_profile_rejects_bool_vector_index_for_get() {
+    let source = r#"
+        fn run(values: Vec<i64>) -> Option<i64> {
+            return values.get(true);
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("bool index should be rejected even in profile mode");
+    assert!(
+        error
+            .to_string()
+            .contains("Method `Vec::get` expects `i64` or `usize` index, got `bool`")
+    );
+}
+
+#[test]
+fn ocaml_profile_rejects_bool_direct_indexing() {
+    let source = r#"
+        fn run(values: Vec<i64>) -> i64 {
+            return values[true];
+        }
+    "#;
+
+    let error =
+        compile_with_ocaml_profile(source).expect_err("bool index should be rejected in [] form");
+    assert!(
+        error
+            .to_string()
+            .contains("Vector indexing expects `i64` or `usize` index (or range), got `bool`")
+    );
+}
+
+// Checklist Story: Section 9 (Pending)
+// Goal: diagnostics should suggest abs(i*) guidance for signed->uint/index-intent paths.
+#[test]
+#[ignore = "pending: add abs(i*) guidance in numeric mismatch diagnostics"]
+fn pending_diagnostic_mentions_abs_for_signed_to_unsigned_assignment() {
+    let source = r#"
+        fn need_u64(v: u64) -> u64 {
+            return v;
+        }
+
+        fn run(x: i64) -> u64 {
+            return need_u64(x);
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("pending abs(i*) diagnostics should reject signed-to-unsigned mismatch");
+    assert!(error.to_string().contains("abs("));
+}
+
+#[test]
+#[ignore = "pending: add abs(i*) guidance for index-intent coercion hints"]
+fn pending_diagnostic_mentions_abs_for_index_intent_assignment() {
+    let source = r#"
+        fn take_usize(v: usize) -> usize {
+            return v;
+        }
+
+        fn run(values: Vec<i64>) -> usize {
+            const idx = values[0];
+            return take_usize(idx);
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("pending abs(i*) diagnostics should reject index-intent signed mismatch");
+    assert!(error.to_string().contains("abs("));
+}

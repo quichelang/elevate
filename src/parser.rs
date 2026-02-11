@@ -1,8 +1,8 @@
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, ConstDef, DestructurePattern, EffectRow, EnumDef,
-    EnumVariant, Expr, Field, FunctionDef, GenericParam, ImplBlock, Item, MatchArm, Module, Param,
-    Pattern, PatternField, RustUse, StaticDef, Stmt, StructDef, StructLiteralField, TraitDef,
-    TraitMethodSig, Type, UnaryOp, Visibility,
+    EnumVariant, EnumVariantFields, Expr, Field, FunctionDef, GenericParam, ImplBlock, Item,
+    MatchArm, Module, Param, Pattern, PatternField, RustUse, StaticDef, Stmt, StructDef,
+    StructLiteralField, TraitDef, TraitMethodSig, Type, UnaryOp, Visibility,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind};
@@ -198,8 +198,8 @@ impl Parser {
         let mut variants = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let variant_name = self.expect_ident("Expected enum variant name")?;
-            let mut payload = Vec::new();
-            if self.match_kind(TokenKind::LParen) {
+            let fields = if self.match_kind(TokenKind::LParen) {
+                let mut payload = Vec::new();
                 if !self.at(TokenKind::RParen) {
                     payload.push(self.parse_type()?);
                     while self.match_kind(TokenKind::Comma) {
@@ -213,11 +213,38 @@ impl Parser {
                     TokenKind::RParen,
                     "Expected ')' after variant payload type list",
                 )?;
-            }
+                EnumVariantFields::Tuple(payload)
+            } else if self.match_kind(TokenKind::LBrace) {
+                let mut named = Vec::new();
+                while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+                    let field_name =
+                        self.expect_ident("Expected field name in enum variant payload")?;
+                    self.expect(
+                        TokenKind::Colon,
+                        "Expected ':' after enum variant field name",
+                    )?;
+                    let field_ty = self.parse_type()?;
+                    self.expect(
+                        TokenKind::Semicolon,
+                        "Expected ';' after enum variant field declaration",
+                    )?;
+                    named.push(Field {
+                        name: field_name,
+                        ty: field_ty,
+                    });
+                }
+                self.expect(
+                    TokenKind::RBrace,
+                    "Expected '}' after enum variant named payload",
+                )?;
+                EnumVariantFields::Named(named)
+            } else {
+                EnumVariantFields::Unit
+            };
             self.expect(TokenKind::Semicolon, "Expected ';' after enum variant")?;
             variants.push(EnumVariant {
                 name: variant_name,
-                payload,
+                fields,
             });
         }
         self.expect(TokenKind::RBrace, "Expected '}' after enum body")?;
@@ -2478,6 +2505,35 @@ world"#;
         assert_eq!(def.type_params.len(), 1);
         assert_eq!(def.target, "Box");
         assert_eq!(def.target_args.len(), 1);
+    }
+
+    #[test]
+    fn parse_enum_named_variant_payload_fields() {
+        let source = r#"
+            enum Message {
+                Move { x: i64; y: i64; };
+                Quit;
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+
+        let crate::ast::Item::Enum(def) = &module.items[0] else {
+            panic!("expected enum item");
+        };
+        assert_eq!(def.variants.len(), 2);
+        assert_eq!(def.variants[0].name, "Move");
+        let crate::ast::EnumVariantFields::Named(fields) = &def.variants[0].fields else {
+            panic!("expected named variant fields");
+        };
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "x");
+        assert_eq!(fields[1].name, "y");
+
+        let crate::ast::EnumVariantFields::Unit = def.variants[1].fields else {
+            panic!("expected unit variant");
+        };
     }
 
     #[test]

@@ -2693,6 +2693,65 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_named_payload_enum_variants() {
+        let source = r#"
+            enum Message {
+                Move { x: i64; y: i64; };
+                Quit;
+            }
+
+            fn make_move() -> Message {
+                Message::Move { x: 1; y: 2; }
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("Move { x: i64, y: i64 }"));
+        assert!(output.rust_code.contains("Message::Move { x: 1, y: 2 }"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_reports_named_payload_enum_unknown_field() {
+        let source = r#"
+            enum Message {
+                Move { x: i64; y: i64; };
+            }
+
+            fn make_move() -> Message {
+                Message::Move { x: 1; z: 2; }
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected field error");
+        assert!(
+            error
+                .to_string()
+                .contains("Unknown enum variant field `z` in literal")
+        );
+    }
+
+    #[test]
+    fn compile_reports_named_payload_enum_missing_field() {
+        let source = r#"
+            enum Message {
+                Move { x: i64; y: i64; };
+            }
+
+            fn make_move() -> Message {
+                Message::Move { x: 1; }
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("expected missing field error");
+        assert!(
+            error
+                .to_string()
+                .contains("Missing enum variant field `y`")
+        );
+    }
+
+    #[test]
     fn compile_reports_multi_payload_enum_arity_mismatch() {
         let source = r#"
             enum Pair {

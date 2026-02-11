@@ -4,8 +4,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::DirectBorrowHint;
 use crate::ast::{
-    AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, Expr, GenericParam, Item, Module,
-    Pattern, Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp, UseTree, Visibility,
+    AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, EnumVariantFields, Expr,
+    GenericParam, Item, Module, Pattern, Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp,
+    UseTree, Visibility,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
@@ -13,13 +14,14 @@ use crate::ir::lowered::{
     RustExpr, RustField, RustFunction, RustImpl, RustItem, RustMatchArm, RustModule, RustParam,
     RustPattern, RustPatternField, RustStatic, RustStmt, RustStruct, RustStructLiteralField,
     RustTrait, RustTraitMethod, RustTypeParam, RustUnaryOp, RustUse, RustUseTree, RustVariant,
+    RustVariantFields,
 };
 use crate::ir::typed::{
     TypedAssignOp, TypedAssignTarget, TypedBinaryOp, TypedConst, TypedDestructurePattern,
     TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedItem,
     TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedPatternField, TypedRustUse,
     TypedStatic, TypedStmt, TypedStruct, TypedStructLiteralField, TypedTrait, TypedTraitMethod,
-    TypedTypeParam, TypedUnaryOp, TypedUseTree, TypedVariant,
+    TypedTypeParam, TypedUnaryOp, TypedUseTree, TypedVariant, TypedVariantFields,
 };
 use crate::ownership_planner::{CloneDecision, ClonePlannerInput, decide_clone};
 use crate::rustdex_backend;
@@ -132,11 +134,17 @@ struct ImplMethodTemplate {
 }
 
 #[derive(Debug, Clone)]
+struct EnumVariantInfo {
+    payload_types: Vec<SemType>,
+    named_fields: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
 struct Context {
     functions: HashMap<String, FunctionSig>,
     structs: HashMap<String, HashMap<String, SemType>>,
     struct_type_params: HashMap<String, Vec<String>>,
-    enums: HashMap<String, HashMap<String, Vec<SemType>>>,
+    enums: HashMap<String, HashMap<String, EnumVariantInfo>>,
     enum_type_params: HashMap<String, Vec<String>>,
     traits: HashMap<String, Vec<SemType>>,
     trait_impls: HashMap<String, HashSet<String>>,
@@ -992,7 +1000,23 @@ pub fn lower_to_rust_with_hints(
                     .iter()
                     .map(|variant| RustVariant {
                         name: variant.name.clone(),
-                        payload: variant.payload.clone(),
+                        fields: match &variant.fields {
+                            TypedVariantFields::Unit => RustVariantFields::Unit,
+                            TypedVariantFields::Tuple(items) => {
+                                RustVariantFields::Tuple(items.clone())
+                            }
+                            TypedVariantFields::Named(fields) => {
+                                RustVariantFields::Named(
+                                    fields
+                                        .iter()
+                                        .map(|field| RustField {
+                                            name: field.name.clone(),
+                                            ty: field.ty.clone(),
+                                        })
+                                        .collect(),
+                                )
+                            }
+                        },
                     })
                     .collect(),
             }),
@@ -1735,13 +1759,22 @@ fn collect_definitions(module: &Module, context: &mut Context, diagnostics: &mut
                     .variants
                     .iter()
                     .map(|variant| {
+                        let (payload_types, named_fields) = match &variant.fields {
+                            EnumVariantFields::Unit => (Vec::new(), None),
+                            EnumVariantFields::Tuple(items) => {
+                                (items.iter().map(type_from_ast).collect::<Vec<_>>(), None)
+                            }
+                            EnumVariantFields::Named(fields) => (
+                                fields.iter().map(|field| type_from_ast(&field.ty)).collect(),
+                                Some(fields.iter().map(|field| field.name.clone()).collect()),
+                            ),
+                        };
                         (
                             variant.name.clone(),
-                            variant
-                                .payload
-                                .iter()
-                                .map(type_from_ast)
-                                .collect::<Vec<_>>(),
+                            EnumVariantInfo {
+                                payload_types,
+                                named_fields,
+                            },
                         )
                     })
                     .collect::<HashMap<_, _>>();
@@ -2727,12 +2760,27 @@ fn lower_item(
                 .iter()
                 .map(|variant| TypedVariant {
                     name: variant.name.clone(),
-                    payload: variant
-                        .payload
-                        .iter()
-                        .map(|ty| type_from_ast_in_context(ty, context))
-                        .map(|ty| rust_owned_type_string(&ty))
-                        .collect(),
+                    fields: match &variant.fields {
+                        EnumVariantFields::Unit => TypedVariantFields::Unit,
+                        EnumVariantFields::Tuple(items) => TypedVariantFields::Tuple(
+                            items
+                                .iter()
+                                .map(|ty| type_from_ast_in_context(ty, context))
+                                .map(|ty| rust_owned_type_string(&ty))
+                                .collect(),
+                        ),
+                        EnumVariantFields::Named(fields) => TypedVariantFields::Named(
+                            fields
+                                .iter()
+                                .map(|field| TypedField {
+                                    name: field.name.clone(),
+                                    ty: rust_owned_type_string(&type_from_ast_in_context(
+                                        &field.ty, context,
+                                    )),
+                                })
+                                .collect(),
+                        ),
+                    },
                 })
                 .collect(),
         })),
@@ -3809,25 +3857,72 @@ fn infer_expr(
         Expr::StructLiteral { path, fields } => {
             let mut typed_fields = Vec::new();
             let mut seen = HashSet::new();
+            let mut resolved_type_path = path.clone();
             let mut resolved_ty = SemType::Path {
-                path: path.clone(),
+                path: resolved_type_path.clone(),
                 args: Vec::new(),
             };
-            let mut expected_fields: Option<&HashMap<String, SemType>> = None;
+            let mut expected_fields: Option<HashMap<String, SemType>> = None;
             let mut type_param_names: Vec<String> = Vec::new();
             let mut generic_bindings = HashMap::new();
             let mut type_param_set = HashSet::new();
+            let mut is_enum_variant_literal = false;
 
-            if let Some(struct_name) = path.last() {
-                if let Some(struct_fields) = context.structs.get(struct_name) {
-                    expected_fields = Some(struct_fields);
-                }
-                if let Some(params) = context.struct_type_params.get(struct_name) {
-                    type_param_names = params.clone();
+            if path.len() == 2 {
+                let enum_name = &path[0];
+                let variant_name = &path[1];
+                if let Some(variants) = context.enums.get(enum_name)
+                    && let Some(variant_info) = variants.get(variant_name)
+                {
+                    is_enum_variant_literal = true;
+                    resolved_type_path = vec![enum_name.clone()];
+                    resolved_ty = SemType::Path {
+                        path: resolved_type_path.clone(),
+                        args: Vec::new(),
+                    };
+                    type_param_names = context
+                        .enum_type_params
+                        .get(enum_name)
+                        .cloned()
+                        .unwrap_or_default();
                     type_param_set = type_param_names.iter().cloned().collect();
+                    if let Some(field_names) = &variant_info.named_fields {
+                        let field_map = field_names
+                            .iter()
+                            .zip(variant_info.payload_types.iter())
+                            .map(|(name, ty)| (name.clone(), ty.clone()))
+                            .collect::<HashMap<_, _>>();
+                        expected_fields = Some(field_map);
+                    } else if variant_info.payload_types.is_empty() {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Enum variant `{enum_name}::{variant_name}` has no named fields; use `{enum_name}::{variant_name}`"
+                            ),
+                            default_diag_span(),
+                        ));
+                    } else {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "Enum variant `{enum_name}::{variant_name}` uses tuple payload; use `{enum_name}::{variant_name}(...)`"
+                            ),
+                            default_diag_span(),
+                        ));
+                    }
                 }
-            } else {
-                resolved_ty = SemType::Unknown;
+            }
+
+            if !is_enum_variant_literal {
+                if let Some(struct_name) = path.last() {
+                    if let Some(struct_fields) = context.structs.get(struct_name) {
+                        expected_fields = Some(struct_fields.clone());
+                    }
+                    if let Some(params) = context.struct_type_params.get(struct_name) {
+                        type_param_names = params.clone();
+                        type_param_set = type_param_names.iter().cloned().collect();
+                    }
+                } else {
+                    resolved_ty = SemType::Unknown;
+                }
             }
 
             for StructLiteralField { name, value } in fields {
@@ -3839,7 +3934,7 @@ fn infer_expr(
                         default_diag_span(),
                     ));
                 }
-                if let Some(expected) = expected_fields.and_then(|map| map.get(name)) {
+                if let Some(expected) = expected_fields.as_ref().and_then(|map| map.get(name)) {
                     let bound = bind_generic_params(
                         expected,
                         &value_ty,
@@ -3858,7 +3953,11 @@ fn infer_expr(
                     }
                 } else if expected_fields.is_some() {
                     diagnostics.push(Diagnostic::new(
-                        format!("Unknown struct field `{name}` in literal"),
+                        if is_enum_variant_literal {
+                            format!("Unknown enum variant field `{name}` in literal")
+                        } else {
+                            format!("Unknown struct field `{name}` in literal")
+                        },
                         default_diag_span(),
                     ));
                 }
@@ -3868,11 +3967,15 @@ fn infer_expr(
                 });
             }
 
-            if let Some(struct_fields) = expected_fields {
+            if let Some(struct_fields) = expected_fields.as_ref() {
                 for field_name in struct_fields.keys() {
                     if !seen.contains(field_name) {
                         diagnostics.push(Diagnostic::new(
-                            format!("Missing struct literal field `{field_name}`"),
+                            if is_enum_variant_literal {
+                                format!("Missing enum variant field `{field_name}`")
+                            } else {
+                                format!("Missing struct literal field `{field_name}`")
+                            },
                             default_diag_span(),
                         ));
                     }
@@ -3881,7 +3984,7 @@ fn infer_expr(
 
             if !type_param_names.is_empty() {
                 resolved_ty = SemType::Path {
-                    path: path.clone(),
+                    path: resolved_type_path,
                     args: type_param_names
                         .iter()
                         .map(|name| {
@@ -5054,7 +5157,17 @@ fn finite_enum_variants_for_tuple_domain(
     context
         .enums
         .get(enum_name)
-        .map(|variants| variants.keys().cloned().collect())
+        .and_then(|variants| {
+            let payload_free = variants
+                .iter()
+                .filter_map(|(name, info)| info.payload_types.is_empty().then_some(name.clone()))
+                .collect::<Vec<_>>();
+            if payload_free.is_empty() {
+                None
+            } else {
+                Some(payload_free)
+            }
+        })
 }
 
 fn collect_finite_tuple_coverage(
@@ -7025,7 +7138,8 @@ fn resolve_constructor_call(
         }
 
         if let Some(variants) = context.enums.get(enum_name) {
-            if let Some(expected_payload) = variants.get(variant_name) {
+            if let Some(variant_info) = variants.get(variant_name) {
+                let expected_payload = &variant_info.payload_types;
                 let type_param_names = context
                     .enum_type_params
                     .get(enum_name)
@@ -7049,6 +7163,26 @@ fn resolve_constructor_call(
                             generic_bindings.insert(name.clone(), ty.clone());
                         }
                     }
+                }
+                if variant_info.named_fields.is_some() {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Enum variant `{enum_name}::{variant_name}` uses named fields; construct it with `{enum_name}::{variant_name} {{ ... }}`"
+                        ),
+                        default_diag_span(),
+                    ));
+                    return Some(SemType::Path {
+                        path: vec![enum_name.clone()],
+                        args: type_param_names
+                            .iter()
+                            .map(|name| {
+                                generic_bindings
+                                    .get(name)
+                                    .cloned()
+                                    .unwrap_or(SemType::Unknown)
+                            })
+                            .collect(),
+                    });
                 }
                 if args.len() != expected_payload.len() {
                     diagnostics.push(Diagnostic::new(
@@ -10923,7 +11057,8 @@ fn lower_pattern(
             }
 
             let lowered_payload = if let Some(variants) = context.enums.get(&enum_name) {
-                if let Some(expected_payload) = variants.get(&variant_name) {
+                if let Some(variant_info) = variants.get(&variant_name) {
+                    let expected_payload = &variant_info.payload_types;
                     if expected_payload.is_empty() {
                         if payload.is_some() {
                             diagnostics.push(Diagnostic::new(
@@ -11488,8 +11623,8 @@ fn resolve_path_value(path: &[String], context: &Context) -> Option<SemType> {
         let enum_name = &path[0];
         let variant_name = &path[1];
         if let Some(variants) = context.enums.get(enum_name)
-            && let Some(payload) = variants.get(variant_name)
-            && payload.is_empty()
+            && let Some(variant_info) = variants.get(variant_name)
+            && variant_info.payload_types.is_empty()
         {
             let args = context
                 .enum_type_params

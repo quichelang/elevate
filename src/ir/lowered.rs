@@ -58,7 +58,14 @@ pub struct RustEnum {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustVariant {
     pub name: String,
-    pub payload: Vec<String>,
+    pub fields: RustVariantFields,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustVariantFields {
+    Unit,
+    Tuple(Vec<String>),
+    Named(Vec<RustField>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

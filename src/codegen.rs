@@ -2,7 +2,7 @@ use crate::ir::lowered::{
     RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
     RustExpr, RustFunction, RustImpl, RustItem, RustModule, RustPattern, RustPatternField,
     RustStatic, RustStmt, RustStruct, RustStructLiteralField, RustTrait, RustUnaryOp, RustUse,
-    RustUseTree,
+    RustUseTree, RustVariantFields,
 };
 
 pub fn emit_rust_module(module: &RustModule) -> String {
@@ -89,14 +89,23 @@ fn emit_enum(def: &RustEnum, out: &mut String) {
         generics
     ));
     for variant in &def.variants {
-        if variant.payload.is_empty() {
-            out.push_str(&format!("    {},\n", variant.name));
-        } else {
-            out.push_str(&format!(
-                "    {}({}),\n",
-                variant.name,
-                variant.payload.join(", ")
-            ));
+        match &variant.fields {
+            RustVariantFields::Unit => {
+                out.push_str(&format!("    {},\n", variant.name));
+            }
+            RustVariantFields::Tuple(items) => {
+                out.push_str(&format!("    {}({}),\n", variant.name, items.join(", ")));
+            }
+            RustVariantFields::Named(fields) => {
+                out.push_str(&format!("    {} {{ ", variant.name));
+                let rendered = fields
+                    .iter()
+                    .map(|field| format!("{}: {}", field.name, field.ty))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&rendered);
+                out.push_str(" },\n");
+            }
         }
     }
     out.push_str("}\n");
