@@ -583,7 +583,9 @@ Requires **Rust 2024 edition** (rustc 1.85+).
 ## Documentation
 
 - [Language Design](docs/language-design.md) - Full specification, contracts, and implementation status
-- [Type Inference Plan](docs/type-inference-plan.md) - HM-style inference + bidirectional extensions roadmap
+- [Type System Plan](docs/type-system-plan.md) - HM-style inference + bidirectional extensions roadmap
+- [Type System Progress](docs/type-system-progress.md) - Ongoing implementation status and milestones
+- [System Design](docs/system-design.md) - Component logistics, terminology, requirements, and roadmap
 - [AST Reference](docs/ast.md) - Node structure documentation
 - [External Frontend Path](docs/external-frontend-path.md) - Binary AST/EIR integration, terminology, and diagnostics metadata guidance
 - [Editor Extensions](docs/editor-extensions.md) - VSCode and Zed setup

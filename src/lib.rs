@@ -4001,6 +4001,32 @@ mod tests {
     }
 
     #[test]
+    fn compile_custom_get_like_index_reused_copy_key_does_not_clone() {
+        let source = r#"
+            pub struct Lookup {
+                value: i64;
+            }
+
+            impl Lookup {
+                pub fn get(self, key: i64) -> Option<i64> {
+                    return Some(self.value + key);
+                }
+            }
+
+            pub fn pick(store: Lookup, key: i64) -> (Option<i64>, i64) {
+                const first = store[key];
+                return (first, key + 1);
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("reused copy key should not require clone for custom get-like indexing");
+        assert!(output.rust_code.contains("Lookup::get("));
+        assert!(!output.rust_code.contains("key.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_custom_direct_index_autoclones_reused_owned_key() {
         let source = r#"
             pub struct Lookup {}
@@ -4021,6 +4047,30 @@ mod tests {
             .expect("reused owned key should auto-clone for custom direct indexing");
         assert!(output.rust_code.contains("Lookup::index("));
         assert!(output.rust_code.contains("key.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_custom_direct_index_reused_copy_key_does_not_clone() {
+        let source = r#"
+            pub struct Lookup {}
+
+            impl Lookup {
+                pub fn index(self, key: i64) -> i64 {
+                    return key;
+                }
+            }
+
+            pub fn pick(store: Lookup, key: i64) -> (i64, i64) {
+                const first = store[key];
+                return (first, key + 1);
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("reused copy key should not require clone for custom direct indexing");
+        assert!(output.rust_code.contains("Lookup::index("));
+        assert!(!output.rust_code.contains("key.clone()"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

@@ -1,4 +1,4 @@
-# Type Inference Plan (HM + Practical Extensions)
+# Type System Plan (HM + Practical Extensions)
 
 This plan targets a staged inference system that can be enabled incrementally with experiment flags and folded into the existing type/lowering pipeline.
 

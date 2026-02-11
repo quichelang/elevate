@@ -1,4 +1,4 @@
-# Type Inference Progress Report
+# Type System Progress Report
 
 Date: 2026-02-11  
 Scope: Elevate type-system progress toward OCaml-like inference and algebraic expressiveness.
