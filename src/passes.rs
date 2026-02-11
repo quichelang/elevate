@@ -18,16 +18,19 @@ use crate::ir::lowered::{
 };
 use crate::ir::typed::{
     TypedAssignOp, TypedAssignTarget, TypedBinaryOp, TypedConst, TypedDestructurePattern,
-    TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedItem,
-    TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedPatternField, TypedRustUse,
-    TypedStatic, TypedStmt, TypedStruct, TypedStructLiteralField, TypedTrait, TypedTraitMethod,
-    TypedTypeParam, TypedUnaryOp, TypedUseTree, TypedVariant, TypedVariantFields,
+    TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedIndexKeyPassing,
+    TypedIndexMetadata, TypedIndexMode, TypedIndexSource, TypedItem, TypedMatchArm, TypedModule,
+    TypedParam, TypedPattern, TypedPatternField, TypedRustUse, TypedStatic, TypedStmt, TypedStruct,
+    TypedStructLiteralField, TypedTrait, TypedTraitMethod, TypedTypeParam, TypedUnaryOp,
+    TypedUseTree, TypedVariant, TypedVariantFields,
 };
 use crate::ownership_planner::{CloneDecision, ClonePlannerInput, decide_clone};
 use crate::rustdex_backend;
 
 mod index_capability;
-use index_capability::{CapabilityIndexMode, IndexCapability, resolve_index_capability};
+use index_capability::{
+    CapabilityIndexMode, CapabilityIndexSource, IndexCapability, resolve_index_capability,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SemType {
@@ -731,7 +734,7 @@ fn validate_expr_method_capabilities(
         TypedExprKind::Field { base, .. } => {
             validate_expr_method_capabilities(base, type_param_caps, trait_caps, diagnostics)
         }
-        TypedExprKind::Index { base, index } => {
+        TypedExprKind::Index { base, index, .. } => {
             validate_expr_method_capabilities(base, type_param_caps, trait_caps, diagnostics);
             validate_expr_method_capabilities(index, type_param_caps, trait_caps, diagnostics);
         }
@@ -913,7 +916,7 @@ fn direct_effects_for_expr(expr: &TypedExpr, row: &mut EffectRow) {
             }
         }
         TypedExprKind::Field { base, .. } => direct_effects_for_expr(base, row),
-        TypedExprKind::Index { base, index } => {
+        TypedExprKind::Index { base, index, .. } => {
             direct_effects_for_expr(base, row);
             direct_effects_for_expr(index, row);
         }
@@ -2608,7 +2611,7 @@ fn rewrite_structural_calls_in_expr(
             }
         }
         TypedExprKind::Field { base, .. } => rewrite_structural_calls_in_expr(base, lookup),
-        TypedExprKind::Index { base, index } => {
+        TypedExprKind::Index { base, index, .. } => {
             rewrite_structural_calls_in_expr(base, lookup);
             rewrite_structural_calls_in_expr(index, lookup);
         }
@@ -3800,14 +3803,19 @@ fn infer_assign_target(
                     mode: CapabilityIndexMode::DirectIndex,
                     key_ty,
                     value_ty,
+                    ..
                 }) => {
                     let vec_like = matches!(
                         &base_ty,
                         SemType::Path { path, .. } if path.last().is_some_and(|segment| segment == "Vec")
                     );
-                    if is_vector_index_type(&index_ty)
-                        && index_key_type_compatible(&index_ty, &key_ty)
-                    {
+                    let direct_key_ok = if vec_like {
+                        is_vector_index_type(&index_ty)
+                            && index_key_type_compatible(&index_ty, &key_ty)
+                    } else {
+                        index_key_type_compatible(&index_ty, &key_ty)
+                    };
+                    if direct_key_ok {
                         value_ty
                     } else if vec_like && !matches!(typed_index.kind, TypedExprKind::Range { .. }) {
                         diagnostics.push(Diagnostic::new(
@@ -4269,13 +4277,31 @@ fn infer_expr(
             let (typed_index, index_ty) =
                 infer_expr(index, context, locals, return_ty, diagnostics);
             let mut desugar_get_like_call = false;
+            let mut index_metadata = TypedIndexMetadata {
+                mode: TypedIndexMode::Unknown,
+                key_ty: "_".to_string(),
+                value_ty: "_".to_string(),
+                key_passing: TypedIndexKeyPassing::Owned,
+                source: TypedIndexSource::Unknown,
+            };
 
             let resolved = match resolve_index_capability(&base_ty, Some(context), diagnostics) {
                 Some(IndexCapability {
                     mode: CapabilityIndexMode::DirectIndex,
                     key_ty,
                     value_ty,
+                    source,
                 }) => {
+                    index_metadata = TypedIndexMetadata {
+                        mode: TypedIndexMode::DirectIndex,
+                        key_ty: type_to_string(&key_ty),
+                        value_ty: type_to_string(&value_ty),
+                        key_passing: TypedIndexKeyPassing::Owned,
+                        source: match source {
+                            CapabilityIndexSource::Builtin => TypedIndexSource::Builtin,
+                            CapabilityIndexSource::CustomMethod => TypedIndexSource::CustomMethod,
+                        },
+                    };
                     let vec_like = matches!(
                         &base_ty,
                         SemType::Path { path, .. } if path.last().is_some_and(|segment| segment == "Vec")
@@ -4295,42 +4321,62 @@ fn infer_expr(
                             ));
                             SemType::Unknown
                         }
-                    } else if is_vector_index_type(&index_ty)
-                        && index_key_type_compatible(&index_ty, &key_ty)
-                    {
-                        value_ty
-                    } else if vec_like {
-                        diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Vector indexing expects integer index (or range), got `{}`",
-                                type_to_string(&index_ty)
-                            ),
-                            default_diag_span(),
-                        ));
-                        SemType::Unknown
-                    } else if index_ty == SemType::Unknown {
-                        SemType::Unknown
                     } else {
-                        diagnostics.push(Diagnostic::new(
-                            mismatch_message(
+                        let direct_key_ok = if vec_like {
+                            is_vector_index_type(&index_ty)
+                                && index_key_type_compatible(&index_ty, &key_ty)
+                        } else {
+                            index_key_type_compatible(&index_ty, &key_ty)
+                        };
+                        if direct_key_ok {
+                            value_ty
+                        } else if vec_like {
+                            diagnostics.push(Diagnostic::new(
                                 format!(
-                                    "Type supports indexing, but key type mismatch: expected `{}`, got `{}`",
-                                    type_to_string(&key_ty),
+                                    "Vector indexing expects integer index (or range), got `{}`",
                                     type_to_string(&index_ty)
                                 ),
-                                &index_ty,
-                                &key_ty,
-                            ),
-                            default_diag_span(),
-                        ));
-                        SemType::Unknown
+                                default_diag_span(),
+                            ));
+                            SemType::Unknown
+                        } else if index_ty == SemType::Unknown {
+                            SemType::Unknown
+                        } else {
+                            diagnostics.push(Diagnostic::new(
+                                mismatch_message(
+                                    format!(
+                                        "Type supports indexing, but key type mismatch: expected `{}`, got `{}`",
+                                        type_to_string(&key_ty),
+                                        type_to_string(&index_ty)
+                                    ),
+                                    &index_ty,
+                                    &key_ty,
+                                ),
+                                default_diag_span(),
+                            ));
+                            SemType::Unknown
+                        }
                     }
                 }
                 Some(IndexCapability {
                     mode: CapabilityIndexMode::GetLikeOption,
                     key_ty,
                     value_ty,
+                    source,
                 }) => {
+                    index_metadata = TypedIndexMetadata {
+                        mode: TypedIndexMode::GetLikeOption,
+                        key_ty: type_to_string(&key_ty),
+                        value_ty: type_to_string(&value_ty),
+                        key_passing: match source {
+                            CapabilityIndexSource::Builtin => TypedIndexKeyPassing::Borrowed,
+                            CapabilityIndexSource::CustomMethod => TypedIndexKeyPassing::CloneIfNeeded,
+                        },
+                        source: match source {
+                            CapabilityIndexSource::Builtin => TypedIndexSource::Builtin,
+                            CapabilityIndexSource::CustomMethod => TypedIndexSource::CustomMethod,
+                        },
+                    };
                     if matches!(typed_index.kind, TypedExprKind::Range { .. }) {
                         diagnostics.push(Diagnostic::new(
                             "Map-like subscript does not support range keys",
@@ -4392,6 +4438,7 @@ fn infer_expr(
                 TypedExprKind::Index {
                     base: Box::new(typed_base),
                     index: Box::new(typed_index),
+                    indexing: index_metadata,
                 }
             };
 
@@ -4956,7 +5003,7 @@ fn diagnose_const_mutations_in_expr(
         TypedExprKind::Field { base, .. } => {
             diagnose_const_mutations_in_expr(base, immutable_locals, diagnostics);
         }
-        TypedExprKind::Index { base, index } => {
+        TypedExprKind::Index { base, index, .. } => {
             diagnose_const_mutations_in_expr(base, immutable_locals, diagnostics);
             diagnose_const_mutations_in_expr(index, immutable_locals, diagnostics);
         }
@@ -7509,6 +7556,9 @@ fn index_key_type_compatible(actual: &SemType, expected_key: &SemType) -> bool {
     if is_compatible(actual, expected_key) || is_compatible(expected_key, actual) {
         return true;
     }
+    if type_to_string(actual) == type_to_string(expected_key) {
+        return true;
+    }
     if is_vector_index_type(actual) && is_vector_index_type(expected_key) {
         return true;
     }
@@ -8886,7 +8936,11 @@ fn lower_expr_with_context(
                 CloneDecision::Move => lowered_field,
             }
         }
-        TypedExprKind::Index { base, index } => {
+        TypedExprKind::Index {
+            base,
+            index,
+            indexing,
+        } => {
             let remaining_conflicting_before = if matches!(
                 position,
                 ExprPosition::ProjectionBase | ExprPosition::CallArgBorrowed
@@ -8903,16 +8957,32 @@ fn lower_expr_with_context(
             let place_name = place_for_expr(expr).map(|place| place.display_name());
             let base_ty = base.ty.clone();
             let base_sem = sem_type_from_typed_type_string(&base_ty);
+            let base_type_path = match &base_sem {
+                SemType::Path { path, .. } => Some(path.clone()),
+                _ => None,
+            };
             let lowered_base =
                 lower_expr_with_context(base, context, ExprPosition::ProjectionBase, state);
-            let lowered_index_expr = if let Some(IndexCapability { mode, .. }) =
-                resolve_index_capability(&base_sem, None, &mut Vec::new())
-            {
-                match mode {
-                    CapabilityIndexMode::DirectIndex => {
+            let lowered_key = lower_index_expr(index, &base_ty, context, state);
+            let lowered_key_arg = match indexing.key_passing {
+                TypedIndexKeyPassing::Borrowed => borrow_expr(lowered_key),
+                TypedIndexKeyPassing::Owned => lowered_key,
+                TypedIndexKeyPassing::CloneIfNeeded => clone_expr(lowered_key),
+            };
+            let lowered_index_expr = match indexing.mode {
+                TypedIndexMode::DirectIndex => {
+                    if indexing.source == TypedIndexSource::CustomMethod {
+                        let mut method_path =
+                            base_type_path.clone().unwrap_or_else(|| vec!["index".to_string()]);
+                        method_path.push("index".to_string());
+                        RustExpr::Call {
+                            callee: Box::new(RustExpr::Path(method_path)),
+                            args: vec![lowered_base, lowered_key_arg],
+                        }
+                    } else {
                         let mut lowered = RustExpr::Index {
                             base: Box::new(lowered_base),
-                            index: Box::new(lower_index_expr(index, &base_ty, context, state)),
+                            index: Box::new(lowered_key_arg),
                         };
                         if matches!(index.kind, TypedExprKind::Range { .. })
                             && last_path_segment(&expr.ty) == "Vec"
@@ -8927,27 +8997,36 @@ fn lower_expr_with_context(
                         }
                         lowered
                     }
-                    CapabilityIndexMode::GetLikeOption => RustExpr::Call {
-                        callee: Box::new(RustExpr::Field {
-                            base: Box::new(RustExpr::Call {
-                                callee: Box::new(RustExpr::Field {
-                                    base: Box::new(lowered_base),
-                                    field: "get".to_string(),
-                                }),
-                                args: vec![borrow_expr(lower_index_expr(
-                                    index, &base_ty, context, state,
-                                ))],
-                            }),
-                            field: "cloned".to_string(),
-                        }),
-                        args: Vec::new(),
-                    },
                 }
-            } else {
-                panic!(
-                    "index capability unresolved during lowering for `{}` in strict capability mode",
-                    base_ty
-                )
+                TypedIndexMode::GetLikeOption => {
+                    if indexing.source == TypedIndexSource::CustomMethod {
+                        let mut method_path =
+                            base_type_path.clone().unwrap_or_else(|| vec!["get".to_string()]);
+                        method_path.push("get".to_string());
+                        RustExpr::Call {
+                            callee: Box::new(RustExpr::Path(method_path)),
+                            args: vec![lowered_base, lowered_key_arg],
+                        }
+                    } else {
+                        RustExpr::Call {
+                            callee: Box::new(RustExpr::Field {
+                                base: Box::new(RustExpr::Call {
+                                    callee: Box::new(RustExpr::Field {
+                                        base: Box::new(lowered_base),
+                                        field: "get".to_string(),
+                                    }),
+                                    args: vec![lowered_key_arg],
+                                }),
+                                field: "cloned".to_string(),
+                            }),
+                            args: Vec::new(),
+                        }
+                    }
+                }
+                TypedIndexMode::Unknown => RustExpr::Index {
+                    base: Box::new(lowered_base),
+                    index: Box::new(lowered_key_arg),
+                },
             };
             let (decision, forced_clone) = clone_decision_for_expr(
                 expr,

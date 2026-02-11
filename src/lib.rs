@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod codegen;
 pub mod crate_builder;
+pub mod data;
 pub mod diag;
 pub mod ir;
 pub mod lexer;
@@ -3872,6 +3873,55 @@ mod tests {
             compile_source(source).expect("custom get-like index capability should compile");
         assert!(output.rust_code.contains("Lookup::get("));
         assert!(!output.rust_code.contains("store.get("));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_hashmap_subscript_with_enum_key_and_borrowed_lookup() {
+        let source = r#"
+            rust {
+                #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+                pub enum Key {
+                    Primary,
+                    Secondary,
+                }
+            }
+
+            use std::collections::HashMap;
+
+            pub fn pick(scores: HashMap<Key, i64>) -> Option<i64> {
+                return scores[Key::Primary];
+            }
+        "#;
+
+        let output = compile_source(source).expect("enum-key hashmap subscript should compile");
+        assert!(output.rust_code.contains(".get(&Key::Primary)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_custom_direct_index_capability_with_struct_key() {
+        let source = r#"
+            pub struct Key {
+                id: i64;
+            }
+
+            pub struct Lookup {}
+
+            impl Lookup {
+                pub fn index(self, key: Key) -> i64 {
+                    return key.id;
+                }
+            }
+
+            pub fn pick(store: Lookup) -> i64 {
+                return store[Key { id: 9 }];
+            }
+        "#;
+
+        let output = compile_source(source).expect("custom direct index capability should compile");
+        assert!(output.rust_code.contains("Lookup::index("));
+        assert!(output.rust_code.contains("Key { id: 9 }"));
         assert_rust_code_compiles(&output.rust_code);
     }
 

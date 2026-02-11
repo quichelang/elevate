@@ -9,11 +9,18 @@ pub(super) enum CapabilityIndexMode {
     GetLikeOption,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CapabilityIndexSource {
+    Builtin,
+    CustomMethod,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct IndexCapability {
     pub(super) mode: CapabilityIndexMode,
     pub(super) key_ty: SemType,
     pub(super) value_ty: SemType,
+    pub(super) source: CapabilityIndexSource,
 }
 
 pub(super) fn resolve_index_capability(
@@ -33,6 +40,7 @@ pub(super) fn resolve_index_capability(
             mode: CapabilityIndexMode::DirectIndex,
             key_ty: named_type("usize"),
             value_ty: args.first().cloned().unwrap_or(SemType::Unknown),
+            source: CapabilityIndexSource::Builtin,
         }),
         "HashMap" | "BTreeMap" => {
             if rustdex_has_method_strict(type_name, "get", diagnostics).is_err() {
@@ -42,6 +50,7 @@ pub(super) fn resolve_index_capability(
                 mode: CapabilityIndexMode::GetLikeOption,
                 key_ty: args.first().cloned().unwrap_or(SemType::Unknown),
                 value_ty: args.get(1).cloned().unwrap_or(SemType::Unknown),
+                source: CapabilityIndexSource::Builtin,
             })
         }
         _ => None,
@@ -85,6 +94,7 @@ fn resolve_custom_index_capability(
                 mode: CapabilityIndexMode::GetLikeOption,
                 key_ty,
                 value_ty: args[0].clone(),
+                source: CapabilityIndexSource::CustomMethod,
             });
         }
     }
@@ -97,6 +107,7 @@ fn resolve_custom_index_capability(
             mode: CapabilityIndexMode::DirectIndex,
             key_ty: instantiate(key_param),
             value_ty: instantiate(&sig.return_type),
+            source: CapabilityIndexSource::CustomMethod,
         });
     }
     None

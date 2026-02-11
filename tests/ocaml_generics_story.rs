@@ -763,3 +763,109 @@ fn strict_mode_still_autoclones_reused_owned_receiver_chain() {
             .any(|note| note.contains("auto-clone") || note.contains("hot-clone"))
     );
 }
+
+// Checklist Story: Section 13 (Advanced Index Key Inference)
+// Goal: map/custom indexing should infer key types for non-primitive and enum keys.
+#[test]
+fn capability_story_hashmap_enum_key_index_infers_and_borrows_key() {
+    let source = r#"
+        rust {
+            #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+            pub enum Key {
+                Primary,
+                Secondary,
+            }
+        }
+
+        use std::collections::HashMap;
+
+        fn pick(scores: HashMap<Key, i64>) -> Option<i64> {
+            return scores[Key::Primary];
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("HashMap enum key subscript should infer and borrow key");
+    assert!(output.rust_code.contains(".get(&Key::Primary)"));
+}
+
+#[test]
+fn capability_story_hashmap_struct_key_index_infers_and_borrows_key() {
+    let source = r#"
+        rust {
+            #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+            pub struct Key {
+                pub id: i64,
+            }
+        }
+
+        use std::collections::HashMap;
+
+        fn pick(scores: HashMap<Key, i64>) -> Option<i64> {
+            return scores[Key { id: 1 }];
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("HashMap struct key subscript should infer and borrow key");
+    assert!(output.rust_code.contains(".get(&Key"));
+    assert!(output.rust_code.contains("id: 1"));
+}
+
+#[test]
+fn capability_story_custom_get_index_with_enum_key_infers_key_type() {
+    let source = r#"
+        enum Key {
+            A;
+            B;
+        }
+
+        struct Lookup {
+            value: i64;
+        }
+
+        impl Lookup {
+            fn get(self, key: Key) -> Option<i64> {
+                return match key {
+                    Key::A => Some(self.value);
+                    Key::B => Some(0);
+                };
+            }
+        }
+
+        fn pick(store: Lookup) -> Option<i64> {
+            return store[Key::A];
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("custom get-like index should infer enum key type");
+    assert!(output.rust_code.contains("Lookup::get("));
+    assert!(output.rust_code.contains("Key::A"));
+}
+
+#[test]
+fn capability_story_custom_direct_index_with_struct_key_infers_key_type() {
+    let source = r#"
+        struct Key {
+            id: i64;
+        }
+
+        struct Lookup {}
+
+        impl Lookup {
+            fn index(self, key: Key) -> i64 {
+                return key.id;
+            }
+        }
+
+        fn pick(store: Lookup) -> i64 {
+            return store[Key { id: 7 }];
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("custom direct index should infer struct key type");
+    assert!(output.rust_code.contains("Lookup::index("));
+    assert!(output.rust_code.contains("Key { id: 7 }"));
+}

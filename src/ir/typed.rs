@@ -188,6 +188,36 @@ pub struct TypedExpr {
     pub ty: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedIndexMode {
+    DirectIndex,
+    GetLikeOption,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedIndexKeyPassing {
+    Borrowed,
+    Owned,
+    CloneIfNeeded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedIndexSource {
+    Builtin,
+    CustomMethod,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedIndexMetadata {
+    pub mode: TypedIndexMode,
+    pub key_ty: String,
+    pub value_ty: String,
+    pub key_passing: TypedIndexKeyPassing,
+    pub source: TypedIndexSource,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedExprKind {
     Int(i64),
@@ -211,6 +241,7 @@ pub enum TypedExprKind {
     Index {
         base: Box<TypedExpr>,
         index: Box<TypedExpr>,
+        indexing: TypedIndexMetadata,
     },
     Match {
         scrutinee: Box<TypedExpr>,
