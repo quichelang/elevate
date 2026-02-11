@@ -927,3 +927,22 @@ fn capability_story_custom_get_index_reused_owned_key_triggers_clone_support() {
     assert!(output.rust_code.contains("Lookup::get("));
     assert!(output.rust_code.contains("key.clone()"));
 }
+
+#[test]
+fn ocaml_profile_reports_constraint_groups_for_conflicting_return_types() {
+    let source = r#"
+        fn choose(flag: bool) {
+            if flag {
+                return 1;
+            }
+            return "x";
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("conflicting return types should emit constraint partition diagnostics");
+    let rendered = error.to_string();
+    assert!(rendered.contains("Cannot infer single return type for `choose`"));
+    assert!(rendered.contains("Constraint groups for return type for `choose` are incompatible"));
+    assert!(rendered.contains("Principal fallback:"));
+}

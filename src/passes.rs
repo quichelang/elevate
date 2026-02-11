@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::DirectBorrowHint;
@@ -8,6 +8,8 @@ use crate::ast::{
     GenericParam, Item, Module, Pattern, Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp,
     UseTree, Visibility,
 };
+use crate::data::constraint_graph::ConstraintGraph;
+use crate::data::union_find::UnionFind;
 use crate::diag::{Diagnostic, Span};
 use crate::ir::lowered::{
     RustAssignOp, RustAssignTarget, RustBinaryOp, RustConst, RustDestructurePattern, RustEnum,
@@ -3839,6 +3841,12 @@ fn infer_assign_target(
                             ),
                             default_diag_span(),
                         ));
+                        emit_constraint_partition_diagnostic(
+                            "index assignment key type",
+                            &[index_ty.clone(), key_ty.clone()],
+                            "an explicit index key type annotation",
+                            diagnostics,
+                        );
                         SemType::Unknown
                     }
                 }
@@ -4353,6 +4361,12 @@ fn infer_expr(
                                 ),
                                 default_diag_span(),
                             ));
+                            emit_constraint_partition_diagnostic(
+                                "index key type",
+                                &[index_ty.clone(), key_ty.clone()],
+                                "an explicit index key type annotation",
+                                diagnostics,
+                            );
                             SemType::Unknown
                         }
                     }
@@ -4402,6 +4416,12 @@ fn infer_expr(
                             ),
                             default_diag_span(),
                         ));
+                        emit_constraint_partition_diagnostic(
+                            "index key type",
+                            &[index_ty.clone(), key_ty.clone()],
+                            "an explicit index key type annotation",
+                            diagnostics,
+                        );
                         SemType::Unknown
                     }
                 }
@@ -8271,6 +8291,64 @@ fn mismatch_message(message: String, actual: &SemType, expected: &SemType) -> St
     } else {
         message
     }
+}
+
+fn emit_constraint_partition_diagnostic(
+    site: &str,
+    observed: &[SemType],
+    annotation_hint: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if observed.len() < 2 {
+        return;
+    }
+
+    let mut graph = ConstraintGraph::<String, &'static str>::new();
+    let mut nodes = Vec::with_capacity(observed.len());
+    for ty in observed {
+        nodes.push(graph.add_node(type_to_string(ty)));
+    }
+
+    let mut uf = UnionFind::with_size(observed.len());
+    for i in 0..observed.len() {
+        for j in (i + 1)..observed.len() {
+            if is_compatible(&observed[i], &observed[j]) && is_compatible(&observed[j], &observed[i])
+            {
+                uf.union(i, j);
+                let _ = graph.add_edge(nodes[i], nodes[j], "compatible");
+                let _ = graph.add_edge(nodes[j], nodes[i], "compatible");
+            }
+        }
+    }
+
+    let mut groups = BTreeMap::<usize, BTreeSet<String>>::new();
+    for (index, ty) in observed.iter().enumerate() {
+        let root = uf.find(index);
+        groups.entry(root).or_default().insert(type_to_string(ty));
+    }
+    if groups.len() <= 1 {
+        return;
+    }
+
+    let groups_text = groups
+        .values()
+        .map(|group| group.iter().cloned().collect::<Vec<_>>().join(" | "))
+        .collect::<Vec<_>>()
+        .join("] vs [");
+    let compatible_edge_count = nodes
+        .iter()
+        .map(|node| graph.neighbors(*node).len())
+        .sum::<usize>()
+        / 2;
+    let mut message = format!(
+        "Constraint groups for {site} are incompatible: [{groups_text}] (compat links: {compatible_edge_count})"
+    );
+    if infer_principal_fallback_enabled() {
+        message.push_str(&format!(
+            ". Principal fallback: add {annotation_hint} on {site} to pin a principal type"
+        ));
+    }
+    diagnostics.push(Diagnostic::new(message, default_diag_span()));
 }
 
 fn maybe_insert_implicit_integral_cast(
@@ -12683,6 +12761,12 @@ fn unify_types(existing: SemType, next: SemType, diagnostics: &mut Vec<Diagnosti
         ),
         default_diag_span(),
     ));
+    emit_constraint_partition_diagnostic(
+        "match arm result type",
+        &[existing.clone(), next.clone()],
+        "an explicit arm value type annotation",
+        diagnostics,
+    );
     SemType::Unknown
 }
 
@@ -12747,6 +12831,12 @@ fn infer_return_type(
                 ),
                 default_diag_span(),
             ));
+            emit_constraint_partition_diagnostic(
+                &format!("return type for `{function_name}`"),
+                &[current.clone(), ty.clone()],
+                "an explicit return type annotation",
+                diagnostics,
+            );
             return SemType::Unknown;
         }
     }
