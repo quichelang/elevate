@@ -945,4 +945,5 @@ fn ocaml_profile_reports_constraint_groups_for_conflicting_return_types() {
     assert!(rendered.contains("Cannot infer single return type for `choose`"));
     assert!(rendered.contains("Constraint groups for return type for `choose` are incompatible"));
     assert!(rendered.contains("Principal fallback:"));
+    assert!(rendered.contains("Principal fallback selected `"));
 }

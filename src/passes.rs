@@ -8358,6 +8358,82 @@ fn emit_constraint_partition_diagnostic(
     diagnostics.push(Diagnostic::new(message, default_diag_span()));
 }
 
+fn principal_type_from_constraint_partition(observed: &[SemType]) -> Option<SemType> {
+    if observed.is_empty() {
+        return None;
+    }
+    if observed.len() == 1 {
+        return observed.first().cloned();
+    }
+
+    let groups = solver_compatibility_groups(observed);
+    let mut best_rank: Option<(u8, usize, usize, usize, usize)> = None;
+    let mut best_ty: Option<SemType> = None;
+    for (group_index, group) in groups.iter().enumerate() {
+        let merged = merge_solver_group_types(group);
+        let concrete_members = group.iter().filter(|ty| **ty != SemType::Unknown).count();
+        let rank = (
+            sem_type_is_fully_concrete(&merged) as u8,
+            concrete_members,
+            group.len(),
+            type_specificity_score(&merged),
+            usize::MAX - group_index,
+        );
+        if best_rank.as_ref().is_none_or(|current| rank > *current) {
+            best_rank = Some(rank);
+            best_ty = Some(merged);
+        }
+    }
+    best_ty
+}
+
+fn solver_compatibility_groups(observed: &[SemType]) -> Vec<Vec<SemType>> {
+    let mut ordered = observed.iter().enumerate().collect::<Vec<_>>();
+    ordered.sort_by(|(left_index, left_ty), (right_index, right_ty)| {
+        let left_unknown = matches!(left_ty, SemType::Unknown);
+        let right_unknown = matches!(right_ty, SemType::Unknown);
+        left_unknown
+            .cmp(&right_unknown)
+            .then(type_specificity_score(right_ty).cmp(&type_specificity_score(left_ty)))
+            .then(left_index.cmp(right_index))
+    });
+
+    let mut groups = Vec::<Vec<SemType>>::new();
+    for (_, ty) in ordered {
+        if let Some(group) = groups.iter_mut().find(|group| {
+            group
+                .iter()
+                .all(|member| is_compatible(ty, member) && is_compatible(member, ty))
+        }) {
+            group.push(ty.clone());
+        } else {
+            groups.push(vec![ty.clone()]);
+        }
+    }
+    groups
+}
+
+fn merge_solver_group_types(group: &[SemType]) -> SemType {
+    let Some(first) = group.first() else {
+        return SemType::Unknown;
+    };
+    let mut merged = first.clone();
+    for ty in &group[1..] {
+        if let Some(next) = merge_compatible_types(&merged, ty) {
+            merged = next;
+        } else if is_compatible(&merged, ty) && is_compatible(ty, &merged) {
+            merged = prefer_more_concrete_type(&merged, ty);
+        } else {
+            return SemType::Unknown;
+        }
+    }
+    merged
+}
+
+fn sem_type_is_fully_concrete(ty: &SemType) -> bool {
+    *ty != SemType::Unknown && !contains_unknown(ty)
+}
+
 fn maybe_insert_implicit_integral_cast(
     typed_expr: TypedExpr,
     actual: &SemType,
@@ -12798,6 +12874,19 @@ fn unify_types(existing: SemType, next: SemType, diagnostics: &mut Vec<Diagnosti
         "an explicit arm value type annotation",
         diagnostics,
     );
+    if infer_principal_fallback_enabled()
+        && let Some(candidate) =
+            principal_type_from_constraint_partition(&[existing.clone(), next.clone()])
+    {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "Principal fallback selected `{}` for match-arm continuation",
+                type_to_string(&candidate)
+            ),
+            default_diag_span(),
+        ));
+        return candidate;
+    }
     SemType::Unknown
 }
 
@@ -12868,6 +12957,18 @@ fn infer_return_type(
                 "an explicit return type annotation",
                 diagnostics,
             );
+            if infer_principal_fallback_enabled()
+                && let Some(candidate) = principal_type_from_constraint_partition(returns)
+            {
+                diagnostics.push(Diagnostic::new(
+                    format!(
+                        "Principal fallback selected `{}` for `{function_name}`",
+                        type_to_string(&candidate)
+                    ),
+                    default_diag_span(),
+                ));
+                return candidate;
+            }
             return SemType::Unknown;
         }
     }
