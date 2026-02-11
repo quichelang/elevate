@@ -1,14 +1,17 @@
-use elevate::compile_source;
+use elevate::{CompileOptions, compile_source, compile_source_with_options};
 use elevate::rustdex_backend;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn integration_rustdex_is_operational_and_drives_signature_detection() {
+    let _guard = env_guard();
+    clear_rustdex_env_overrides();
     let harness = RustdexHarness::prepare();
 
     let help = harness.run(&["help"]);
@@ -98,6 +101,141 @@ fn integration_rustdex_is_operational_and_drives_signature_detection() {
         "signature detection should not leave unresolved placeholder parameter types:\n{}",
         signature_output.rust_code
     );
+}
+
+#[test]
+fn compile_fails_fast_when_rustdex_unavailable_in_type_system_mode() {
+    let _guard = env_guard();
+    let _backend = ScopedEnvVar::set("ELEVATE_RUSTDEX_BACKEND", OsString::from("cli"));
+    let _bin = ScopedEnvVar::set(
+        "ELEVATE_RUSTDEX_BIN",
+        OsString::from("/tmp/elevate-does-not-exist-rustdex"),
+    );
+    let mut options = CompileOptions::default();
+    options.experiments.type_system = true;
+    let error = compile_source_with_options("fn main() { return; }", &options)
+        .expect_err("type-system mode should fail if rustdex preflight is unavailable");
+    let message = error.to_string();
+    assert!(
+        message.contains("E_RUSTDEX_UNAVAILABLE"),
+        "expected rustdex-unavailable diagnostic, got:\n{message}"
+    );
+}
+
+#[test]
+fn map_subscript_never_lowers_to_raw_index_when_capability_unavailable() {
+    let _guard = env_guard();
+    let _backend = ScopedEnvVar::set("ELEVATE_RUSTDEX_BACKEND", OsString::from("cli"));
+    let _bin = ScopedEnvVar::set(
+        "ELEVATE_RUSTDEX_BIN",
+        OsString::from("/tmp/elevate-does-not-exist-rustdex"),
+    );
+    let source = r#"
+        use std::collections::HashMap;
+
+        fn pick(scores: HashMap<String, i64>) -> Option<i64> {
+            return scores["Alice"];
+        }
+    "#;
+    let mut options = CompileOptions::default();
+    options.experiments.type_system = true;
+    let error = compile_source_with_options(source, &options)
+        .expect_err("compile should stop before lowering when rustdex is unavailable");
+    let message = error.to_string();
+    assert!(
+        message.contains("E_RUSTDEX_UNAVAILABLE"),
+        "expected preflight failure, got:\n{message}"
+    );
+    assert!(
+        !message.contains("scores["),
+        "should not degrade to raw rust indexing fallback:\n{message}"
+    );
+}
+
+#[test]
+fn map_get_reports_rustdex_unavailable_not_unsupported_method() {
+    let _guard = env_guard();
+    let _backend = ScopedEnvVar::set("ELEVATE_RUSTDEX_BACKEND", OsString::from("cli"));
+    let _bin = ScopedEnvVar::set(
+        "ELEVATE_RUSTDEX_BIN",
+        OsString::from("/tmp/elevate-does-not-exist-rustdex"),
+    );
+    let source = r#"
+        use std::collections::HashMap;
+
+        fn pick(scores: HashMap<String, i64>) -> Option<i64> {
+            return scores.get("Alice");
+        }
+    "#;
+    let mut options = CompileOptions::default();
+    options.experiments.type_system = true;
+    let error = compile_source_with_options(source, &options)
+        .expect_err("compile should fail early with rustdex-unavailable diagnostic");
+    let message = error.to_string();
+    assert!(message.contains("E_RUSTDEX_UNAVAILABLE"));
+    assert!(!message.contains("Unsupported method call `get`"));
+}
+
+#[test]
+fn string_autoborrow_still_works_with_rustdex_ready() {
+    let _guard = env_guard();
+    clear_rustdex_env_overrides();
+    let source = r#"
+        fn probe(text: String, needle: String) -> bool {
+            return text.contains(needle);
+        }
+    "#;
+    let mut options = CompileOptions::default();
+    options.experiments.type_system = true;
+    let output = compile_source_with_options(source, &options)
+        .expect("string autoborrow should still compile with type-system mode and rustdex ready");
+    assert!(output.rust_code.contains("text.contains(&needle)"));
+}
+
+#[test]
+fn method_absent_vs_metadata_unavailable_have_distinct_diagnostics() {
+    let _guard = env_guard();
+    clear_rustdex_env_overrides();
+    let mut options = CompileOptions::default();
+    options.experiments.type_system = true;
+    let absent = compile_source_with_options(
+        r#"
+            fn run(text: String) -> usize {
+                return text.missing_method();
+            }
+        "#,
+        &options,
+    )
+    .expect_err("missing method should produce capability failure");
+    let absent_message = absent.to_string();
+    assert!(absent_message.contains("Capability resolution failed for method `missing_method`"));
+    assert!(!absent_message.contains("E_RUSTDEX_UNAVAILABLE"));
+
+    let _backend = ScopedEnvVar::set("ELEVATE_RUSTDEX_BACKEND", OsString::from("cli"));
+    let _bin = ScopedEnvVar::set(
+        "ELEVATE_RUSTDEX_BIN",
+        OsString::from("/tmp/elevate-does-not-exist-rustdex"),
+    );
+    let unavailable = compile_source_with_options("fn main() { return; }", &options)
+        .expect_err("rustdex unavailable should fail preflight");
+    let unavailable_message = unavailable.to_string();
+    assert!(unavailable_message.contains("E_RUSTDEX_UNAVAILABLE"));
+}
+
+fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_MUTEX
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn clear_rustdex_env_overrides() {
+    // SAFETY: guarded by `env_guard` mutex in each test.
+    unsafe {
+        env::remove_var("ELEVATE_RUSTDEX_BACKEND");
+        env::remove_var("ELEVATE_RUSTDEX_BIN");
+    }
 }
 
 struct RustdexHarness {

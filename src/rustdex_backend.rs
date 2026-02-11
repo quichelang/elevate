@@ -53,9 +53,7 @@ impl BackendPreference {
     }
 }
 
-static BACKEND_PREFERENCE: OnceLock<Result<BackendPreference, RustdexError>> = OnceLock::new();
 static DIRECT_INDEX: OnceLock<Result<StdIndex, RustdexError>> = OnceLock::new();
-static CLI_BIN_PATH: OnceLock<Result<PathBuf, RustdexError>> = OnceLock::new();
 static TYPE_TRAIT_CACHE: OnceLock<Mutex<std::collections::HashMap<(String, String), bool>>> =
     OnceLock::new();
 static TYPE_METHOD_CACHE: OnceLock<Mutex<std::collections::HashMap<(String, String), bool>>> =
@@ -132,23 +130,19 @@ pub fn trait_method_signature(
 }
 
 fn backend_preference() -> Result<BackendPreference, RustdexError> {
-    BACKEND_PREFERENCE
-        .get_or_init(|| {
-        if let Ok(value) = std::env::var("ELEVATE_RUSTDEX_BACKEND") {
-                return match value.trim().to_ascii_lowercase().as_str() {
-                    "cli" => Ok(BackendPreference::Cli),
-                    "direct" => Ok(BackendPreference::Direct),
-                    other => Err(RustdexError::InvalidBackendConfig {
-                        value: other.to_string(),
-                    }),
-                };
-            }
-            if std::env::var_os("ELEVATE_RUSTDEX_BIN").is_some() {
-                return Ok(BackendPreference::Cli);
-            };
-            Ok(BackendPreference::Direct)
-        })
-        .clone()
+    if let Ok(value) = std::env::var("ELEVATE_RUSTDEX_BACKEND") {
+        return match value.trim().to_ascii_lowercase().as_str() {
+            "cli" => Ok(BackendPreference::Cli),
+            "direct" => Ok(BackendPreference::Direct),
+            other => Err(RustdexError::InvalidBackendConfig {
+                value: other.to_string(),
+            }),
+        };
+    }
+    if std::env::var_os("ELEVATE_RUSTDEX_BIN").is_some() {
+        return Ok(BackendPreference::Cli);
+    }
+    Ok(BackendPreference::Direct)
 }
 
 fn direct_type_implements(type_name: &str, trait_name: &str) -> Result<bool, RustdexError> {
@@ -332,7 +326,7 @@ fn cli_build_index() -> Result<(), RustdexError> {
 
 fn cli_command_output(args: &[&str]) -> Result<std::process::Output, RustdexError> {
     let bin = cli_bin_path()?;
-    Command::new(bin)
+    Command::new(&bin)
         .args(args)
         .output()
         .map_err(|err| RustdexError::BackendQueryFailed {
@@ -342,43 +336,37 @@ fn cli_command_output(args: &[&str]) -> Result<std::process::Output, RustdexErro
         })
 }
 
-fn cli_bin_path() -> Result<&'static PathBuf, RustdexError> {
-    CLI_BIN_PATH
-        .get_or_init(|| {
-            if let Some(bin_override) = std::env::var_os("ELEVATE_RUSTDEX_BIN") {
-                let path = PathBuf::from(bin_override);
-                if path.is_file() {
-                    return Ok(path);
-                }
-                return Err(RustdexError::CliUnavailable {
-                    detail: format!(
-                        "configured rustdex binary path does not exist: {}",
-                        path.display()
-                    ),
-                });
-            }
+fn cli_bin_path() -> Result<PathBuf, RustdexError> {
+    if let Some(bin_override) = std::env::var_os("ELEVATE_RUSTDEX_BIN") {
+        let path = PathBuf::from(bin_override);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(RustdexError::CliUnavailable {
+            detail: format!(
+                "configured rustdex binary path does not exist: {}",
+                path.display()
+            ),
+        });
+    }
 
-            let local =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../rustdex/target/debug/rustdex");
-            if local.is_file() {
-                return Ok(local);
-            }
+    let local = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../rustdex/target/debug/rustdex");
+    if local.is_file() {
+        return Ok(local);
+    }
 
-            let output = Command::new("rustdex")
-                .arg("help")
-                .output()
-                .map_err(|err| RustdexError::CliUnavailable {
-                    detail: format!("failed to invoke rustdex from PATH: {err}"),
-                })?;
-            if output.status.success() {
-                return Ok(PathBuf::from("rustdex"));
-            }
-            Err(RustdexError::CliUnavailable {
-                detail: "rustdex binary was not found in PATH".to_string(),
-            })
-        })
-        .as_ref()
-        .map_err(|err| err.clone())
+    let output = Command::new("rustdex")
+        .arg("help")
+        .output()
+        .map_err(|err| RustdexError::CliUnavailable {
+            detail: format!("failed to invoke rustdex from PATH: {err}"),
+        })?;
+    if output.status.success() {
+        return Ok(PathBuf::from("rustdex"));
+    }
+    Err(RustdexError::CliUnavailable {
+        detail: "rustdex binary was not found in PATH".to_string(),
+    })
 }
 
 fn normalize_rust_signature_type(raw: &str) -> String {
