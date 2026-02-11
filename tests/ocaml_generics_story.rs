@@ -842,6 +842,7 @@ fn capability_story_custom_get_index_with_enum_key_infers_key_type() {
         .expect("custom get-like index should infer enum key type");
     assert!(output.rust_code.contains("Lookup::get("));
     assert!(output.rust_code.contains("Key::A"));
+    assert!(!output.rust_code.contains("Key::A.clone()"));
 }
 
 #[test]

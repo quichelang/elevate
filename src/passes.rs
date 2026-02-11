@@ -4276,7 +4276,6 @@ fn infer_expr(
             let (typed_base, base_ty) = infer_expr(base, context, locals, return_ty, diagnostics);
             let (typed_index, index_ty) =
                 infer_expr(index, context, locals, return_ty, diagnostics);
-            let mut desugar_get_like_call = false;
             let mut index_metadata = TypedIndexMetadata {
                 mode: TypedIndexMode::Unknown,
                 key_ty: "_".to_string(),
@@ -4370,7 +4369,7 @@ fn infer_expr(
                         value_ty: type_to_string(&value_ty),
                         key_passing: match source {
                             CapabilityIndexSource::Builtin => TypedIndexKeyPassing::Borrowed,
-                            CapabilityIndexSource::CustomMethod => TypedIndexKeyPassing::CloneIfNeeded,
+                            CapabilityIndexSource::CustomMethod => TypedIndexKeyPassing::Owned,
                         },
                         source: match source {
                             CapabilityIndexSource::Builtin => TypedIndexSource::Builtin,
@@ -4384,13 +4383,11 @@ fn infer_expr(
                         ));
                         SemType::Unknown
                     } else if index_ty == SemType::Unknown {
-                        desugar_get_like_call = !is_builtin_map_like_sem_type(&base_ty);
                         option_type(value_ty)
                     } else if is_compatible(&index_ty, &key_ty)
                         || literal_bidi_adjusted_numeric_arg_type(Some(index), &index_ty, &key_ty)
                             .is_some()
                     {
-                        desugar_get_like_call = !is_builtin_map_like_sem_type(&base_ty);
                         option_type(value_ty)
                     } else {
                         diagnostics.push(Diagnostic::new(
@@ -4421,25 +4418,10 @@ fn infer_expr(
                 }
             };
 
-            let kind = if desugar_get_like_call {
-                let mut method_path = match &base_ty {
-                    SemType::Path { path, .. } => path.clone(),
-                    _ => vec!["get".to_string()],
-                };
-                method_path.push("get".to_string());
-                TypedExprKind::Call {
-                    callee: Box::new(TypedExpr {
-                        kind: TypedExprKind::Path(method_path),
-                        ty: "_".to_string(),
-                    }),
-                    args: vec![typed_base, typed_index],
-                }
-            } else {
-                TypedExprKind::Index {
-                    base: Box::new(typed_base),
-                    index: Box::new(typed_index),
-                    indexing: index_metadata,
-                }
+            let kind = TypedExprKind::Index {
+                base: Box::new(typed_base),
+                index: Box::new(typed_index),
+                indexing: index_metadata,
             };
 
             (
@@ -7563,14 +7545,6 @@ fn index_key_type_compatible(actual: &SemType, expected_key: &SemType) -> bool {
         return true;
     }
     false
-}
-
-fn is_builtin_map_like_sem_type(ty: &SemType) -> bool {
-    matches!(
-        ty,
-        SemType::Path { path, .. }
-            if path.last().is_some_and(|segment| segment == "HashMap" || segment == "BTreeMap")
-    )
 }
 
 fn resolve_constructor_call(

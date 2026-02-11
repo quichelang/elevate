@@ -3877,6 +3877,39 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_custom_get_like_index_with_enum_key_without_clone() {
+        let source = r#"
+            pub enum Key {
+                A;
+                B;
+            }
+
+            pub struct Lookup {
+                value: i64;
+            }
+
+            impl Lookup {
+                pub fn get(self, key: Key) -> Option<i64> {
+                    return match key {
+                        Key::A => Some(self.value);
+                        Key::B => Some(0);
+                    };
+                }
+            }
+
+            pub fn pick(store: Lookup) -> Option<i64> {
+                return store[Key::A];
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("custom get-like enum key indexing should compile without forced key clone");
+        assert!(output.rust_code.contains("Lookup::get("));
+        assert!(!output.rust_code.contains("Key::A.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_hashmap_subscript_with_enum_key_and_borrowed_lookup() {
         let source = r#"
             rust {
