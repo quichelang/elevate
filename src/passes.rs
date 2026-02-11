@@ -202,6 +202,7 @@ impl Default for Context {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TypecheckOptions {
     pub type_system: bool,
+    pub rustdex_ready: bool,
 }
 
 thread_local! {
@@ -342,6 +343,12 @@ pub fn lower_to_typed_with_options(
     options: &TypecheckOptions,
 ) -> Result<TypedModule, Vec<Diagnostic>> {
     with_typecheck_options_scope(options, || {
+        if options.type_system && !options.rustdex_ready {
+            return Err(vec![Diagnostic::new(
+                "E_RUSTDEX_UNAVAILABLE: rustdex preflight did not complete; capability resolution requires rustdex index metadata",
+                default_diag_span(),
+            )]);
+        }
         let mut diagnostics = Vec::new();
         let mut context = Context {
             functions: HashMap::new(),
@@ -5819,10 +5826,13 @@ fn resolve_trait_associated_call(
     }
     let assoc_name = path.last()?.as_str();
     let type_name = path[path.len() - 2].as_str();
-    let supports_assoc = if assoc_name == "try_from" {
-        rustdex_has_method(type_name, assoc_name) || is_numeric_type_name(type_name)
+    let supports_assoc = if assoc_name == "try_from" && is_numeric_type_name(type_name) {
+        true
     } else {
-        rustdex_has_method(type_name, assoc_name)
+        match rustdex_has_method_strict(type_name, assoc_name, diagnostics) {
+            Ok(value) => value,
+            Err(()) => return Some(SemType::Unknown),
+        }
     };
     if !supports_assoc {
         return None;
@@ -5948,10 +5958,6 @@ fn into_iterator_item_type(ty: &SemType) -> Option<SemType> {
         },
         _ => None,
     }
-}
-
-fn rustdex_has_method(type_name: &str, method: &str) -> bool {
-    rustdex_backend::type_has_associated_method(type_name, method).unwrap_or(false)
 }
 
 fn resolve_named_function_call(
@@ -6931,27 +6937,36 @@ fn rustdex_has_method_strict(
     type_name: &str,
     method: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<bool> {
+) -> Result<bool, ()> {
+    if !TYPE_SYSTEM_ENABLED.with(|cell| cell.get()) {
+        return Ok(true);
+    }
     let mut observed_metadata = false;
+    let mut last_error = None::<rustdex_backend::RustdexError>;
     for candidate in rustdex_type_name_candidates(type_name) {
         match rustdex_backend::type_has_associated_method(&candidate, method) {
-            Some(true) => return Some(true),
-            Some(false) => {
+            Ok(true) => return Ok(true),
+            Ok(false) => {
                 observed_metadata = true;
             }
-            None => {}
+            Err(err) => {
+                last_error = Some(err);
+            }
         }
     }
     if observed_metadata {
-        Some(false)
+        Ok(false)
     } else {
         diagnostics.push(Diagnostic::new(
             format!(
-                "rustdex metadata unavailable for `{type_name}::{method}`; capability resolution requires rustdex"
+                "E_CAPABILITY_METADATA_MISSING: rustdex metadata unavailable for `{type_name}::{method}`; capability resolution requires rustdex ({})",
+                last_error
+                    .map(|err| format!("{err:?}"))
+                    .unwrap_or_else(|| "no backend response".to_string())
             ),
             default_diag_span(),
         ));
-        None
+        Err(())
     }
 }
 
@@ -7092,7 +7107,9 @@ fn resolve_method_capability(
         });
     }
 
-    let _ = rustdex_has_method_strict(type_name, method, diagnostics)?;
+    if rustdex_has_method_strict(type_name, method, diagnostics).is_err() {
+        return None;
+    }
 
     let capability = match type_name {
         "String" => match method {
@@ -7396,7 +7413,9 @@ fn resolve_index_capability(
             value_ty: args.first().cloned().unwrap_or(SemType::Unknown),
         }),
         "HashMap" | "BTreeMap" => {
-            let _ = rustdex_has_method_strict(type_name, "get", diagnostics)?;
+            if rustdex_has_method_strict(type_name, "get", diagnostics).is_err() {
+                return None;
+            }
             Some(IndexCapability {
                 mode: CapabilityIndexMode::GetLikeOption,
                 key_ty: args.first().cloned().unwrap_or(SemType::Unknown),
@@ -8845,15 +8864,10 @@ fn lower_expr_with_context(
                         },
                     }
                 } else {
-                    RustExpr::Index {
-                        base: Box::new(lower_expr_with_context(
-                            base,
-                            context,
-                            ExprPosition::ProjectionBase,
-                            state,
-                        )),
-                        index: Box::new(lower_index_expr(index, &base_ty, context, state)),
-                    }
+                    panic!(
+                        "index capability unresolved during lowering for `{}` in strict capability mode",
+                        base_ty
+                    )
                 };
             let (decision, forced_clone) = clone_decision_for_expr(
                 expr,
@@ -10426,6 +10440,7 @@ fn resolve_impl_method_signature(
         &imp.target,
         &imp.target_args,
         context,
+        diagnostics,
     )
     .or_else(|| {
         resolve_std_trait_method_signature(
@@ -10480,8 +10495,21 @@ fn resolve_rustdex_trait_method_signature(
     impl_target: &str,
     impl_target_args: &[Type],
     context: &Context,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<TraitMethodSignatureOverride> {
-    let signature = rustdex_backend::trait_method_signature(trait_name, method_name)?;
+    let signature = match rustdex_backend::trait_method_signature(trait_name, method_name) {
+        Ok(signature) => signature,
+        Err(rustdex_backend::RustdexError::SignatureUnavailable { .. }) => return None,
+        Err(err) => {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "E_CAPABILITY_METADATA_MISSING: rustdex trait signature metadata unavailable for `{trait_name}::{method_name}` ({err:?})"
+                ),
+                default_diag_span(),
+            ));
+            return None;
+        }
+    };
     let impl_target_sem = sem_type_for_impl_target(impl_target, impl_target_args, context);
     let mut param_rust_types = signature.param_rust_types;
     if param_rust_types.is_empty() {

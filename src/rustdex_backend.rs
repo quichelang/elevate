@@ -10,21 +10,74 @@ pub struct TraitMethodSignature {
     pub return_rust_type: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustdexError {
+    IndexUnavailable {
+        backend: &'static str,
+        detail: String,
+    },
+    CliUnavailable {
+        detail: String,
+    },
+    BackendQueryFailed {
+        backend: &'static str,
+        query: String,
+        detail: String,
+    },
+    SignatureUnavailable {
+        trait_name: String,
+        method_name: String,
+    },
+    InvalidBackendConfig {
+        value: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustdexSession {
+    pub backend: &'static str,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendPreference {
     Direct,
     Cli,
 }
 
-static BACKEND_PREFERENCE: OnceLock<BackendPreference> = OnceLock::new();
-static DIRECT_INDEX: OnceLock<Option<StdIndex>> = OnceLock::new();
-static CLI_BIN_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+impl BackendPreference {
+    fn as_str(self) -> &'static str {
+        match self {
+            BackendPreference::Direct => "direct",
+            BackendPreference::Cli => "cli",
+        }
+    }
+}
+
+static BACKEND_PREFERENCE: OnceLock<Result<BackendPreference, RustdexError>> = OnceLock::new();
+static DIRECT_INDEX: OnceLock<Result<StdIndex, RustdexError>> = OnceLock::new();
+static CLI_BIN_PATH: OnceLock<Result<PathBuf, RustdexError>> = OnceLock::new();
 static TYPE_TRAIT_CACHE: OnceLock<Mutex<std::collections::HashMap<(String, String), bool>>> =
     OnceLock::new();
 static TYPE_METHOD_CACHE: OnceLock<Mutex<std::collections::HashMap<(String, String), bool>>> =
     OnceLock::new();
 
-pub fn type_implements(type_name: &str, trait_name: &str) -> Option<bool> {
+pub fn preflight_required() -> Result<RustdexSession, RustdexError> {
+    let backend = backend_preference()?;
+    match backend {
+        BackendPreference::Direct => {
+            let _ = direct_index()?;
+        }
+        BackendPreference::Cli => {
+            let _ = cli_bin_path()?;
+            cli_build_index()?;
+        }
+    }
+    Ok(RustdexSession {
+        backend: backend.as_str(),
+    })
+}
+
+pub fn type_implements(type_name: &str, trait_name: &str) -> Result<bool, RustdexError> {
     let key = (type_name.to_string(), trait_name.to_string());
     if let Some(cache) = TYPE_TRAIT_CACHE.get()
         && let Some(value) = cache
@@ -32,23 +85,21 @@ pub fn type_implements(type_name: &str, trait_name: &str) -> Option<bool> {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&key)
     {
-        return Some(*value);
+        return Ok(*value);
     }
-    match backend_preference() {
-        BackendPreference::Cli => cli_type_implements(type_name, trait_name),
-        BackendPreference::Direct => direct_type_implements(type_name, trait_name)
-            .or_else(|| cli_type_implements(type_name, trait_name)),
-    }
-    .inspect(|value| {
-        let cache = TYPE_TRAIT_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-        cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(key, *value);
-    })
+    let value = match backend_preference()? {
+        BackendPreference::Cli => cli_type_implements(type_name, trait_name)?,
+        BackendPreference::Direct => direct_type_implements(type_name, trait_name)?,
+    };
+    let cache = TYPE_TRAIT_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, value);
+    Ok(value)
 }
 
-pub fn type_has_associated_method(type_name: &str, method: &str) -> Option<bool> {
+pub fn type_has_associated_method(type_name: &str, method: &str) -> Result<bool, RustdexError> {
     let key = (type_name.to_string(), method.to_string());
     if let Some(cache) = TYPE_METHOD_CACHE.get()
         && let Some(value) = cache
@@ -56,104 +107,126 @@ pub fn type_has_associated_method(type_name: &str, method: &str) -> Option<bool>
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&key)
     {
-        return Some(*value);
+        return Ok(*value);
     }
-    match backend_preference() {
-        BackendPreference::Cli => cli_type_has_associated_method(type_name, method),
-        BackendPreference::Direct => direct_type_has_associated_method(type_name, method)
-            .or_else(|| cli_type_has_associated_method(type_name, method)),
-    }
-    .inspect(|value| {
-        let cache = TYPE_METHOD_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-        cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(key, *value);
-    })
+    let value = match backend_preference()? {
+        BackendPreference::Cli => cli_type_has_associated_method(type_name, method)?,
+        BackendPreference::Direct => direct_type_has_associated_method(type_name, method)?,
+    };
+    let cache = TYPE_METHOD_CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, value);
+    Ok(value)
 }
 
-pub fn trait_method_signature(trait_name: &str, method_name: &str) -> Option<TraitMethodSignature> {
-    match backend_preference() {
+pub fn trait_method_signature(
+    trait_name: &str,
+    method_name: &str,
+) -> Result<TraitMethodSignature, RustdexError> {
+    match backend_preference()? {
         BackendPreference::Cli => cli_trait_method_signature(trait_name, method_name),
-        BackendPreference::Direct => direct_trait_method_signature(trait_name, method_name)
-            .or_else(|| cli_trait_method_signature(trait_name, method_name)),
+        BackendPreference::Direct => direct_trait_method_signature(trait_name, method_name),
     }
 }
 
-fn backend_preference() -> BackendPreference {
-    *BACKEND_PREFERENCE.get_or_init(|| {
+fn backend_preference() -> Result<BackendPreference, RustdexError> {
+    BACKEND_PREFERENCE
+        .get_or_init(|| {
         if let Ok(value) = std::env::var("ELEVATE_RUSTDEX_BACKEND") {
-            return match value.trim().to_ascii_lowercase().as_str() {
-                "cli" => BackendPreference::Cli,
-                "direct" => BackendPreference::Direct,
-                _ => BackendPreference::Direct,
+                return match value.trim().to_ascii_lowercase().as_str() {
+                    "cli" => Ok(BackendPreference::Cli),
+                    "direct" => Ok(BackendPreference::Direct),
+                    other => Err(RustdexError::InvalidBackendConfig {
+                        value: other.to_string(),
+                    }),
+                };
+            }
+            if std::env::var_os("ELEVATE_RUSTDEX_BIN").is_some() {
+                return Ok(BackendPreference::Cli);
             };
-        }
-        if std::env::var_os("ELEVATE_RUSTDEX_BIN").is_some() {
-            return BackendPreference::Cli;
-        }
-        BackendPreference::Direct
-    })
+            Ok(BackendPreference::Direct)
+        })
+        .clone()
 }
 
-fn direct_type_implements(type_name: &str, trait_name: &str) -> Option<bool> {
+fn direct_type_implements(type_name: &str, trait_name: &str) -> Result<bool, RustdexError> {
     let index = direct_index()?;
-    Some(index.implements(type_name, trait_name))
+    Ok(index.implements(type_name, trait_name))
 }
 
-fn direct_type_has_associated_method(type_name: &str, method: &str) -> Option<bool> {
+fn direct_type_has_associated_method(type_name: &str, method: &str) -> Result<bool, RustdexError> {
     let index = direct_index()?;
     let implemented = index.find_impls_for(type_name);
-    Some(
-        implemented
-            .iter()
-            .any(|imp| imp.methods.iter().any(|candidate| candidate == method)),
-    )
+    Ok(implemented
+        .iter()
+        .any(|imp| imp.methods.iter().any(|candidate| candidate == method)))
 }
 
 fn direct_trait_method_signature(
-    _trait_name: &str,
-    _method_name: &str,
-) -> Option<TraitMethodSignature> {
-    None
+    trait_name: &str,
+    method_name: &str,
+) -> Result<TraitMethodSignature, RustdexError> {
+    let _ = direct_index()?;
+    Err(RustdexError::SignatureUnavailable {
+        trait_name: trait_name.to_string(),
+        method_name: method_name.to_string(),
+    })
 }
 
-fn direct_index() -> Option<&'static StdIndex> {
+fn direct_index() -> Result<&'static StdIndex, RustdexError> {
     DIRECT_INDEX
         .get_or_init(|| {
             if let Ok(index) = StdIndex::load_from_sysroot() {
-                return Some(index);
+                return Ok(index);
             }
-            let builder = IndexBuilder::from_sysroot().ok()?;
-            let index = builder.build().ok()?;
+            let builder = IndexBuilder::from_sysroot().map_err(|err| RustdexError::IndexUnavailable {
+                backend: "direct",
+                detail: format!("failed to initialize index builder from sysroot: {err}"),
+            })?;
+            let index = builder.build().map_err(|err| RustdexError::IndexUnavailable {
+                backend: "direct",
+                detail: format!("failed to build std index from sysroot: {err}"),
+            })?;
             let _ = index.save_to_sysroot();
-            Some(index)
+            Ok(index)
         })
         .as_ref()
+        .map_err(|err| err.clone())
 }
 
-fn cli_type_implements(type_name: &str, trait_name: &str) -> Option<bool> {
+fn cli_type_implements(type_name: &str, trait_name: &str) -> Result<bool, RustdexError> {
     let mut attempted_build = false;
     loop {
         let output = cli_command_output(&["check", type_name, trait_name])?;
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.contains(" does NOT implement ") {
-                return Some(false);
+                return Ok(false);
             }
             if stdout.contains(" implements ") {
-                return Some(true);
+                return Ok(true);
             }
-            return None;
+            return Err(RustdexError::BackendQueryFailed {
+                backend: "cli",
+                query: format!("check {type_name} {trait_name}"),
+                detail: "unable to parse rustdex check output".to_string(),
+            });
         }
-        if attempted_build || !cli_build_index() {
-            return None;
+        if attempted_build {
+            return Err(RustdexError::BackendQueryFailed {
+                backend: "cli",
+                query: format!("check {type_name} {trait_name}"),
+                detail: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
         }
+        cli_build_index()?;
         attempted_build = true;
     }
 }
 
-fn cli_type_has_associated_method(type_name: &str, method: &str) -> Option<bool> {
+fn cli_type_has_associated_method(type_name: &str, method: &str) -> Result<bool, RustdexError> {
     let mut attempted_build = false;
     loop {
         let output = cli_command_output(&["query", type_name])?;
@@ -172,22 +245,33 @@ fn cli_type_has_associated_method(type_name: &str, method: &str) -> Option<bool>
                     .map(|part| part.trim())
                     .any(|candidate| candidate == method);
                 if hit {
-                    return Some(true);
+                    return Ok(true);
                 }
             }
-            return Some(false);
+            return Ok(false);
         }
-        if attempted_build || !cli_build_index() {
-            return None;
+        if attempted_build {
+            return Err(RustdexError::BackendQueryFailed {
+                backend: "cli",
+                query: format!("query {type_name}"),
+                detail: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
         }
+        cli_build_index()?;
         attempted_build = true;
     }
 }
 
-fn cli_trait_method_signature(trait_name: &str, method_name: &str) -> Option<TraitMethodSignature> {
+fn cli_trait_method_signature(
+    trait_name: &str,
+    method_name: &str,
+) -> Result<TraitMethodSignature, RustdexError> {
     let output = cli_command_output(&["trait-method-signature", trait_name, method_name])?;
     if !output.status.success() {
-        return None;
+        return Err(RustdexError::SignatureUnavailable {
+            trait_name: trait_name.to_string(),
+            method_name: method_name.to_string(),
+        });
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut params_text = None::<&str>;
@@ -202,60 +286,99 @@ fn cli_trait_method_signature(trait_name: &str, method_name: &str) -> Option<Tra
             return_text = Some(rest.trim());
         }
     }
-    let params_text = params_text?;
-    let return_text = return_text?;
+    let params_text = params_text.ok_or_else(|| RustdexError::SignatureUnavailable {
+        trait_name: trait_name.to_string(),
+        method_name: method_name.to_string(),
+    })?;
+    let return_text = return_text.ok_or_else(|| RustdexError::SignatureUnavailable {
+        trait_name: trait_name.to_string(),
+        method_name: method_name.to_string(),
+    })?;
     let param_rust_types = split_rust_signature_params(params_text)
         .into_iter()
         .map(|item| normalize_rust_signature_type(&item))
         .filter(|item| !item.is_empty())
         .collect::<Vec<_>>();
     if param_rust_types.is_empty() {
-        return None;
+        return Err(RustdexError::SignatureUnavailable {
+            trait_name: trait_name.to_string(),
+            method_name: method_name.to_string(),
+        });
     }
     let return_rust_type = normalize_rust_signature_type(return_text);
     if return_rust_type.is_empty() {
-        return None;
+        return Err(RustdexError::SignatureUnavailable {
+            trait_name: trait_name.to_string(),
+            method_name: method_name.to_string(),
+        });
     }
-    Some(TraitMethodSignature {
+    Ok(TraitMethodSignature {
         param_rust_types,
         return_rust_type,
     })
 }
 
-fn cli_build_index() -> bool {
-    cli_command_output(&["build"])
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+fn cli_build_index() -> Result<(), RustdexError> {
+    let output = cli_command_output(&["build"])?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(RustdexError::BackendQueryFailed {
+        backend: "cli",
+        query: "build".to_string(),
+        detail: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
 }
 
-fn cli_command_output(args: &[&str]) -> Option<std::process::Output> {
+fn cli_command_output(args: &[&str]) -> Result<std::process::Output, RustdexError> {
     let bin = cli_bin_path()?;
-    Command::new(bin).args(args).output().ok()
+    Command::new(bin)
+        .args(args)
+        .output()
+        .map_err(|err| RustdexError::BackendQueryFailed {
+            backend: "cli",
+            query: args.join(" "),
+            detail: err.to_string(),
+        })
 }
 
-fn cli_bin_path() -> Option<&'static PathBuf> {
+fn cli_bin_path() -> Result<&'static PathBuf, RustdexError> {
     CLI_BIN_PATH
         .get_or_init(|| {
             if let Some(bin_override) = std::env::var_os("ELEVATE_RUSTDEX_BIN") {
                 let path = PathBuf::from(bin_override);
                 if path.is_file() {
-                    return Some(path);
+                    return Ok(path);
                 }
+                return Err(RustdexError::CliUnavailable {
+                    detail: format!(
+                        "configured rustdex binary path does not exist: {}",
+                        path.display()
+                    ),
+                });
             }
 
             let local =
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../rustdex/target/debug/rustdex");
             if local.is_file() {
-                return Some(local);
+                return Ok(local);
             }
 
-            let output = Command::new("rustdex").arg("help").output().ok()?;
+            let output = Command::new("rustdex")
+                .arg("help")
+                .output()
+                .map_err(|err| RustdexError::CliUnavailable {
+                    detail: format!("failed to invoke rustdex from PATH: {err}"),
+                })?;
             if output.status.success() {
-                return Some(PathBuf::from("rustdex"));
+                return Ok(PathBuf::from("rustdex"));
             }
-            None
+            Err(RustdexError::CliUnavailable {
+                detail: "rustdex binary was not found in PATH".to_string(),
+            })
         })
         .as_ref()
+        .map_err(|err| err.clone())
 }
 
 fn normalize_rust_signature_type(raw: &str) -> String {

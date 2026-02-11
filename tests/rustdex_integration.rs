@@ -41,12 +41,12 @@ fn integration_rustdex_is_operational_and_drives_signature_detection() {
     let _backend_guard = ScopedEnvVar::set("ELEVATE_RUSTDEX_BACKEND", OsString::from("cli"));
     assert_eq!(
         rustdex_backend::type_implements("HashMap", "FromIterator"),
-        Some(true),
+        Ok(true),
         "expected backend trait lookup to report HashMap::FromIterator"
     );
     assert_eq!(
         rustdex_backend::type_has_associated_method("HashMap", "from_iter"),
-        Some(true),
+        Ok(true),
         "expected backend associated-method lookup to resolve method from rustdex index"
     );
 

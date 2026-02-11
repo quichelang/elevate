@@ -153,10 +153,30 @@ pub fn compile_ast_with_options(
     }
     let warnings = collect_compile_warnings(module, options);
     let type_system_enabled = options.experiments.type_system_enabled();
+    let rustdex_ready = if type_system_enabled {
+        match rustdex_backend::preflight_required() {
+            Ok(_session) => true,
+            Err(err) => {
+                return Err(CompileError::from_diagnostics(
+                    vec![Diagnostic::new(
+                        format!(
+                            "E_RUSTDEX_UNAVAILABLE: rustdex unavailable: capability resolution requires rustdex index metadata ({err:?})"
+                        ),
+                        diag::Span::new(0, 0),
+                    )],
+                    options.source_name.clone(),
+                    None,
+                ));
+            }
+        }
+    } else {
+        false
+    };
     let typed = passes::lower_to_typed_with_options(
         module,
         &passes::TypecheckOptions {
             type_system: type_system_enabled,
+            rustdex_ready,
         },
     )
     .map_err(|diagnostics| {
