@@ -2834,7 +2834,7 @@ fn lower_item(
                     for (index, statement) in method.body.statements.iter().enumerate() {
                         let is_last = index + 1 == method.body.statements.len();
                         if is_last && let Stmt::TailExpr(expr) = statement {
-                            let (typed_expr, inferred) = infer_expr(
+                            let (mut typed_expr, inferred) = infer_expr(
                                 expr,
                                 context,
                                 &mut locals,
@@ -2842,17 +2842,33 @@ fn lower_item(
                                 diagnostics,
                             );
                             inferred_returns.push(inferred.clone());
-                            if provisional_return_ty != SemType::Unknown
-                                && !is_compatible(&inferred, &provisional_return_ty)
-                            {
+                            let literal_adjusted =
+                                literal_bidi_adjusted_numeric_arg_type(
+                                    Some(expr),
+                                    &inferred,
+                                    &provisional_return_ty,
+                                );
+                            let compatible = is_compatible(&inferred, &provisional_return_ty)
+                                || literal_adjusted.is_some();
+                            if provisional_return_ty != SemType::Unknown && !compatible {
                                 diagnostics.push(Diagnostic::new(
-                                    format!(
-                                        "Return type mismatch: expected `{}`, got `{}`",
-                                        type_to_string(&provisional_return_ty),
-                                        type_to_string(&inferred)
+                                    mismatch_message(
+                                        format!(
+                                            "Return type mismatch: expected `{}`, got `{}`",
+                                            type_to_string(&provisional_return_ty),
+                                            type_to_string(&inferred)
+                                        ),
+                                        &inferred,
+                                        &provisional_return_ty,
                                     ),
                                     default_diag_span(),
                                 ));
+                            } else if provisional_return_ty != SemType::Unknown {
+                                typed_expr = maybe_insert_implicit_integral_cast(
+                                    typed_expr,
+                                    &inferred,
+                                    &provisional_return_ty,
+                                );
                             }
                             body.push(TypedStmt::Return(Some(typed_expr)));
                             continue;
@@ -2994,7 +3010,7 @@ fn lower_item(
         }
         Item::Const(def) => {
             let mut locals = HashMap::new();
-            let (typed_value, inferred) = infer_expr(
+            let (mut typed_value, inferred) = infer_expr(
                 &def.value,
                 context,
                 &mut locals,
@@ -3006,23 +3022,26 @@ fn lower_item(
                 .as_ref()
                 .map(|ty| type_from_ast_in_context(ty, context));
             let final_ty = if let Some(declared_ty) = declared {
-                if !is_compatible(&inferred, &declared_ty)
-                    && literal_bidi_adjusted_numeric_arg_type(
-                        Some(&def.value),
-                        &inferred,
-                        &declared_ty,
-                    )
-                    .is_none()
-                {
+                let bidi_adjusted =
+                    literal_bidi_adjusted_numeric_arg_type(Some(&def.value), &inferred, &declared_ty);
+                let compatible = is_compatible(&inferred, &declared_ty) || bidi_adjusted.is_some();
+                if !compatible {
                     diagnostics.push(Diagnostic::new(
-                        format!(
-                            "Const `{}` type mismatch: expected `{}`, got `{}`",
-                            def.name,
-                            type_to_string(&declared_ty),
-                            type_to_string(&inferred)
+                        mismatch_message(
+                            format!(
+                                "Const `{}` type mismatch: expected `{}`, got `{}`",
+                                def.name,
+                                type_to_string(&declared_ty),
+                                type_to_string(&inferred)
+                            ),
+                            &inferred,
+                            &declared_ty,
                         ),
                         def.span.unwrap_or(default_diag_span()),
                     ));
+                } else {
+                    typed_value =
+                        maybe_insert_implicit_integral_cast(typed_value, &inferred, &declared_ty);
                 }
                 declared_ty
             } else {
@@ -3051,7 +3070,7 @@ fn lower_item(
         }
         Item::Static(def) => {
             let mut locals = HashMap::new();
-            let (typed_value, inferred) = infer_expr(
+            let (mut typed_value, inferred) = infer_expr(
                 &def.value,
                 context,
                 &mut locals,
@@ -3061,14 +3080,20 @@ fn lower_item(
             let declared = type_from_ast_in_context(&def.ty, context);
             if !is_compatible(&inferred, &declared) {
                 diagnostics.push(Diagnostic::new(
-                    format!(
-                        "Static `{}` type mismatch: expected `{}`, got `{}`",
-                        def.name,
-                        type_to_string(&declared),
-                        type_to_string(&inferred)
+                    mismatch_message(
+                        format!(
+                            "Static `{}` type mismatch: expected `{}`, got `{}`",
+                            def.name,
+                            type_to_string(&declared),
+                            type_to_string(&inferred)
+                        ),
+                        &inferred,
+                        &declared,
                     ),
                     def.span.unwrap_or(default_diag_span()),
                 ));
+            } else {
+                typed_value = maybe_insert_implicit_integral_cast(typed_value, &inferred, &declared);
             }
             if contains_unknown(&declared) {
                 diagnostics.push(Diagnostic::new(
@@ -3105,7 +3130,7 @@ fn lower_item(
             for (index, statement) in def.body.statements.iter().enumerate() {
                 let is_last = index + 1 == def.body.statements.len();
                 if is_last && let Stmt::TailExpr(expr) = statement {
-                    let (typed_expr, inferred) = infer_expr(
+                    let (mut typed_expr, inferred) = infer_expr(
                         expr,
                         context,
                         &mut locals,
@@ -3113,17 +3138,32 @@ fn lower_item(
                         diagnostics,
                     );
                     inferred_returns.push(inferred.clone());
-                    if provisional_return_ty != SemType::Unknown
-                        && !is_compatible(&inferred, &provisional_return_ty)
-                    {
+                    let literal_adjusted = literal_bidi_adjusted_numeric_arg_type(
+                        Some(expr),
+                        &inferred,
+                        &provisional_return_ty,
+                    );
+                    let compatible = is_compatible(&inferred, &provisional_return_ty)
+                        || literal_adjusted.is_some();
+                    if provisional_return_ty != SemType::Unknown && !compatible {
                         diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Return type mismatch: expected `{}`, got `{}`",
-                                type_to_string(&provisional_return_ty),
-                                type_to_string(&inferred)
+                            mismatch_message(
+                                format!(
+                                    "Return type mismatch: expected `{}`, got `{}`",
+                                    type_to_string(&provisional_return_ty),
+                                    type_to_string(&inferred)
+                                ),
+                                &inferred,
+                                &provisional_return_ty,
                             ),
                             default_diag_span(),
                         ));
+                    } else if provisional_return_ty != SemType::Unknown {
+                        typed_expr = maybe_insert_implicit_integral_cast(
+                            typed_expr,
+                            &inferred,
+                            &provisional_return_ty,
+                        );
                     }
                     body.push(TypedStmt::Return(Some(typed_expr)));
                     continue;
@@ -3338,7 +3378,7 @@ fn lower_stmt_with_types(
 ) -> Option<TypedStmt> {
     match stmt {
         Stmt::Const(def) => {
-            let (typed_value, inferred) =
+            let (mut typed_value, inferred) =
                 infer_expr(&def.value, context, locals, return_ty, diagnostics);
             diagnose_const_mutations_in_expr(&typed_value, immutable_locals, diagnostics);
             let declared = def
@@ -3346,16 +3386,29 @@ fn lower_stmt_with_types(
                 .as_ref()
                 .map(|ty| type_from_ast_in_context(ty, context));
             let final_ty = if let Some(declared_ty) = declared {
-                if !is_compatible(&inferred, &declared_ty) {
+                let literal_adjusted = literal_bidi_adjusted_numeric_arg_type(
+                    Some(&def.value),
+                    &inferred,
+                    &declared_ty,
+                );
+                let compatible = is_compatible(&inferred, &declared_ty) || literal_adjusted.is_some();
+                if !compatible {
                     diagnostics.push(Diagnostic::new(
-                        format!(
-                            "Const `{}` type mismatch: expected `{}`, got `{}`",
-                            def.name,
-                            type_to_string(&declared_ty),
-                            type_to_string(&inferred)
+                        mismatch_message(
+                            format!(
+                                "Const `{}` type mismatch: expected `{}`, got `{}`",
+                                def.name,
+                                type_to_string(&declared_ty),
+                                type_to_string(&inferred)
+                            ),
+                            &inferred,
+                            &declared_ty,
                         ),
                         default_diag_span(),
                     ));
+                } else {
+                    typed_value =
+                        maybe_insert_implicit_integral_cast(typed_value, &inferred, &declared_ty);
                 }
                 declared_ty
             } else {
@@ -3452,20 +3505,30 @@ fn lower_stmt_with_types(
                 return_ty,
                 diagnostics,
             )?;
-            let (typed_value, value_ty) =
+            let (mut typed_value, value_ty) =
                 infer_expr(value, context, locals, return_ty, diagnostics);
             diagnose_const_mutations_in_expr(&typed_value, immutable_locals, diagnostics);
             match op {
                 AssignOp::Assign => {
-                    if !is_compatible(&value_ty, &target_ty) {
+                    let literal_adjusted =
+                        literal_bidi_adjusted_numeric_arg_type(Some(value), &value_ty, &target_ty);
+                    let compatible = is_compatible(&value_ty, &target_ty) || literal_adjusted.is_some();
+                    if !compatible {
                         diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Assignment type mismatch: expected `{}`, got `{}`",
-                                type_to_string(&target_ty),
-                                type_to_string(&value_ty)
+                            mismatch_message(
+                                format!(
+                                    "Assignment type mismatch: expected `{}`, got `{}`",
+                                    type_to_string(&target_ty),
+                                    type_to_string(&value_ty)
+                                ),
+                                &value_ty,
+                                &target_ty,
                             ),
                             default_diag_span(),
                         ));
+                    } else {
+                        typed_value =
+                            maybe_insert_implicit_integral_cast(typed_value, &value_ty, &target_ty);
                     }
                 }
                 AssignOp::AddAssign => {
@@ -3499,19 +3562,29 @@ fn lower_stmt_with_types(
         }
         Stmt::Return(value) => {
             if let Some(expr) = value {
-                let (typed_expr, inferred) =
+                let (mut typed_expr, inferred) =
                     infer_expr(expr, context, locals, return_ty, diagnostics);
                 diagnose_const_mutations_in_expr(&typed_expr, immutable_locals, diagnostics);
                 inferred_returns.push(inferred.clone());
-                if *return_ty != SemType::Unknown && !is_compatible(&inferred, return_ty) {
+                let literal_adjusted =
+                    literal_bidi_adjusted_numeric_arg_type(Some(expr), &inferred, return_ty);
+                let compatible = is_compatible(&inferred, return_ty) || literal_adjusted.is_some();
+                if *return_ty != SemType::Unknown && !compatible {
                     diagnostics.push(Diagnostic::new(
-                        format!(
-                            "Return type mismatch: expected `{}`, got `{}`",
-                            type_to_string(return_ty),
-                            type_to_string(&inferred)
+                        mismatch_message(
+                            format!(
+                                "Return type mismatch: expected `{}`, got `{}`",
+                                type_to_string(return_ty),
+                                type_to_string(&inferred)
+                            ),
+                            &inferred,
+                            return_ty,
                         ),
                         default_diag_span(),
                     ));
+                } else if *return_ty != SemType::Unknown {
+                    typed_expr =
+                        maybe_insert_implicit_integral_cast(typed_expr, &inferred, return_ty);
                 }
                 Some(TypedStmt::Return(Some(typed_expr)))
             } else {
@@ -3735,7 +3808,7 @@ fn infer_assign_target(
                     } else {
                         diagnostics.push(Diagnostic::new(
                             format!(
-                                "Vector index assignment expects `i64` or `usize` index, got `{}`",
+                                "Vector index assignment expects integer index, got `{}`",
                                 type_to_string(&index_ty)
                             ),
                             default_diag_span(),
@@ -3926,7 +3999,7 @@ fn infer_expr(
             }
 
             for StructLiteralField { name, value } in fields {
-                let (typed_value, value_ty) =
+                let (mut typed_value, value_ty) =
                     infer_expr(value, context, locals, return_ty, diagnostics);
                 if !seen.insert(name.clone()) {
                     diagnostics.push(Diagnostic::new(
@@ -3941,15 +4014,34 @@ fn infer_expr(
                         &type_param_set,
                         &mut generic_bindings,
                     );
-                    if !bound && !is_compatible(&value_ty, expected) {
+                    let expected_with_known =
+                        substitute_bound_generic_type(expected, &type_param_set, &generic_bindings);
+                    let literal_adjusted = literal_bidi_adjusted_numeric_arg_type(
+                        Some(value),
+                        &value_ty,
+                        &expected_with_known,
+                    );
+                    let compatible =
+                        is_compatible(&value_ty, &expected_with_known) || literal_adjusted.is_some();
+                    if !bound && !compatible {
                         diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Struct field `{name}` expected `{}`, got `{}`",
-                                type_to_string(expected),
-                                type_to_string(&value_ty)
+                            mismatch_message(
+                                format!(
+                                    "Struct field `{name}` expected `{}`, got `{}`",
+                                    type_to_string(&expected_with_known),
+                                    type_to_string(&value_ty)
+                                ),
+                                &value_ty,
+                                &expected_with_known,
                             ),
                             default_diag_span(),
                         ));
+                    } else {
+                        typed_value = maybe_insert_implicit_integral_cast(
+                            typed_value,
+                            &value_ty,
+                            &expected_with_known,
+                        );
                     }
                 } else if expected_fields.is_some() {
                     diagnostics.push(Diagnostic::new(
@@ -4042,6 +4134,11 @@ fn infer_expr(
                     context,
                     diagnostics,
                 );
+                if let Some(expected_args) =
+                    expected_method_arg_types_for_coercion(&base_ty, field, &arg_types, context)
+                {
+                    apply_expected_call_arg_coercions(&mut typed_args, &arg_types, &expected_args);
+                }
                 let typed_callee = TypedExpr {
                     kind: TypedExprKind::Field {
                         base: Box::new(typed_base),
@@ -4082,6 +4179,15 @@ fn infer_expr(
                 locals,
                 diagnostics,
             );
+            if let Some(expected_args) = expected_call_arg_types_for_coercion(
+                callee,
+                &callee_ty,
+                &arg_types,
+                explicit_type_args.as_deref(),
+                context,
+            ) {
+                apply_expected_call_arg_coercions(&mut typed_args, &arg_types, &expected_args);
+            }
             (
                 TypedExpr {
                     kind: TypedExprKind::Call {
@@ -4151,7 +4257,7 @@ fn infer_expr(
                     } else {
                         diagnostics.push(Diagnostic::new(
                             format!(
-                                "Vector indexing expects `i64` or `usize` index (or range), got `{}`",
+                                "Vector indexing expects integer index (or range), got `{}`",
                                 type_to_string(&index_ty)
                             ),
                             default_diag_span(),
@@ -4460,14 +4566,18 @@ fn infer_expr(
                     continue;
                 }
                 if !is_compatible(ty, &elem_ty) || !is_compatible(&elem_ty, ty) {
-                    diagnostics.push(Diagnostic::new(
-                        format!(
-                            "Array literal element type mismatch: expected `{}`, got `{}`",
-                            type_to_string(&elem_ty),
-                            type_to_string(ty)
-                        ),
-                        default_diag_span(),
-                    ));
+                        diagnostics.push(Diagnostic::new(
+                            mismatch_message(
+                                format!(
+                                    "Array literal element type mismatch: expected `{}`, got `{}`",
+                                    type_to_string(&elem_ty),
+                                    type_to_string(ty)
+                                ),
+                                ty,
+                                &elem_ty,
+                            ),
+                            default_diag_span(),
+                        ));
                 }
             }
 
@@ -4540,14 +4650,18 @@ fn infer_expr(
                         if provisional_return_ty != SemType::Unknown
                             && !is_compatible(&inferred, &provisional_return_ty)
                         {
-                            diagnostics.push(Diagnostic::new(
-                                format!(
-                                    "Closure return type mismatch: expected `{}`, got `{}`",
-                                    type_to_string(&provisional_return_ty),
-                                    type_to_string(&inferred)
-                                ),
-                                default_diag_span(),
-                            ));
+                                diagnostics.push(Diagnostic::new(
+                                    mismatch_message(
+                                        format!(
+                                            "Closure return type mismatch: expected `{}`, got `{}`",
+                                            type_to_string(&provisional_return_ty),
+                                            type_to_string(&inferred)
+                                        ),
+                                        &inferred,
+                                        &provisional_return_ty,
+                                    ),
+                                    default_diag_span(),
+                                ));
                         }
                         typed_body.push(TypedStmt::Return(Some(typed_expr)));
                         continue;
@@ -5448,11 +5562,15 @@ fn resolve_call_type(
                     .unwrap_or_else(|| actual.clone());
             if !is_compatible(&adjusted_actual, expected) {
                 diagnostics.push(Diagnostic::new(
-                    format!(
-                        "Arg {} mismatch: expected `{}`, got `{}`",
-                        index + 1,
-                        type_to_string(expected),
-                        type_to_string(actual)
+                    mismatch_message(
+                        format!(
+                            "Arg {} mismatch: expected `{}`, got `{}`",
+                            index + 1,
+                            type_to_string(expected),
+                            type_to_string(actual)
+                        ),
+                        actual,
+                        expected,
                     ),
                     default_diag_span(),
                 ));
@@ -5509,6 +5627,89 @@ fn resolve_call_type(
         default_diag_span(),
     ));
     SemType::Unknown
+}
+
+fn expected_call_arg_types_for_coercion(
+    callee_expr: &Expr,
+    callee_ty: &SemType,
+    args: &[SemType],
+    explicit_type_args: Option<&[SemType]>,
+    context: &Context,
+) -> Option<Vec<SemType>> {
+    if let SemType::Fn { params, .. } = callee_ty
+        && params.len() == args.len()
+    {
+        return Some(params.clone());
+    }
+
+    let path = match callee_expr {
+        Expr::Path(path) => Some(path.as_slice()),
+        Expr::PathWithTypeArgs { path, .. } => Some(path.as_slice()),
+        _ => None,
+    }?;
+    let (_, sig) = resolve_function_sig_for_path(path, context)?;
+    if sig.params.len() != args.len() {
+        return None;
+    }
+    Some(instantiate_expected_param_types_for_call(
+        sig,
+        args,
+        explicit_type_args,
+    ))
+}
+
+fn expected_method_arg_types_for_coercion(
+    base_ty: &SemType,
+    method: &str,
+    args: &[SemType],
+    context: &Context,
+) -> Option<Vec<SemType>> {
+    if let SemType::Path { path, args: base_args } = base_ty {
+        let type_name = path.last().map(|segment| segment.as_str()).unwrap_or_default();
+        let builtin = match type_name {
+            "String" if method == "push_str" && args.len() == 1 => Some(vec![named_type("String")]),
+            "Vec" if method == "push" && args.len() == 1 => base_args.first().cloned().map(|ty| vec![ty]),
+            "Vec" if method == "contains" && args.len() == 1 => {
+                base_args.first().cloned().map(|ty| vec![ty])
+            }
+            "Vec" if method == "get" && args.len() == 1 => Some(vec![named_type("usize")]),
+            "Option" if method == "unwrap_or" && args.len() == 1 => {
+                base_args.first().cloned().map(|ty| vec![ty])
+            }
+            "Result" if method == "unwrap_or" && args.len() == 1 => {
+                base_args.first().cloned().map(|ty| vec![ty])
+            }
+            "HashMap" | "BTreeMap" if method == "contains_key" && args.len() == 1 => {
+                base_args.first().cloned().map(|ty| vec![ty])
+            }
+            "HashSet" | "BTreeSet" if method == "contains" && args.len() == 1 => {
+                base_args.first().cloned().map(|ty| vec![ty])
+            }
+            _ => None,
+        };
+        if builtin.is_some() {
+            return builtin;
+        }
+
+        let lookup = format!("{type_name}::{method}");
+        if let Some(sig) = context.functions.get(&lookup) {
+            if sig.params.len() == args.len() + 1 {
+                let mut call_args = Vec::with_capacity(args.len() + 1);
+                call_args.push(base_ty.clone());
+                call_args.extend(args.iter().cloned());
+                return Some(
+                    instantiate_expected_param_types_for_call(sig, &call_args, None)
+                        .into_iter()
+                        .skip(1)
+                        .collect(),
+                );
+            }
+            if sig.params.len() == args.len() {
+                return Some(instantiate_expected_param_types_for_call(sig, args, None));
+            }
+        }
+    }
+    None
 }
 
 fn resolve_function_sig_for_path<'a>(
@@ -5724,10 +5925,11 @@ fn resolve_named_function_call(
 
     for (index, (actual, expected)) in args.iter().zip(&sig.params).enumerate() {
         let actual_expr = arg_exprs.and_then(|exprs| exprs.get(index));
-        let adjusted_actual = literal_bidi_adjusted_numeric_arg_type(actual_expr, actual, expected)
-            .unwrap_or_else(|| actual.clone());
         let expected_with_known =
             substitute_bound_generic_type(expected, &type_param_set, &generic_bindings);
+        let adjusted_actual =
+            literal_bidi_adjusted_numeric_arg_type(actual_expr, actual, &expected_with_known)
+                .unwrap_or_else(|| actual.clone());
         if !bind_generic_params(
             &expected_with_known,
             &adjusted_actual,
@@ -5736,11 +5938,15 @@ fn resolve_named_function_call(
         ) && !is_compatible(&adjusted_actual, &expected_with_known)
         {
             diagnostics.push(Diagnostic::new(
-                format!(
-                    "Arg {} for `{name}`: expected `{}`, got `{}`",
-                    index + 1,
-                    type_to_string(&expected_with_known),
-                    type_to_string(actual)
+                mismatch_message(
+                    format!(
+                        "Arg {} for `{name}`: expected `{}`, got `{}`",
+                        index + 1,
+                        type_to_string(&expected_with_known),
+                        type_to_string(actual)
+                    ),
+                    actual,
+                    &expected_with_known,
                 ),
                 default_diag_span(),
             ));
@@ -6646,10 +6852,14 @@ fn resolve_method_call_type(
                         && !method_arg_type_compatible(arg_exprs.first(), arg_ty, item_ty)
                     {
                         diagnostics.push(Diagnostic::new(
-                            format!(
-                                "Arg 1 for method `Vec::push`: expected `{}`, got `{}`",
-                                type_to_string(item_ty),
-                                type_to_string(arg_ty)
+                            mismatch_message(
+                                format!(
+                                    "Arg 1 for method `Vec::push`: expected `{}`, got `{}`",
+                                    type_to_string(item_ty),
+                                    type_to_string(arg_ty)
+                                ),
+                                arg_ty,
+                                item_ty,
                             ),
                             default_diag_span(),
                         ));
@@ -6670,7 +6880,7 @@ fn resolve_method_call_type(
                     if args.len() == 1 && !is_vector_index_type(&args[0]) {
                         diagnostics.push(Diagnostic::new(
                             format!(
-                                "Method `Vec::get` expects `i64` or `usize` index, got `{}`",
+                                "Method `Vec::get` expects integer index, got `{}`",
                                 type_to_string(&args[0])
                             ),
                             default_diag_span(),
@@ -7209,11 +7419,15 @@ fn resolve_constructor_call(
                         );
                         if !bound && !is_compatible(actual, &expected_with_known) {
                             diagnostics.push(Diagnostic::new(
-                                format!(
-                                    "Enum variant `{enum_name}::{variant_name}` arg {} expected `{}`, got `{}`",
-                                    index + 1,
-                                    type_to_string(&expected_with_known),
-                                    type_to_string(actual)
+                                mismatch_message(
+                                    format!(
+                                        "Enum variant `{enum_name}::{variant_name}` arg {} expected `{}`, got `{}`",
+                                        index + 1,
+                                        type_to_string(&expected_with_known),
+                                        type_to_string(actual)
+                                    ),
+                                    actual,
+                                    &expected_with_known,
                                 ),
                                 default_diag_span(),
                             ));
@@ -7520,7 +7734,7 @@ fn literal_bidi_adjusted_numeric_arg_type(
 ) -> Option<SemType> {
     if infer_literal_bidi_enabled()
         && expr.is_some_and(|expr| matches!(expr, Expr::Int(_)))
-        && canonical_numeric_name(expected).is_some()
+        && canonical_numeric_name(expected).is_some_and(is_integral_numeric_type_name)
         && canonical_numeric_name(actual) == Some("i64")
     {
         return Some(expected.clone());
@@ -7546,10 +7760,10 @@ fn literal_bidi_comparison_compatible(
     }
     (matches!(left_expr, Expr::Int(_))
         && canonical_numeric_name(left_ty) == Some("i64")
-        && canonical_numeric_name(right_ty).is_some())
+        && canonical_numeric_name(right_ty).is_some_and(is_integral_numeric_type_name))
         || (matches!(right_expr, Expr::Int(_))
             && canonical_numeric_name(right_ty) == Some("i64")
-            && canonical_numeric_name(left_ty).is_some())
+            && canonical_numeric_name(left_ty).is_some_and(is_integral_numeric_type_name))
 }
 
 fn is_integral_numeric_type(ty: &SemType) -> bool {
@@ -7562,6 +7776,13 @@ fn is_integral_numeric_type(ty: &SemType) -> bool {
 fn resolve_common_numeric_type(left: &SemType, right: &SemType) -> Option<SemType> {
     let left_name = canonical_numeric_name(left)?;
     let right_name = canonical_numeric_name(right)?;
+    let left_integral = is_integral_numeric_type_name(left_name);
+    let right_integral = is_integral_numeric_type_name(right_name);
+    if left_integral != right_integral {
+        // Keep float/int mixing explicit. Whole-number coercions are handled
+        // separately via numeric_coercion + target-aware compatibility checks.
+        return None;
+    }
     Some(named_type(promote_numeric_names(left_name, right_name)))
 }
 
@@ -7607,6 +7828,252 @@ fn is_numeric_type_name(name: &str) -> bool {
             | "f32"
             | "f64"
     )
+}
+
+fn is_integral_numeric_type_name(name: &str) -> bool {
+    is_numeric_type_name(name) && !matches!(name, "f32" | "f64")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IntegralTypeSpec {
+    bits: u16,
+    signed: bool,
+}
+
+fn integral_type_spec(name: &str) -> Option<IntegralTypeSpec> {
+    let spec = match name {
+        "i8" => IntegralTypeSpec {
+            bits: 8,
+            signed: true,
+        },
+        "i16" => IntegralTypeSpec {
+            bits: 16,
+            signed: true,
+        },
+        "i32" => IntegralTypeSpec {
+            bits: 32,
+            signed: true,
+        },
+        "i64" => IntegralTypeSpec {
+            bits: 64,
+            signed: true,
+        },
+        "i128" => IntegralTypeSpec {
+            bits: 128,
+            signed: true,
+        },
+        "isize" => IntegralTypeSpec {
+            bits: 64,
+            signed: true,
+        },
+        "u8" => IntegralTypeSpec {
+            bits: 8,
+            signed: false,
+        },
+        "u16" => IntegralTypeSpec {
+            bits: 16,
+            signed: false,
+        },
+        "u32" => IntegralTypeSpec {
+            bits: 32,
+            signed: false,
+        },
+        "u64" => IntegralTypeSpec {
+            bits: 64,
+            signed: false,
+        },
+        "u128" => IntegralTypeSpec {
+            bits: 128,
+            signed: false,
+        },
+        "usize" => IntegralTypeSpec {
+            bits: 64,
+            signed: false,
+        },
+        _ => return None,
+    };
+    Some(spec)
+}
+
+fn can_implicitly_coerce_integral_name(actual: &str, expected: &str) -> bool {
+    if actual == expected {
+        return true;
+    }
+    let Some(actual_spec) = integral_type_spec(actual) else {
+        return false;
+    };
+    let Some(expected_spec) = integral_type_spec(expected) else {
+        return false;
+    };
+
+    match (actual_spec.signed, expected_spec.signed) {
+        (false, false) => expected_spec.bits >= actual_spec.bits,
+        (true, true) => expected_spec.bits >= actual_spec.bits,
+        (false, true) => expected_spec.bits > actual_spec.bits,
+        // Signed -> unsigned is supported implicitly with abs/saturating_abs
+        // wrapping before cast, so width parity is acceptable.
+        (true, false) => expected_spec.bits >= actual_spec.bits,
+    }
+}
+
+fn integral_coercion_hint(actual: &SemType, expected: &SemType) -> Option<String> {
+    if !numeric_coercion_enabled() {
+        return None;
+    }
+    let (Some(actual_name), Some(expected_name)) =
+        (canonical_numeric_name(actual), canonical_numeric_name(expected))
+    else {
+        return None;
+    };
+    if !is_integral_numeric_type_name(actual_name) || !is_integral_numeric_type_name(expected_name)
+    {
+        return None;
+    }
+    if can_implicitly_coerce_integral_name(actual_name, expected_name) {
+        return None;
+    }
+    let (Some(actual_spec), Some(expected_spec)) = (
+        integral_type_spec(actual_name),
+        integral_type_spec(expected_name),
+    ) else {
+        return None;
+    };
+    if actual_spec.signed && !expected_spec.signed {
+        return Some(format!(
+            "hint: for signed->unsigned conversions use `abs(...)`/`saturating_abs()` before casting to `{expected_name}`"
+        ));
+    }
+    if expected_spec.bits < actual_spec.bits {
+        return Some(format!(
+            "hint: target `{expected_name}` is narrower than `{actual_name}`; use a wider target type or checked/saturating conversion"
+        ));
+    }
+    if !actual_spec.signed && expected_spec.signed && expected_spec.bits == actual_spec.bits {
+        return Some(format!(
+            "hint: `{expected_name}` cannot represent all `{actual_name}` values; choose a wider signed target"
+        ));
+    }
+    None
+}
+
+fn mismatch_message(message: String, actual: &SemType, expected: &SemType) -> String {
+    if let Some(hint) = integral_coercion_hint(actual, expected) {
+        format!("{message}. {hint}")
+    } else {
+        message
+    }
+}
+
+fn maybe_insert_implicit_integral_cast(
+    typed_expr: TypedExpr,
+    actual: &SemType,
+    expected: &SemType,
+) -> TypedExpr {
+    if !numeric_coercion_enabled() {
+        return typed_expr;
+    }
+    let (Some(actual_name), Some(expected_name)) =
+        (canonical_numeric_name(actual), canonical_numeric_name(expected))
+    else {
+        return typed_expr;
+    };
+    if !is_integral_numeric_type_name(actual_name) || !is_integral_numeric_type_name(expected_name)
+    {
+        return typed_expr;
+    }
+    if actual_name == expected_name || !can_implicitly_coerce_integral_name(actual_name, expected_name)
+    {
+        return typed_expr;
+    }
+
+    let actual_spec = integral_type_spec(actual_name);
+    let expected_spec = integral_type_spec(expected_name);
+    let cast_input = if matches!(
+        (actual_spec, expected_spec),
+        (Some(IntegralTypeSpec { signed: true, .. }), Some(IntegralTypeSpec { signed: false, .. }))
+    ) {
+        let abs_base = TypedExpr {
+            kind: TypedExprKind::Cast {
+                expr: Box::new(typed_expr),
+                target_type: rust_owned_type_string(actual),
+            },
+            ty: type_to_string(actual),
+        };
+        // Signed -> unsigned implicit conversions normalize via saturating_abs
+        // so negative values do not wrap to huge unsigned integers.
+        TypedExpr {
+            kind: TypedExprKind::Call {
+                callee: Box::new(TypedExpr {
+                    kind: TypedExprKind::Field {
+                        base: Box::new(abs_base),
+                        field: "saturating_abs".to_string(),
+                    },
+                    ty: "_".to_string(),
+                }),
+                args: Vec::new(),
+            },
+            ty: type_to_string(actual),
+        }
+    } else {
+        typed_expr
+    };
+
+    TypedExpr {
+        kind: TypedExprKind::Cast {
+            expr: Box::new(cast_input),
+            target_type: rust_owned_type_string(expected),
+        },
+        ty: type_to_string(expected),
+    }
+}
+
+fn apply_expected_call_arg_coercions(
+    typed_args: &mut [TypedExpr],
+    arg_types: &[SemType],
+    expected_args: &[SemType],
+) {
+    for (index, expected) in expected_args.iter().enumerate() {
+        let (Some(current), Some(actual)) = (typed_args.get(index).cloned(), arg_types.get(index))
+        else {
+            break;
+        };
+        if !is_compatible(actual, expected) {
+            continue;
+        }
+        if let Some(slot) = typed_args.get_mut(index) {
+            *slot = maybe_insert_implicit_integral_cast(current, actual, expected);
+        }
+    }
+}
+
+fn instantiate_expected_param_types_for_call(
+    sig: &FunctionSig,
+    args: &[SemType],
+    explicit_type_args: Option<&[SemType]>,
+) -> Vec<SemType> {
+    let type_param_set = sig.type_params.iter().cloned().collect::<HashSet<_>>();
+    let mut generic_bindings = HashMap::new();
+    if let Some(explicit) = explicit_type_args {
+        for (index, ty) in explicit.iter().enumerate() {
+            if let Some(type_param) = sig.type_params.get(index) {
+                generic_bindings.insert(type_param.clone(), ty.clone());
+            }
+        }
+    }
+    for (actual, expected) in args.iter().zip(&sig.params) {
+        let expected_with_known =
+            substitute_bound_generic_type(expected, &type_param_set, &generic_bindings);
+        let _ = bind_generic_params(
+            &expected_with_known,
+            actual,
+            &type_param_set,
+            &mut generic_bindings,
+        );
+    }
+    sig.params
+        .iter()
+        .map(|expected| substitute_bound_generic_type(expected, &type_param_set, &generic_bindings))
+        .collect()
 }
 
 fn is_unsigned_numeric_name(name: &str) -> bool {
@@ -8128,6 +8595,7 @@ fn lower_expr_with_context(
                 remaining
             };
             let place_name = place_for_expr(expr).map(|place| place.display_name());
+            let base_ty = base.ty.clone();
             let mut lowered_index_expr = RustExpr::Index {
                 base: Box::new(lower_expr_with_context(
                     base,
@@ -8135,7 +8603,7 @@ fn lower_expr_with_context(
                     ExprPosition::ProjectionBase,
                     state,
                 )),
-                index: Box::new(lower_index_expr(index, context, state)),
+                index: Box::new(lower_index_expr(index, &base_ty, context, state)),
             };
             if matches!(index.kind, TypedExprKind::Range { .. })
                 && last_path_segment(&expr.ty) == "Vec"
@@ -8447,12 +8915,39 @@ fn cast_expr(expr: RustExpr, ty: String) -> RustExpr {
     }
 }
 
+fn cast_integral_expr_for_coercion(expr: RustExpr, from_ty: &str, to_ty: &str) -> RustExpr {
+    if from_ty == to_ty {
+        return expr;
+    }
+    let Some(from_spec) = integral_type_spec(from_ty) else {
+        return cast_expr(expr, to_ty.to_string());
+    };
+    let Some(to_spec) = integral_type_spec(to_ty) else {
+        return cast_expr(expr, to_ty.to_string());
+    };
+    if from_spec.signed && !to_spec.signed {
+        let abs_base = cast_expr(expr, from_ty.to_string());
+        let abs_expr = RustExpr::Call {
+            callee: Box::new(RustExpr::Field {
+                base: Box::new(abs_base),
+                field: "saturating_abs".to_string(),
+            }),
+            args: Vec::new(),
+        };
+        return cast_expr(abs_expr, to_ty.to_string());
+    }
+    cast_expr(expr, to_ty.to_string())
+}
+
 fn cast_expr_to_numeric_if_needed(expr: RustExpr, from_ty: &str, to_ty: &str) -> RustExpr {
     if from_ty == to_ty {
         return expr;
     }
     if !is_numeric_type_name(from_ty) || !is_numeric_type_name(to_ty) {
         return expr;
+    }
+    if is_integral_numeric_type_name(from_ty) && is_integral_numeric_type_name(to_ty) {
+        return cast_integral_expr_for_coercion(expr, from_ty, to_ty);
     }
     cast_expr(expr, to_ty.to_string())
 }
@@ -8934,9 +9429,11 @@ fn is_known_borrow_container_type(ty: &str) -> bool {
 
 fn lower_index_expr(
     index: &TypedExpr,
+    base_ty: &str,
     context: &mut LoweringContext,
     state: &mut LoweringState,
 ) -> RustExpr {
+    let vec_like = last_path_segment(base_ty.trim()) == "Vec";
     match &index.kind {
         TypedExprKind::Range {
             start,
@@ -8945,24 +9442,34 @@ fn lower_index_expr(
         } => RustExpr::Range {
             start: start
                 .as_ref()
-                .map(|value| Box::new(lower_index_range_bound(value, context, state))),
+                .map(|value| Box::new(lower_index_range_bound(value, vec_like, context, state))),
             end: end
                 .as_ref()
-                .map(|value| Box::new(lower_index_range_bound(value, context, state))),
+                .map(|value| Box::new(lower_index_range_bound(value, vec_like, context, state))),
             inclusive: *inclusive,
         },
-        _ => lower_expr_with_context(index, context, ExprPosition::Value, state),
+        _ => {
+            let lowered = lower_expr_with_context(index, context, ExprPosition::Value, state);
+            let index_name = last_path_segment(index.ty.trim());
+            if vec_like && is_integral_numeric_type_name(index_name) && index_name != "usize" {
+                cast_integral_expr_for_coercion(lowered, index_name, "usize")
+            } else {
+                lowered
+            }
+        }
     }
 }
 
 fn lower_index_range_bound(
     expr: &TypedExpr,
+    cast_to_usize: bool,
     context: &mut LoweringContext,
     state: &mut LoweringState,
 ) -> RustExpr {
     let lowered = lower_expr_with_context(expr, context, ExprPosition::Value, state);
-    if is_numeric_type_name(&expr.ty) && expr.ty.trim() != "usize" {
-        cast_expr(lowered, "usize".to_string())
+    let expr_name = last_path_segment(expr.ty.trim());
+    if cast_to_usize && is_integral_numeric_type_name(expr_name) && expr_name != "usize" {
+        cast_integral_expr_for_coercion(lowered, expr_name, "usize")
     } else {
         lowered
     }
@@ -10487,7 +10994,7 @@ fn substitute_bound_generic_type(
 }
 
 fn is_vector_index_type(ty: &SemType) -> bool {
-    is_compatible(ty, &named_type("i64")) || is_compatible(ty, &named_type("usize"))
+    is_integral_numeric_type(ty)
 }
 
 fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
@@ -10535,8 +11042,11 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
             },
         ) => {
             if numeric_coercion_enabled()
-                && canonical_numeric_name(actual).is_some()
-                && canonical_numeric_name(expected).is_some()
+                && let (Some(actual_name), Some(expected_name)) =
+                    (canonical_numeric_name(actual), canonical_numeric_name(expected))
+                && is_integral_numeric_type_name(actual_name)
+                && is_integral_numeric_type_name(expected_name)
+                && can_implicitly_coerce_integral_name(actual_name, expected_name)
             {
                 return true;
             }
@@ -11447,7 +11957,7 @@ fn lower_assign_target(
         },
         TypedAssignTarget::Index { base, index } => RustAssignTarget::Index {
             base: lower_expr_with_context(base, context, ExprPosition::Value, state),
-            index: lower_expr_with_context(index, context, ExprPosition::Value, state),
+            index: lower_index_expr(index, &base.ty, context, state),
         },
         TypedAssignTarget::Tuple(items) => RustAssignTarget::Tuple(
             items

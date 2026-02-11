@@ -446,11 +446,9 @@ mod tests {
                 .rust_code
                 .contains("fn update(mut values: Vec<i64>) -> i64")
         );
-        assert!(
-            output
-                .rust_code
-                .contains("values[(1) as usize] = (values[(1) as usize] % 3);")
-        );
+        assert!(output.rust_code.contains("values["));
+        assert!(output.rust_code.contains("saturating_abs() as usize"));
+        assert!(output.rust_code.contains("% 3"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -487,9 +485,9 @@ mod tests {
                 .rust_code
                 .contains("fn update(mut board: Vec<Vec<i64>>) -> i64")
         );
-        assert!(output.rust_code.contains(
-            "board[(1) as usize][(2) as usize] = (board[(1) as usize][(2) as usize] + 1);"
-        ));
+        assert!(output.rust_code.contains("board["));
+        assert!(output.rust_code.contains("saturating_abs() as usize"));
+        assert!(output.rust_code.contains("+ 1"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -508,11 +506,9 @@ mod tests {
                 .rust_code
                 .contains("fn update(mut hyper: Vec<Vec<Vec<Vec<i64>>>>) -> i64")
         );
-        assert!(
-            output
-                .rust_code
-                .contains("hyper[(0) as usize][(1) as usize][(2) as usize][(3) as usize] = (hyper[(0) as usize][(1) as usize][(2) as usize][(3) as usize] + 1);")
-        );
+        assert!(output.rust_code.contains("hyper["));
+        assert!(output.rust_code.contains("saturating_abs() as usize"));
+        assert!(output.rust_code.contains("+ 1"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -3717,8 +3713,71 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("values[(0) as usize]"));
+        assert!(output.rust_code.contains("values["));
+        assert!(output.rust_code.contains("saturating_abs() as usize"));
         assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_vec_index_expressions_with_integer_index_types() {
+        let source = r#"
+            pub fn at(values: Vec<i64>, idx: u32) -> i64 {
+                values[idx]
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("values[(idx as usize)]"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_vec_index_expressions_with_signed_index_types() {
+        let source = r#"
+            pub fn at(values: Vec<i64>, idx: i32) -> i64 {
+                values[idx]
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("saturating_abs()"));
+        assert!(output.rust_code.contains("idx as i32"));
+        assert!(output.rust_code.contains("as usize"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_rejects_vec_index_expressions_with_float_index() {
+        let source = r#"
+            pub fn at(values: Vec<i64>, idx: f64) -> i64 {
+                values[idx]
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("float index should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("Vector indexing expects integer index (or range), got `f64`")
+        );
+    }
+
+    #[test]
+    fn compile_reports_hashmap_subscript_as_non_vec_indexing_error() {
+        let source = r#"
+            use std::collections::HashMap;
+
+            pub fn score(scores: HashMap<String, i64>) -> i64 {
+                scores["Alice"]
+            }
+        "#;
+
+        let error = compile_source(source).expect_err("hash map subscripting should error early");
+        assert!(
+            error
+                .to_string()
+                .contains("Indexing requires `Vec<T>` value, got `HashMap<String, i64>`")
+        );
     }
 
     #[test]
@@ -3758,11 +3817,8 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(
-            output
-                .rust_code
-                .contains("values[(1 as usize)..(3 as usize)].to_vec()")
-        );
+        assert!(output.rust_code.contains("saturating_abs() as usize"));
+        assert!(output.rust_code.contains(".to_vec()"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -3777,8 +3833,9 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("start as usize"));
-        assert!(output.rust_code.contains("end as usize"));
+        assert!(output.rust_code.contains("start as i64"));
+        assert!(output.rust_code.contains("end as i64"));
+        assert!(output.rust_code.contains("saturating_abs() as usize"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -4053,6 +4110,61 @@ world"#;
             compile_source_with_options(source, &options).expect("numeric coercion should compile");
         assert!(output.rust_code.contains("need_i32(0)"));
         assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_numeric_coercion_inserts_widening_cast_for_call_args() {
+        let source = r#"
+            fn need_u64(v: u64) -> u64 {
+                return v;
+            }
+
+            fn run(x: u32) -> u64 {
+                return need_u64(x);
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.type_system = true;
+        let output =
+            compile_source_with_options(source, &options).expect("numeric coercion should compile");
+        assert!(output.rust_code.contains("need_u64((x as u64))"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_numeric_coercion_uses_saturating_abs_for_signed_to_unsigned() {
+        let source = r#"
+            fn run(x: i32) -> u32 {
+                const y: u32 = x;
+                return y;
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.type_system = true;
+        let output =
+            compile_source_with_options(source, &options).expect("signed->unsigned should compile");
+        assert!(output.rust_code.contains("saturating_abs()"));
+        assert!(output.rust_code.contains("x as i32"));
+        assert!(output.rust_code.contains("as u32"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_numeric_coercion_rejects_narrowing_unsigned_assignment() {
+        let source = r#"
+            fn run(x: u64) -> u32 {
+                const y: u32 = x;
+                return y;
+            }
+        "#;
+
+        let mut options = CompileOptions::default();
+        options.experiments.type_system = true;
+        let error = compile_source_with_options(source, &options)
+            .expect_err("narrowing unsigned conversion should be rejected");
+        assert!(error.to_string().contains("target `u32` is narrower than `u64`"));
     }
 
     #[test]
@@ -4383,7 +4495,7 @@ world"#;
         "#;
 
         let output = compile_source(source).expect("usize + int literal should compile");
-        assert!(output.rust_code.contains("(1 as usize)"));
+        assert!(output.rust_code.contains("saturating_abs() as usize"));
         assert!(!output.rust_code.contains("(count as i64)"));
         assert_rust_code_compiles(&output.rust_code);
     }

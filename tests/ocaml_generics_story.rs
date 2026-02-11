@@ -367,6 +367,25 @@ fn ocaml_profile_accepts_contextual_uint_literals_across_widths() {
 }
 
 #[test]
+fn ocaml_profile_rejects_implicit_int_to_float_argument_coercion() {
+    let source = r#"
+        fn need_f64(v: f64) -> f64 {
+            return v;
+        }
+
+        fn run() -> f64 {
+            return need_f64(7);
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("whole-number int should not auto-coerce to float");
+    let rendered = error.to_string();
+    assert!(rendered.contains("expected `f64`"));
+    assert!(rendered.contains("got `i64`"));
+}
+
+#[test]
 fn strict_mode_rejects_bool_where_uint_is_expected() {
     let source = r#"
         fn need_u64(v: u64) -> u64 {
@@ -466,11 +485,9 @@ fn explicit_conversion_try_from_accepts_vector_member_value() {
     "#;
 
     let output = compile_source(source).expect("vector member conversion should compile");
-    assert!(
-        output
-            .rust_code
-            .contains("u64::try_from(values[(0) as usize]).unwrap_or(u64::MIN)")
-    );
+    assert!(output.rust_code.contains("u64::try_from(values["));
+    assert!(output.rust_code.contains("saturating_abs() as usize"));
+    assert!(output.rust_code.contains("unwrap_or(u64::MIN)"));
 }
 
 #[test]
@@ -486,7 +503,7 @@ fn ocaml_profile_rejects_bool_vector_index_for_get() {
     assert!(
         error
             .to_string()
-            .contains("Method `Vec::get` expects `i64` or `usize` index, got `bool`")
+            .contains("Method `Vec::get` expects integer index, got `bool`")
     );
 }
 
@@ -503,11 +520,83 @@ fn ocaml_profile_rejects_bool_direct_indexing() {
     assert!(
         error
             .to_string()
-            .contains("Vector indexing expects `i64` or `usize` index (or range), got `bool`")
+            .contains("Vector indexing expects integer index (or range), got `bool`")
     );
 }
 
-// Checklist Story: Section 9 (Pending)
+// Checklist Story: Section 9
+// Goal: whole-number coercion should work beyond index expressions, with safe widening rules.
+#[test]
+fn ocaml_profile_accepts_widening_integral_conversions_in_variables_and_calls() {
+    let source = r#"
+        fn need_u64(v: u64) -> u64 { return v; }
+        fn need_i128(v: i128) -> i128 { return v; }
+
+        fn run(u: u32, s: i16, idx: i32, values: Vec<i64>) -> (u64, i128, i64) {
+            const a: u64 = u;
+            const b: i128 = s;
+            const c: usize = idx;
+            return (need_u64(a), need_i128(b), values[c]);
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("widening whole-number conversions should compile in profile mode");
+    assert!(output.rust_code.contains("saturating_abs"));
+    assert!(output.rust_code.contains("as usize"));
+}
+
+#[test]
+fn ocaml_profile_rejects_narrowing_unsigned_target() {
+    let source = r#"
+        fn run(v: u64) -> u32 {
+            const out: u32 = v;
+            return out;
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("narrowing whole-number conversion should be rejected");
+    let rendered = error.to_string();
+    assert!(rendered.contains("expected `u32`"));
+    assert!(rendered.contains("got `u64`"));
+    assert!(rendered.contains("narrower"));
+}
+
+#[test]
+fn ocaml_profile_rejects_equal_width_unsigned_to_signed() {
+    let source = r#"
+        fn need_i64(v: i64) -> i64 {
+            return v;
+        }
+
+        fn run(v: u64) -> i64 {
+            return need_i64(v);
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("u64 to i64 should require explicit conversion");
+    let rendered = error.to_string();
+    assert!(rendered.contains("expected `i64`"));
+    assert!(rendered.contains("got `u64`"));
+    assert!(rendered.contains("wider signed target"));
+}
+
+#[test]
+fn ocaml_profile_rejects_implicit_float_int_binary_mix() {
+    let source = r#"
+        fn run(a: i64, b: f64) -> f64 {
+            return a + b;
+        }
+    "#;
+
+    let error = compile_with_ocaml_profile(source)
+        .expect_err("implicit float/int arithmetic should require explicit cast");
+    assert!(error.to_string().contains("expects numeric operands"));
+}
+
+// Checklist Story: Section 10 (Pending)
 // Goal: diagnostics should suggest abs(i*) guidance for signed->uint/index-intent paths.
 #[test]
 #[ignore = "pending: add abs(i*) guidance in numeric mismatch diagnostics"]

@@ -299,11 +299,7 @@ fn emit_expr(expr: &RustExpr) -> String {
         RustExpr::Index { base, index } => {
             let base_text = emit_expr(base);
             let index_text = emit_expr(index);
-            if matches!(index.as_ref(), RustExpr::Range { .. }) {
-                format!("{base_text}[{index_text}]")
-            } else {
-                format!("{base_text}[({index_text}) as usize]")
-            }
+            format!("{base_text}[{index_text}]")
         }
         RustExpr::Match { scrutinee, arms } => {
             let mut text = String::new();
@@ -434,9 +430,7 @@ fn emit_assign_target(target: &RustAssignTarget) -> String {
     match target {
         RustAssignTarget::Path(name) => name.clone(),
         RustAssignTarget::Field { base, field } => format!("{}.{}", emit_expr(base), field),
-        RustAssignTarget::Index { base, index } => {
-            format!("{}[({}) as usize]", emit_expr(base), emit_expr(index))
-        }
+        RustAssignTarget::Index { base, index } => format!("{}[{}]", emit_expr(base), emit_expr(index)),
         RustAssignTarget::Tuple(items) => {
             let inner = items
                 .iter()

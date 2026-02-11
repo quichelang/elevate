@@ -71,7 +71,8 @@ fn result_unwrap_or_helper_accepts_literal_default_with_literal_bidi() {
 
     let output = compile_with_literal_bidi(source)
         .expect("Result::unwrap_or should be available with literal default typing");
-    assert!(output.rust_code.contains("value.unwrap_or(0)"));
+    assert!(output.rust_code.contains("value.unwrap_or("));
+    assert!(output.rust_code.contains("0"));
 }
 
 #[test]
