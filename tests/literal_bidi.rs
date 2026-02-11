@@ -4,7 +4,7 @@ fn compile_with_literal_bidi(
     source: &str,
 ) -> Result<elevate::CompilerOutput, elevate::CompileError> {
     let mut options = CompileOptions::default();
-    options.experiments.infer_literal_bidi = true;
+    options.experiments.type_system = true;
     compile_source_with_options(source, &options)
 }
 
@@ -43,7 +43,7 @@ fn literal_bidi_accepts_u64_function_arg_from_default_int_literal() {
         output
             .ownership_notes
             .iter()
-            .any(|note| note.contains("exp_literal_bidi"))
+            .any(|note| note.contains("exp_type_system"))
     );
 }
 
@@ -89,20 +89,4 @@ fn associated_try_from_chain_supports_result_unwrap_or() {
             .rust_code
             .contains("u64::try_from(value).unwrap_or(u64::MIN)")
     );
-}
-
-#[test]
-fn bidi_flags_are_mutually_exclusive_in_api_options() {
-    let source = r#"
-        fn run() -> i64 {
-            return 1;
-        }
-    "#;
-    let mut options = CompileOptions::default();
-    options.experiments.infer_local_bidi = true;
-    options.experiments.infer_literal_bidi = true;
-
-    let error = compile_source_with_options(source, &options)
-        .expect_err("mutually exclusive bidi options must be rejected");
-    assert!(error.to_string().contains("mutually exclusive"));
 }

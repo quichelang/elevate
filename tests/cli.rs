@@ -73,16 +73,16 @@ fn cli_accepts_experiment_flags_for_compile() {
 
     let output = Command::new(bin())
         .arg(&src)
-        .arg("--exp-infer-local-bidi")
+        .arg("--exp-type-system")
         .output()
         .expect("run cli should succeed");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("experimental flag enabled: exp_infer_local_bidi"));
+    assert!(stdout.contains("experimental flag enabled: exp_type_system"));
 }
 
 #[test]
-fn cli_accepts_principal_fallback_flag_for_compile() {
+fn cli_rejects_removed_principal_fallback_flag_for_compile() {
     let root = temp_dir("elevate-cli-exp-fallback");
     let src = root.join("input.ers");
     fs::write(&src, "fn id(v: i64) -> i64 { v }\n").expect("write source should succeed");
@@ -92,13 +92,13 @@ fn cli_accepts_principal_fallback_flag_for_compile() {
         .arg("--exp-infer-principal-fallback")
         .output()
         .expect("run cli should succeed");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("experimental flag enabled: exp_infer_principal_fallback"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown argument"));
 }
 
 #[test]
-fn cli_accepts_literal_bidi_flag_for_compile() {
+fn cli_rejects_removed_literal_bidi_flag_for_compile() {
     let root = temp_dir("elevate-cli-exp-literal-bidi");
     let src = root.join("input.ers");
     fs::write(
@@ -112,14 +112,14 @@ fn cli_accepts_literal_bidi_flag_for_compile() {
         .arg("--exp-literal-bidi")
         .output()
         .expect("run cli should succeed");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("experimental flag enabled: exp_literal_bidi"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown argument"));
 }
 
 #[test]
-fn cli_accepts_ocaml_infer_profile_flag_for_compile() {
-    let root = temp_dir("elevate-cli-exp-ocaml-infer");
+fn cli_accepts_type_system_flag_for_compile() {
+    let root = temp_dir("elevate-cli-exp-type-system");
     let src = root.join("input.ers");
     fs::write(
         &src,
@@ -129,16 +129,12 @@ fn cli_accepts_ocaml_infer_profile_flag_for_compile() {
 
     let output = Command::new(bin())
         .arg(&src)
-        .arg("--exp-ocaml-infer")
+        .arg("--exp-type-system")
         .output()
         .expect("run cli should succeed");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("experimental flag enabled: exp_infer_local_bidi"));
-    assert!(stdout.contains("experimental flag enabled: exp_infer_principal_fallback"));
-    assert!(stdout.contains("experimental flag enabled: exp_numeric_coercion"));
-    assert!(stdout.contains("experimental flag enabled: exp_effect_rows"));
-    assert!(stdout.contains("experimental flag enabled: exp_effect_rows_internal"));
+    assert!(stdout.contains("experimental flag enabled: exp_type_system"));
 }
 
 #[test]
@@ -159,7 +155,7 @@ fn cli_compiles_explicit_type_application_in_expression_paths() {
 }
 
 #[test]
-fn cli_rejects_mutually_exclusive_bidi_flags() {
+fn cli_rejects_removed_sub_feature_flags() {
     let root = temp_dir("elevate-cli-exp-bidi-conflict");
     let src = root.join("input.ers");
     fs::write(&src, "fn id(v: i64) -> i64 { v }\n").expect("write source should succeed");
@@ -172,7 +168,7 @@ fn cli_rejects_mutually_exclusive_bidi_flags() {
         .expect("run cli should succeed");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("mutually exclusive"));
+    assert!(stderr.contains("unknown argument"));
 }
 
 #[test]
@@ -187,7 +183,7 @@ fn cli_warn_missing_types_is_opt_in() {
 
     let output = Command::new(bin())
         .arg(&src)
-        .arg("--exp-infer-local-bidi")
+        .arg("--exp-type-system")
         .arg("--warn-missing-types")
         .output()
         .expect("run cli should succeed");
@@ -248,7 +244,7 @@ fn cli_bootstrap_build_forwards_experiment_and_value_flags() {
     let output = Command::new(&bootstrap_bin)
         .arg("build")
         .arg(&root)
-        .arg("--exp-infer-local-bidi")
+        .arg("--exp-type-system")
         .arg("--source-name")
         .arg("runtime.ers")
         .env("PATH", prepend_path(&fake_bin))
@@ -258,7 +254,7 @@ fn cli_bootstrap_build_forwards_experiment_and_value_flags() {
 
     let logged = fs::read_to_string(&log).expect("fake elevate log should exist");
     assert!(logged.contains("build"));
-    assert!(logged.contains("--exp-infer-local-bidi"));
+    assert!(logged.contains("--exp-type-system"));
     assert!(logged.contains("--source-name"));
     assert!(logged.contains("runtime.ers"));
 }
@@ -280,7 +276,7 @@ fn cli_bootstrap_run_forwards_build_flags_and_runtime_args() {
     let output = Command::new(&bootstrap_bin)
         .arg("run")
         .arg(&root)
-        .arg("--exp-infer-local-bidi")
+        .arg("--exp-type-system")
         .arg("--")
         .arg("--seed")
         .arg("7")
@@ -292,7 +288,7 @@ fn cli_bootstrap_run_forwards_build_flags_and_runtime_args() {
     let elevate_logged =
         fs::read_to_string(&elevate_log).expect("fake elevate log should exist for run");
     assert!(elevate_logged.contains("build"));
-    assert!(elevate_logged.contains("--exp-infer-local-bidi"));
+    assert!(elevate_logged.contains("--exp-type-system"));
 
     let cargo_logged = fs::read_to_string(&cargo_log).expect("fake cargo log should exist");
     assert!(cargo_logged.contains("run"));

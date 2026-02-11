@@ -113,5 +113,5 @@ struct FrontendMeta {
 - Source-aware diagnostic rendering is now centralized in `/Volumes/Dev/code/jagtesh/elevate/src/source_map.rs`.
 - `CompileOptions.source_name` is supported and used by compiler/CLI pathways.
 - Generic structs/enums/impl blocks are supported in AST + parser + lowering.
-- Effect-row surface syntax is available behind `--exp-effect-rows`.
+- Effect-row surface syntax is available behind `--exp-type-system`.
 - Full external binary AST ingest and full source-map sidecar resolution are still design/next-step work.

@@ -148,85 +148,53 @@ struct Context {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TypecheckOptions {
-    pub numeric_coercion: bool,
-    pub infer_local_bidi: bool,
-    pub infer_literal_bidi: bool,
-    pub infer_principal_fallback: bool,
-    pub effect_rows_surface: bool,
-    pub effect_rows_internal: bool,
+    pub type_system: bool,
 }
 
 thread_local! {
-    static NUMERIC_COERCION_ENABLED: Cell<bool> = Cell::new(false);
-    static INFER_LOCAL_BIDI_ENABLED: Cell<bool> = Cell::new(false);
-    static INFER_LITERAL_BIDI_ENABLED: Cell<bool> = Cell::new(false);
-    static INFER_PRINCIPAL_FALLBACK_ENABLED: Cell<bool> = Cell::new(false);
-    static EFFECT_ROWS_SURFACE_ENABLED: Cell<bool> = Cell::new(false);
-    static EFFECT_ROWS_INTERNAL_ENABLED: Cell<bool> = Cell::new(false);
+    static TYPE_SYSTEM_ENABLED: Cell<bool> = Cell::new(false);
     static STRICT_HOLE_REPORTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static STRICT_HOLE_EMITTED: Cell<bool> = Cell::new(false);
     static CURRENT_DIAG_SPAN: Cell<Option<Span>> = Cell::new(None);
 }
 
 fn with_typecheck_options_scope<T>(options: &TypecheckOptions, f: impl FnOnce() -> T) -> T {
-    NUMERIC_COERCION_ENABLED.with(|cell| {
-        INFER_LOCAL_BIDI_ENABLED.with(|bidi_cell| {
-            INFER_LITERAL_BIDI_ENABLED.with(|literal_bidi_cell| {
-                INFER_PRINCIPAL_FALLBACK_ENABLED.with(|fallback_cell| {
-                    let previous_numeric = cell.replace(options.numeric_coercion);
-                    let previous_bidi = bidi_cell.replace(options.infer_local_bidi);
-                    let previous_literal_bidi =
-                        literal_bidi_cell.replace(options.infer_literal_bidi);
-                    let previous_fallback = fallback_cell.replace(options.infer_principal_fallback);
-                    let previous_effect_rows_surface = EFFECT_ROWS_SURFACE_ENABLED
-                        .with(|effect_cell| effect_cell.replace(options.effect_rows_surface));
-                    let previous_effect_rows = EFFECT_ROWS_INTERNAL_ENABLED
-                        .with(|effect_cell| effect_cell.replace(options.effect_rows_internal));
-                    STRICT_HOLE_REPORTED.with(|reported| {
-                        let previous_emitted =
-                            STRICT_HOLE_EMITTED.with(|emitted| emitted.replace(false));
-                        let previous_reported = std::mem::take(&mut *reported.borrow_mut());
-                        let out = f();
-                        *reported.borrow_mut() = previous_reported;
-                        STRICT_HOLE_EMITTED.with(|emitted| emitted.set(previous_emitted));
-                        cell.set(previous_numeric);
-                        bidi_cell.set(previous_bidi);
-                        literal_bidi_cell.set(previous_literal_bidi);
-                        fallback_cell.set(previous_fallback);
-                        EFFECT_ROWS_SURFACE_ENABLED
-                            .with(|effect_cell| effect_cell.set(previous_effect_rows_surface));
-                        EFFECT_ROWS_INTERNAL_ENABLED
-                            .with(|effect_cell| effect_cell.set(previous_effect_rows));
-                        out
-                    })
-                })
-            })
+    TYPE_SYSTEM_ENABLED.with(|cell| {
+        let previous = cell.replace(options.type_system);
+        STRICT_HOLE_REPORTED.with(|reported| {
+            let previous_emitted = STRICT_HOLE_EMITTED.with(|emitted| emitted.replace(false));
+            let previous_reported = std::mem::take(&mut *reported.borrow_mut());
+            let out = f();
+            *reported.borrow_mut() = previous_reported;
+            STRICT_HOLE_EMITTED.with(|emitted| emitted.set(previous_emitted));
+            cell.set(previous);
+            out
         })
     })
 }
 
 fn numeric_coercion_enabled() -> bool {
-    NUMERIC_COERCION_ENABLED.with(|cell| cell.get())
+    TYPE_SYSTEM_ENABLED.with(|cell| cell.get())
 }
 
 fn infer_local_bidi_enabled() -> bool {
-    INFER_LOCAL_BIDI_ENABLED.with(|cell| cell.get())
+    TYPE_SYSTEM_ENABLED.with(|cell| cell.get())
 }
 
 fn infer_literal_bidi_enabled() -> bool {
-    INFER_LITERAL_BIDI_ENABLED.with(|cell| cell.get())
+    TYPE_SYSTEM_ENABLED.with(|cell| cell.get())
 }
 
 fn infer_principal_fallback_enabled() -> bool {
-    INFER_PRINCIPAL_FALLBACK_ENABLED.with(|cell| cell.get())
+    TYPE_SYSTEM_ENABLED.with(|cell| cell.get())
 }
 
 fn effect_rows_surface_enabled() -> bool {
-    EFFECT_ROWS_SURFACE_ENABLED.with(|cell| cell.get())
+    TYPE_SYSTEM_ENABLED.with(|cell| cell.get())
 }
 
 fn effect_rows_internal_enabled() -> bool {
-    EFFECT_ROWS_INTERNAL_ENABLED.with(|cell| cell.get())
+    TYPE_SYSTEM_ENABLED.with(|cell| cell.get())
 }
 
 fn effect_rows_analysis_enabled() -> bool {
@@ -288,7 +256,7 @@ fn emit_strict_unknown_operand_hint_once(expr: &Expr, diagnostics: &mut Vec<Diag
                 format!("strict:arith:path:{name}"),
                 format!(
                     "Cannot infer type for `{name}` in strict mode. Add an explicit type \
-annotation or enable `--exp-infer-local-bidi`."
+annotation or enable `--exp-type-system`."
                 ),
                 diagnostics,
             );
@@ -297,7 +265,7 @@ annotation or enable `--exp-infer-local-bidi`."
             emit_strict_hole_once(
                 format!("strict:arith:expr:{expr:?}"),
                 "Cannot infer arithmetic operand type in strict mode. Add an explicit type \
-annotation or enable `--exp-infer-local-bidi`."
+annotation or enable `--exp-type-system`."
                     .to_string(),
                 diagnostics,
             );

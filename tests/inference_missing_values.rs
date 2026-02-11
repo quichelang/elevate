@@ -2,13 +2,13 @@ use elevate::{CompileOptions, compile_source, compile_source_with_options};
 
 fn compile_with_bidi(source: &str) -> Result<elevate::CompilerOutput, elevate::CompileError> {
     let mut options = CompileOptions::default();
-    options.experiments.infer_local_bidi = true;
+    options.experiments.type_system = true;
     compile_source_with_options(source, &options)
 }
 
 fn compile_with_fallback(source: &str) -> Result<elevate::CompilerOutput, elevate::CompileError> {
     let mut options = CompileOptions::default();
-    options.experiments.infer_principal_fallback = true;
+    options.experiments.type_system = true;
     compile_source_with_options(source, &options)
 }
 
@@ -147,11 +147,9 @@ fn bidi_rejects_all_none_without_signal() {
         }
     "#;
     let error = compile_with_bidi(source).expect_err("should still require annotation");
-    assert!(
-        error
-            .to_string()
-            .contains("return type could not be fully inferred")
-    );
+    let rendered = error.to_string();
+    assert!(rendered.contains("Principal fallback:"));
+    assert!(rendered.contains("function `values`"));
 }
 
 #[test]
@@ -162,11 +160,9 @@ fn bidi_rejects_err_only_without_ok_type_signal() {
         }
     "#;
     let error = compile_with_bidi(source).expect_err("should still require annotation");
-    assert!(
-        error
-            .to_string()
-            .contains("return type could not be fully inferred")
-    );
+    let rendered = error.to_string();
+    assert!(rendered.contains("Principal fallback:"));
+    assert!(rendered.contains("function `values`"));
 }
 
 #[test]

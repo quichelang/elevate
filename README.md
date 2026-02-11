@@ -307,7 +307,7 @@ fn total_length(names: Vec<String>) -> i64 {
 Elevate has an experimental bidirectional type inference system inspired by Koka and OCaml. Enable it with flags:
 
 ```bash
-cargo run -q -- file.ers --exp-infer-local-bidi --exp-infer-principal-fallback
+cargo run -q -- file.ers --exp-type-system
 ```
 
 ### Inferred Parameter Types
@@ -345,7 +345,7 @@ fn double(n: _) -> i64 {
 }
 ```
 
-The `_` placeholder is resolved from local constraints. When inference can't find a stable principal type, the `--exp-infer-principal-fallback` flag emits a deterministic "add a type annotation here" hint instead of cascading errors.
+The `_` placeholder is resolved from local constraints. When inference can't find a stable principal type, the `--exp-type-system` flag emits a deterministic "add a type annotation here" hint instead of cascading errors.
 
 ### Effect Rows (Experimental Surface)
 
@@ -361,7 +361,7 @@ fn render_card(card: Card) -> String ![method::render + call::std::mem::drop] {
 
 - `![cap_a + cap_b]` declares a closed capability row.
 - `![..r]` declares an open row tail.
-- Enable checks with `--exp-effect-rows`.
+- Enable checks with `--exp-type-system`.
 
 ---
 
@@ -519,12 +519,8 @@ elevate init <crate-root>
 
 | Flag | Effect |
 |------|--------|
-| `--exp-infer-local-bidi` | Koka-inspired bidirectional local inference (omitted params, `_` placeholders) |
-| `--exp-effect-rows` | Surface effect-row checking for `![...]` annotations (function + impl methods) |
-| `--exp-infer-principal-fallback` | Deterministic "add annotation here" diagnostics when inference stalls |
+| `--exp-type-system` | Unified inference/type-system preview: bidirectional local inference, literal steering, principal fallback diagnostics, numeric coercion, and effect-row checking (surface + internal) |
 | `--exp-move-mut-args` | Move-by-default for mutation-capable call flows |
-| `--exp-effect-rows-internal` | Internal row-like capability checks (trait-supertrait method capabilities + generic method-use diagnostics) |
-| `--exp-numeric-coercion` | Automatic numeric type coercion in expressions |
 
 ### Ownership Control Flags
 

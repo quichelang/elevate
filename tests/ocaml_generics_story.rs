@@ -9,11 +9,7 @@ fn compile_with_ocaml_profile(
     // - principal fallback diagnostics
     // - numeric coercion for expected-type literal steering
     // - effect-row analysis (surface + internal)
-    options.experiments.infer_local_bidi = true;
-    options.experiments.infer_principal_fallback = true;
-    options.experiments.numeric_coercion = true;
-    options.experiments.effect_rows = true;
-    options.experiments.effect_rows_internal = true;
+    options.experiments.type_system = true;
     compile_source_with_options(source, &options)
 }
 
@@ -215,7 +211,7 @@ fn ocaml_profile_accepts_expected_u64_with_bidirectional_numeric_inference() {
         output
             .ownership_notes
             .iter()
-            .any(|note| note.contains("exp_infer_local_bidi"))
+            .any(|note| note.contains("exp_type_system"))
     );
 }
 

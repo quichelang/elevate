@@ -10,7 +10,7 @@ static TEST_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 fn prosemaster_transpile_uses_typed_results_and_u64_counters() {
     let root = copy_example_to_temp("prosemaster");
     let mut options = CompileOptions::default();
-    options.experiments.infer_local_bidi = true;
+    options.experiments.type_system = true;
 
     let summary = crate_builder::transpile_ers_crate_with_options(&root, &options)
         .expect("prosemaster should transpile with bidi inference enabled");
@@ -35,7 +35,7 @@ fn prosemaster_transpile_uses_typed_results_and_u64_counters() {
 fn prosemaster_numeric_policy_separates_wrapping_rng_from_saturating_counters() {
     let root = copy_example_to_temp("prosemaster");
     let mut options = CompileOptions::default();
-    options.experiments.infer_local_bidi = true;
+    options.experiments.type_system = true;
 
     let summary = crate_builder::transpile_ers_crate_with_options(&root, &options)
         .expect("prosemaster should transpile with bidi inference enabled");

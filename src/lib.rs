@@ -22,37 +22,21 @@ use ir::typed::TypedModule;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExperimentFlags {
     pub move_mut_args: bool,
-    pub infer_local_bidi: bool,
-    pub infer_literal_bidi: bool,
-    pub effect_rows: bool,
-    pub effect_rows_internal: bool,
-    pub infer_principal_fallback: bool,
-    pub numeric_coercion: bool,
+    pub type_system: bool,
 }
 
 impl ExperimentFlags {
+    fn type_system_enabled(&self) -> bool {
+        self.type_system
+    }
+
     fn active_names(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
         if self.move_mut_args {
             out.push("exp_move_mut_args");
         }
-        if self.infer_local_bidi {
-            out.push("exp_infer_local_bidi");
-        }
-        if self.infer_literal_bidi {
-            out.push("exp_literal_bidi");
-        }
-        if self.effect_rows {
-            out.push("exp_effect_rows");
-        }
-        if self.effect_rows_internal {
-            out.push("exp_effect_rows_internal");
-        }
-        if self.infer_principal_fallback {
-            out.push("exp_infer_principal_fallback");
-        }
-        if self.numeric_coercion {
-            out.push("exp_numeric_coercion");
+        if self.type_system_enabled() {
+            out.push("exp_type_system");
         }
         out
     }
@@ -168,15 +152,11 @@ pub fn compile_ast_with_options(
         ));
     }
     let warnings = collect_compile_warnings(module, options);
+    let type_system_enabled = options.experiments.type_system_enabled();
     let typed = passes::lower_to_typed_with_options(
         module,
         &passes::TypecheckOptions {
-            numeric_coercion: options.experiments.numeric_coercion,
-            infer_local_bidi: options.experiments.infer_local_bidi,
-            infer_literal_bidi: options.experiments.infer_literal_bidi,
-            infer_principal_fallback: options.experiments.infer_principal_fallback,
-            effect_rows_surface: options.experiments.effect_rows,
-            effect_rows_internal: options.experiments.effect_rows_internal,
+            type_system: type_system_enabled,
         },
     )
     .map_err(|diagnostics| {
@@ -208,11 +188,7 @@ pub fn compile_ast_with_options(
 }
 
 pub fn validate_experiment_flags(experiments: &ExperimentFlags) -> Result<(), String> {
-    if experiments.infer_local_bidi && experiments.infer_literal_bidi {
-        return Err(
-            "`--exp-infer-local-bidi` and `--exp-literal-bidi` are mutually exclusive".to_string(),
-        );
-    }
+    let _ = experiments;
     Ok(())
 }
 
@@ -255,7 +231,7 @@ fn collect_function_warnings(function: &ast::FunctionDef, warnings: &mut Vec<Dia
         if is_placeholder_type(&param.ty) {
             warnings.push(Diagnostic::new(
                 format!(
-                    "Missing explicit type for parameter `{}` in function `{}`. Add an explicit type annotation or enable `--exp-infer-local-bidi`.",
+                    "Missing explicit type for parameter `{}` in function `{}`. Add an explicit type annotation or enable `--exp-type-system`.",
                     param.name, function.name
                 ),
                 warning_span(function.span),
@@ -265,7 +241,7 @@ fn collect_function_warnings(function: &ast::FunctionDef, warnings: &mut Vec<Dia
     if function.return_type.is_none() {
         warnings.push(Diagnostic::new(
             format!(
-                "Missing explicit return type for function `{}`. Add an explicit return type annotation or enable `--exp-infer-local-bidi`.",
+                "Missing explicit return type for function `{}`. Add an explicit return type annotation or enable `--exp-type-system`.",
                 function.name
             ),
             warning_span(function.span),
@@ -1792,7 +1768,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_local_bidi = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1815,7 +1791,7 @@ mod tests {
         let error = compile_source(source).expect_err("expected strict inference error");
         let rendered = error.to_string();
         assert!(rendered.contains("Cannot infer type for `left` in strict mode"));
-        assert!(rendered.contains("--exp-infer-local-bidi"));
+        assert!(rendered.contains("--exp-type-system"));
         assert!(!rendered.contains("`+` expects numeric operands"));
         assert_eq!(
             rendered
@@ -1835,7 +1811,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_local_bidi = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi mode should compile");
         assert!(output.rust_code.contains("left + 2"));
@@ -1872,7 +1848,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_local_bidi = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1895,7 +1871,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_local_bidi = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1918,7 +1894,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_local_bidi = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1941,7 +1917,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_local_bidi = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1964,7 +1940,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_local_bidi = true;
+        options.experiments.type_system = true;
         let error =
             compile_source_with_options(source, &options).expect_err("expected mismatch error");
         assert!(
@@ -1983,7 +1959,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_principal_fallback = true;
+        options.experiments.type_system = true;
         let error = compile_source_with_options(source, &options).expect_err("expected fallback");
         let rendered = error.to_string();
         assert!(rendered.contains("Principal fallback:"));
@@ -1997,7 +1973,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_principal_fallback = true;
+        options.experiments.type_system = true;
         let error = compile_source_with_options(source, &options).expect_err("expected fallback");
         let rendered = error.to_string();
         assert!(rendered.contains("Principal fallback:"));
@@ -2532,7 +2508,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_local_bidi = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected bidi inference");
         assert!(output.rust_code.contains("fn add(a: i64, b: i64) -> i64"));
@@ -2553,7 +2529,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.infer_local_bidi = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected bidi inference");
         assert!(output.rust_code.contains("fn add(a: i64, b: i64) -> i64"));
@@ -2573,7 +2549,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.effect_rows_internal = true;
+        options.experiments.type_system = true;
         let error =
             compile_source_with_options(source, &options).expect_err("expected capability error");
         let rendered = error.to_string();
@@ -2597,7 +2573,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.effect_rows_internal = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected capability support");
         assert!(
@@ -2629,7 +2605,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.effect_rows = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected effect row acceptance");
         assert!(output.rust_code.contains("fn run(value: i64) -> ()"));
@@ -2645,7 +2621,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.effect_rows = true;
+        options.experiments.type_system = true;
         let error = compile_source_with_options(source, &options)
             .expect_err("expected effect row mismatch");
         let rendered = error.to_string();
@@ -2662,7 +2638,7 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.effect_rows = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected open effect row");
         assert!(output.rust_code.contains("fn run(value: i64) -> ()"));
@@ -4013,7 +3989,7 @@ world"#;
         );
 
         let mut options = CompileOptions::default();
-        options.experiments.numeric_coercion = true;
+        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("numeric coercion should compile");
         assert!(output.rust_code.contains("need_i32(0)"));
