@@ -1,8 +1,8 @@
 # Language Design (Single Source of Truth)
 
-Status: Draft v0.8  
+Status: Draft v0.9  
 Owner: Language team  
-Last updated: 2026-02-08
+Last updated: 2026-02-11
 
 ## How To Read This Document
 
@@ -109,6 +109,16 @@ Type policy:
 - Public API boundaries should prefer explicit return types.
 - Errors must include concrete expected vs actual details.
 
+Capability-driven method/index policy:
+- Method typing and index typing are capability-resolved (no per-method ad hoc typing branches for standard containers).
+- Capability resolution uses rustdex metadata as an explicit dependency; when metadata is unavailable, Elevate emits a capability-resolution diagnostic and fails early.
+- Map-like subscript semantics are safe-by-default:
+- `map[key]` desugars to `map.get(key)`.
+- Result type is `Option<V>` (not panic-index semantics).
+- Key compatibility is target/capability-derived:
+- numeric cast insertion for indices only applies when target key type is integral and coercion policy allows it.
+- no unconditional `as usize` casting for non-`Vec` index-capability paths.
+
 String policy:
 - Source-level `String` is immutable by default from the language perspective.
 - String concatenation (for example `"hello" + "world"`) may be lowered using mutable builder internals for performance.
@@ -143,6 +153,12 @@ Minimum standards:
 - Explain which automatic decision failed.
 - Provide one direct fix hint.
 
+Capability diagnostics:
+- Method capability failure: report method name, receiver type, and missing capability context.
+- Index capability failure: report base type and required key type shape.
+- Map subscript mismatch: report expected key type vs actual key type.
+- rustdex metadata failure: report the unresolved type/method metadata source explicitly.
+
 ### Change Management Contract
 
 For semantic changes:
@@ -153,7 +169,7 @@ For semantic changes:
 
 ## Informational (Implementation + Progress)
 
-### Current Implementation Status (As of 2026-02-06)
+### Current Implementation Status (As of 2026-02-11)
 
 Implemented:
 - Rust compiler project initialized.
@@ -172,6 +188,7 @@ Implemented:
 - Range expressions: `..` and `..=`.
 - Arithmetic remainder operator `%`.
 - `Vec` indexing and range slicing expressions (`values[i]`, `values[a..b]`).
+- Map-like subscript access resolves through capability-based `get` semantics and yields `Option<V>`.
 - Index assignment targets for vectors (`values[i] = v`).
 - Slice-adjacent `Vec` methods `first`, `last`, and `get(i)` are typed and lowered.
 - `Vec::push` method support with inferred mutable receiver lowering.
@@ -199,6 +216,8 @@ Implemented:
 - Inline `rust { ... }` escape blocks (top-level and statement position) that pass raw Rust through without Elevate parsing.
 - Centralized interop policy registry for clone/borrow/shim behavior.
 - Auto-borrow coverage for selected associated Rust calls (String/Option/Result/Vec/HashMap/BTreeMap/HashSet/BTreeSet cases).
+- Capability-driven method/index resolution now fronts standard container method/index behavior.
+- rustdex metadata is required for capability resolution; unsupported/unknown capability paths fail at Elevate level with diagnostics.
 - Method-call ownership lowering for known Rust receiver methods:
 - borrowed receiver/arg handling for non-consuming calls (for example `len`, `contains`, `contains_key`);
 - auto-clone insertion for reused owned receivers on consuming-style calls when clone-safe.
