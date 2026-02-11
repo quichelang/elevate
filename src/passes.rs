@@ -8937,10 +8937,25 @@ fn lower_expr_with_context(
             };
             let lowered_base =
                 lower_expr_with_context(base, context, ExprPosition::ProjectionBase, state);
-            let lowered_key = lower_index_expr(index, &base_ty, context, state);
+            let key_position = match indexing.key_passing {
+                TypedIndexKeyPassing::Borrowed => ExprPosition::CallArgBorrowed,
+                TypedIndexKeyPassing::Owned => ExprPosition::CallArgOwned,
+                TypedIndexKeyPassing::CloneIfNeeded => ExprPosition::Value,
+            };
+            let clone_reused_custom_key = indexing.source == TypedIndexSource::CustomMethod
+                && indexing.key_passing == TypedIndexKeyPassing::Owned
+                && should_clone_for_reuse(index.ty.trim(), state)
+                && context.ownership_plan.remaining_conflicting_for_expr(index) > 0;
+            let lowered_key = lower_index_expr(index, &base_ty, key_position, context, state);
             let lowered_key_arg = match indexing.key_passing {
                 TypedIndexKeyPassing::Borrowed => borrow_expr(lowered_key),
-                TypedIndexKeyPassing::Owned => lowered_key,
+                TypedIndexKeyPassing::Owned => {
+                    if clone_reused_custom_key {
+                        clone_expr(lowered_key)
+                    } else {
+                        lowered_key
+                    }
+                }
                 TypedIndexKeyPassing::CloneIfNeeded => clone_expr(lowered_key),
             };
             let lowered_index_expr = match indexing.mode {
@@ -9925,6 +9940,7 @@ fn is_known_borrow_container_type(ty: &str) -> bool {
 fn lower_index_expr(
     index: &TypedExpr,
     base_ty: &str,
+    position: ExprPosition,
     context: &mut LoweringContext,
     state: &mut LoweringState,
 ) -> RustExpr {
@@ -9944,7 +9960,7 @@ fn lower_index_expr(
             inclusive: *inclusive,
         },
         _ => {
-            let lowered = lower_expr_with_context(index, context, ExprPosition::Value, state);
+            let lowered = lower_expr_with_context(index, context, position, state);
             let index_name = last_path_segment(index.ty.trim());
             if vec_like && is_integral_numeric_type_name(index_name) && index_name != "usize" {
                 cast_integral_expr_for_coercion(lowered, index_name, "usize")
@@ -12505,7 +12521,7 @@ fn lower_assign_target(
         },
         TypedAssignTarget::Index { base, index } => RustAssignTarget::Index {
             base: lower_expr_with_context(base, context, ExprPosition::Value, state),
-            index: lower_index_expr(index, &base.ty, context, state),
+            index: lower_index_expr(index, &base.ty, ExprPosition::Value, context, state),
         },
         TypedAssignTarget::Tuple(items) => RustAssignTarget::Tuple(
             items

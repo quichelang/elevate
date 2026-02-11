@@ -901,3 +901,29 @@ fn capability_story_custom_direct_index_with_struct_key_infers_key_type() {
     assert!(output.rust_code.contains("Lookup::index("));
     assert!(output.rust_code.contains("Key { id: 7 }"));
 }
+
+#[test]
+fn capability_story_custom_get_index_reused_owned_key_triggers_clone_support() {
+    let source = r#"
+        struct Lookup {
+            value: i64;
+        }
+
+        impl Lookup {
+            fn get(self, key: String) -> Option<i64> {
+                std::mem::drop(key);
+                return Some(self.value);
+            }
+        }
+
+        fn pick(store: Lookup, key: String) -> (Option<i64>, usize) {
+            const first = store[key];
+            return (first, key.len());
+        }
+    "#;
+
+    let output = compile_with_ocaml_profile(source)
+        .expect("reused owned key should compile with clone support for custom get-like indexing");
+    assert!(output.rust_code.contains("Lookup::get("));
+    assert!(output.rust_code.contains("key.clone()"));
+}

@@ -3942,6 +3942,57 @@ mod tests {
     }
 
     #[test]
+    fn compile_custom_get_like_index_autoclones_reused_owned_key() {
+        let source = r#"
+            pub struct Lookup {
+                value: i64;
+            }
+
+            impl Lookup {
+                pub fn get(self, key: String) -> Option<i64> {
+                    std::mem::drop(key);
+                    return Some(self.value);
+                }
+            }
+
+            pub fn pick(store: Lookup, key: String) -> (Option<i64>, usize) {
+                const first = store[key];
+                return (first, key.len());
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("reused owned key should auto-clone for custom get-like indexing");
+        assert!(output.rust_code.contains("Lookup::get("));
+        assert!(output.rust_code.contains("key.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_custom_direct_index_autoclones_reused_owned_key() {
+        let source = r#"
+            pub struct Lookup {}
+
+            impl Lookup {
+                pub fn index(self, key: String) -> usize {
+                    return key.len();
+                }
+            }
+
+            pub fn pick(store: Lookup, key: String) -> (usize, usize) {
+                const first = store[key];
+                return (first, key.len());
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("reused owned key should auto-clone for custom direct indexing");
+        assert!(output.rust_code.contains("Lookup::index("));
+        assert!(output.rust_code.contains("key.clone()"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_hashmap_subscript_with_enum_key_and_borrowed_lookup() {
         let source = r#"
             rust {
