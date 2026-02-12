@@ -1026,7 +1026,14 @@ fn issue16_generic_eq_infers_partial_eq() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert!(
         output.rust_code.contains("PartialEq"),
         "generic == should produce PartialEq bound\n{}",
@@ -1044,7 +1051,14 @@ fn issue16_generic_lt_infers_partial_ord() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert!(
         output.rust_code.contains("PartialOrd"),
         "generic < should produce PartialOrd bound\n{}",
@@ -1062,7 +1076,14 @@ fn issue16_generic_add_infers_add() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert!(
         output.rust_code.contains("Add"),
         "generic + should produce Add bound\n{}",
@@ -1086,7 +1107,14 @@ fn issue16_generic_multiple_ops() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert!(
         output.rust_code.contains("PartialOrd"),
         "generic comparison should produce PartialOrd bound\n{}",
@@ -1105,7 +1133,14 @@ fn issue16_generic_debug_infers_debug() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert!(
         output.rust_code.contains("Debug") || output.rust_code.contains("fmt::Debug"),
         "generic println!(:?) should produce Debug bound\n{}",

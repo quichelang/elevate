@@ -205,6 +205,47 @@ thread_local! {
     static STRICT_HOLE_REPORTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static STRICT_HOLE_EMITTED: Cell<bool> = Cell::new(false);
     static CURRENT_DIAG_SPAN: Cell<Option<Span>> = Cell::new(None);
+    static CURRENT_TYPE_PARAMS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static INFERRED_GENERIC_BOUNDS: RefCell<HashMap<String, HashSet<String>>> = RefCell::new(HashMap::new());
+}
+
+fn is_current_type_param(ty: &SemType) -> Option<String> {
+    if let SemType::Path { path, args } = ty {
+        if path.len() == 1 && args.is_empty() {
+            let name = &path[0];
+            let is_param = CURRENT_TYPE_PARAMS.with(|cell| cell.borrow().contains(name));
+            if is_param {
+                return Some(name.clone());
+            }
+        }
+    }
+    None
+}
+
+fn record_generic_bound(type_param: &str, bound: &str) {
+    INFERRED_GENERIC_BOUNDS.with(|cell| {
+        cell.borrow_mut()
+            .entry(type_param.to_string())
+            .or_default()
+            .insert(bound.to_string());
+    });
+}
+
+fn take_inferred_generic_bounds() -> HashMap<String, HashSet<String>> {
+    INFERRED_GENERIC_BOUNDS.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
+}
+
+fn with_type_params_scope<T>(type_params: &[crate::ast::GenericParam], f: impl FnOnce() -> T) -> T {
+    CURRENT_TYPE_PARAMS.with(|cell| {
+        let previous = std::mem::replace(
+            &mut *cell.borrow_mut(),
+            type_params.iter().map(|p| p.name.clone()).collect(),
+        );
+        INFERRED_GENERIC_BOUNDS.with(|bounds| bounds.borrow_mut().clear());
+        let result = f();
+        *cell.borrow_mut() = previous;
+        result
+    })
 }
 
 fn with_typecheck_options_scope<T>(options: &TypecheckOptions, f: impl FnOnce() -> T) -> T {
@@ -3123,78 +3164,80 @@ fn lower_item(
             }))
         }
         Item::Function(def) => with_diag_span_scope(def.span, || {
-            let mut locals = HashMap::new();
-            let mut immutable_locals = HashSet::new();
-            for param in &def.params {
-                locals.insert(
-                    param.name.clone(),
-                    type_from_ast_in_context(&param.ty, context),
-                );
-            }
-            let declared_return_ty = def
-                .return_type
-                .as_ref()
-                .map(|ty| type_from_ast_in_context(ty, context));
-            let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
-            let mut body = Vec::new();
-            let mut inferred_returns = Vec::new();
-            for (index, statement) in def.body.statements.iter().enumerate() {
-                let is_last = index + 1 == def.body.statements.len();
-                if is_last && let Stmt::TailExpr(expr) = statement {
-                    let (mut typed_expr, inferred) = infer_expr(
-                        expr,
-                        context,
-                        &mut locals,
-                        &provisional_return_ty,
-                        diagnostics,
+            with_type_params_scope(&def.type_params, || {
+                let mut locals = HashMap::new();
+                let mut immutable_locals = HashSet::new();
+                for param in &def.params {
+                    locals.insert(
+                        param.name.clone(),
+                        type_from_ast_in_context(&param.ty, context),
                     );
-                    inferred_returns.push(inferred.clone());
-                    let literal_adjusted = literal_bidi_adjusted_numeric_arg_type(
-                        Some(expr),
-                        &inferred,
-                        &provisional_return_ty,
-                    );
-                    let compatible = is_compatible(&inferred, &provisional_return_ty)
-                        || literal_adjusted.is_some();
-                    if provisional_return_ty != SemType::Unknown && !compatible {
-                        diagnostics.push(Diagnostic::new(
-                            mismatch_message(
-                                format!(
-                                    "Return type mismatch: expected `{}`, got `{}`",
-                                    type_to_string(&provisional_return_ty),
-                                    type_to_string(&inferred)
-                                ),
-                                &inferred,
-                                &provisional_return_ty,
-                            ),
-                            default_diag_span(),
-                        ));
-                    } else if provisional_return_ty != SemType::Unknown {
-                        typed_expr = maybe_insert_implicit_integral_cast(
-                            typed_expr,
+                }
+                let declared_return_ty = def
+                    .return_type
+                    .as_ref()
+                    .map(|ty| type_from_ast_in_context(ty, context));
+                let provisional_return_ty = declared_return_ty.clone().unwrap_or(SemType::Unknown);
+                let mut body = Vec::new();
+                let mut inferred_returns = Vec::new();
+                for (index, statement) in def.body.statements.iter().enumerate() {
+                    let is_last = index + 1 == def.body.statements.len();
+                    if is_last && let Stmt::TailExpr(expr) = statement {
+                        let (mut typed_expr, inferred) = infer_expr(
+                            expr,
+                            context,
+                            &mut locals,
+                            &provisional_return_ty,
+                            diagnostics,
+                        );
+                        inferred_returns.push(inferred.clone());
+                        let literal_adjusted = literal_bidi_adjusted_numeric_arg_type(
+                            Some(expr),
                             &inferred,
                             &provisional_return_ty,
                         );
+                        let compatible = is_compatible(&inferred, &provisional_return_ty)
+                            || literal_adjusted.is_some();
+                        if provisional_return_ty != SemType::Unknown && !compatible {
+                            diagnostics.push(Diagnostic::new(
+                                mismatch_message(
+                                    format!(
+                                        "Return type mismatch: expected `{}`, got `{}`",
+                                        type_to_string(&provisional_return_ty),
+                                        type_to_string(&inferred)
+                                    ),
+                                    &inferred,
+                                    &provisional_return_ty,
+                                ),
+                                default_diag_span(),
+                            ));
+                        } else if provisional_return_ty != SemType::Unknown {
+                            typed_expr = maybe_insert_implicit_integral_cast(
+                                typed_expr,
+                                &inferred,
+                                &provisional_return_ty,
+                            );
+                        }
+                        body.push(TypedStmt::Return(Some(typed_expr)));
+                        continue;
                     }
-                    body.push(TypedStmt::Return(Some(typed_expr)));
-                    continue;
+                    if let Some(stmt) = lower_stmt_with_types(
+                        statement,
+                        context,
+                        &mut locals,
+                        &mut immutable_locals,
+                        &provisional_return_ty,
+                        &mut inferred_returns,
+                        diagnostics,
+                    ) {
+                        body.push(stmt);
+                    }
                 }
-                if let Some(stmt) = lower_stmt_with_types(
-                    statement,
-                    context,
-                    &mut locals,
-                    &mut immutable_locals,
-                    &provisional_return_ty,
-                    &mut inferred_returns,
-                    diagnostics,
-                ) {
-                    body.push(stmt);
-                }
-            }
-            let final_return_ty = declared_return_ty
-                .unwrap_or_else(|| infer_return_type(&inferred_returns, diagnostics, &def.name));
-            if contains_unknown(&final_return_ty) {
-                diagnostics.push(Diagnostic::new(
+                let final_return_ty = declared_return_ty.unwrap_or_else(|| {
+                    infer_return_type(&inferred_returns, diagnostics, &def.name)
+                });
+                if contains_unknown(&final_return_ty) {
+                    diagnostics.push(Diagnostic::new(
                     inference_hole_message(
                         format!(
                             "Function `{}` return type could not be fully inferred; add an explicit return type",
@@ -3205,63 +3248,87 @@ fn lower_item(
                     ),
                     default_diag_span(),
                 ));
-            }
-            let has_rust_block = body.iter().any(|s| matches!(s, TypedStmt::RustBlock(_)));
-            if final_return_ty != SemType::Unit && inferred_returns.is_empty() && !has_rust_block {
-                diagnostics.push(Diagnostic::new(
-                    format!(
-                        "Function `{}` must explicitly return `{}`",
-                        def.name,
-                        type_to_string(&final_return_ty)
-                    ),
-                    default_diag_span(),
-                ));
-            }
+                }
+                let has_rust_block = body.iter().any(|s| matches!(s, TypedStmt::RustBlock(_)));
+                if final_return_ty != SemType::Unit
+                    && inferred_returns.is_empty()
+                    && !has_rust_block
+                {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "Function `{}` must explicitly return `{}`",
+                            def.name,
+                            type_to_string(&final_return_ty)
+                        ),
+                        default_diag_span(),
+                    ));
+                }
 
-            let resolved_param_types = def
-                .params
-                .iter()
-                .map(|param| resolve_function_param_type(param, context, &locals))
-                .collect::<Vec<_>>();
-            if let Some(sig) = context.functions.get_mut(&def.name) {
-                sig.params = resolved_param_types.clone();
-                sig.return_type = final_return_ty.clone();
-            }
-            let function_param_bounds = context
-                .functions
-                .get(&def.name)
-                .map(|sig| sig.type_param_bounds.clone())
-                .unwrap_or_default();
-
-            Some(TypedItem::Function(TypedFunction {
-                is_public: def.visibility == Visibility::Public,
-                name: def.name.clone(),
-                type_params: def
-                    .type_params
-                    .iter()
-                    .map(|param| TypedTypeParam {
-                        name: param.name.clone(),
-                        bounds: function_param_bounds
-                            .get(&param.name)
-                            .cloned()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|bound| rust_trait_bound_string(&bound))
-                            .collect(),
-                    })
-                    .collect(),
-                params: def
+                let resolved_param_types = def
                     .params
                     .iter()
-                    .zip(resolved_param_types.iter())
-                    .map(|(param, ty)| TypedParam {
-                        name: param.name.clone(),
-                        ty: rust_param_type_string(ty),
-                    })
-                    .collect(),
-                return_type: rust_owned_type_string(&final_return_ty),
-                body,
-            }))
+                    .map(|param| resolve_function_param_type(param, context, &locals))
+                    .collect::<Vec<_>>();
+                let inferred_op_bounds = take_inferred_generic_bounds();
+                if let Some(sig) = context.functions.get_mut(&def.name) {
+                    sig.params = resolved_param_types.clone();
+                    sig.return_type = final_return_ty.clone();
+                    for (param, bounds) in &inferred_op_bounds {
+                        let entry = sig.type_param_bounds.entry(param.clone()).or_default();
+                        let existing_names: HashSet<String> =
+                            entry.iter().map(|b| type_to_string(b)).collect();
+                        for bound in bounds {
+                            // Skip inferred bounds that are implied by explicit bounds
+                            // Ord implies PartialOrd; Eq implies PartialEq
+                            if bound == "PartialOrd" && existing_names.contains("Ord") {
+                                continue;
+                            }
+                            if bound == "PartialEq" && existing_names.contains("Eq") {
+                                continue;
+                            }
+                            let sem_bound = named_type(bound);
+                            if !entry.contains(&sem_bound) {
+                                entry.push(sem_bound);
+                            }
+                        }
+                    }
+                }
+                let function_param_bounds = context
+                    .functions
+                    .get(&def.name)
+                    .map(|sig| sig.type_param_bounds.clone())
+                    .unwrap_or_default();
+
+                Some(TypedItem::Function(TypedFunction {
+                    is_public: def.visibility == Visibility::Public,
+                    name: def.name.clone(),
+                    type_params: def
+                        .type_params
+                        .iter()
+                        .map(|param| TypedTypeParam {
+                            name: param.name.clone(),
+                            bounds: function_param_bounds
+                                .get(&param.name)
+                                .cloned()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|bound| rust_trait_bound_string(&bound))
+                                .collect(),
+                        })
+                        .collect(),
+                    params: def
+                        .params
+                        .iter()
+                        .zip(resolved_param_types.iter())
+                        .map(|(param, ty)| TypedParam {
+                            name: param.name.clone(),
+                            ty: rust_param_type_string(ty),
+                        })
+                        .collect(),
+                    return_type: rust_owned_type_string(&final_return_ty),
+                    body,
+                }))
+            }) // with_type_params_scope
         }),
     }
 }
@@ -4281,6 +4348,40 @@ fn infer_expr(
             } else {
                 SemType::Unknown
             };
+            // Infer Debug bound for generic type params used with {:?} in fmt macros
+            if path.len() == 1
+                && matches!(
+                    path[0].as_str(),
+                    "println"
+                        | "print"
+                        | "eprintln"
+                        | "eprint"
+                        | "format"
+                        | "write"
+                        | "writeln"
+                        | "panic"
+                )
+            {
+                let has_debug_format = args
+                    .first()
+                    .map(|arg| {
+                        if let Expr::String(s) = arg {
+                            s.contains("{:?}") || s.contains("{:#?}")
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if has_debug_format {
+                    // Check non-format-string args for generic type params
+                    for typed_arg in &typed_args[1..] {
+                        let arg_ty_sem = named_type(&typed_arg.ty);
+                        if let Some(param) = is_current_type_param(&arg_ty_sem) {
+                            record_generic_bound(&param, "std::fmt::Debug");
+                        }
+                    }
+                }
+            }
             (
                 TypedExpr {
                     kind: TypedExprKind::MacroCall {
@@ -4683,6 +4784,20 @@ fn infer_expr(
                 | BinaryOp::Le
                 | BinaryOp::Gt
                 | BinaryOp::Ge => {
+                    // Record trait bounds for generic type params used in comparisons
+                    if let Some(param) =
+                        is_current_type_param(&left_ty).or_else(|| is_current_type_param(&right_ty))
+                    {
+                        match op {
+                            BinaryOp::Eq | BinaryOp::Ne => {
+                                record_generic_bound(&param, "PartialEq");
+                            }
+                            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+                                record_generic_bound(&param, "PartialOrd");
+                            }
+                            _ => {}
+                        }
+                    }
                     if !is_compatible(&left_ty, &right_ty)
                         && !literal_bidi_comparison_compatible(left, &left_ty, right, &right_ty)
                         && !(strict_mode_enabled()
@@ -7953,6 +8068,19 @@ fn resolve_add_type(left: &SemType, right: &SemType, diagnostics: &mut Vec<Diagn
     if let Some(out_ty) = resolve_common_numeric_type(left, right) {
         return out_ty;
     }
+    // Generic type param: T + T => T, record Add bound
+    if let Some(param) = is_current_type_param(left).or_else(|| is_current_type_param(right)) {
+        let generic_ty = if is_current_type_param(left).is_some() {
+            left.clone()
+        } else {
+            right.clone()
+        };
+        record_generic_bound(
+            &param,
+            &format!("std::ops::Add<Output = {}>", type_to_string(&generic_ty)),
+        );
+        return generic_ty;
+    }
     if strict_mode_enabled() && (*left == SemType::Unknown || *right == SemType::Unknown) {
         return SemType::Unknown;
     }
@@ -8008,6 +8136,30 @@ fn resolve_numeric_binary_type(
 ) -> SemType {
     if let Some(out_ty) = resolve_common_numeric_type(left, right) {
         return out_ty;
+    }
+    // Generic type param: T op T => T, record the appropriate ops trait bound
+    if let Some(param) = is_current_type_param(left).or_else(|| is_current_type_param(right)) {
+        let generic_ty = if is_current_type_param(left).is_some() {
+            left.clone()
+        } else {
+            right.clone()
+        };
+        let trait_name = match op {
+            "-" => "Sub",
+            "*" => "Mul",
+            "/" => "Div",
+            "%" => "Rem",
+            _ => "Add",
+        };
+        record_generic_bound(
+            &param,
+            &format!(
+                "std::ops::{}<Output = {}>",
+                trait_name,
+                type_to_string(&generic_ty)
+            ),
+        );
+        return generic_ty;
     }
     if strict_mode_enabled() && (*left == SemType::Unknown || *right == SemType::Unknown) {
         return SemType::Unknown;
