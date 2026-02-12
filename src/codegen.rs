@@ -1001,10 +1001,18 @@ fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::Ha
                 collect_mutated_paths_in_expr(end, out);
             }
         }
-        RustExpr::Try(inner)
-        | RustExpr::Borrow(inner)
-        | RustExpr::MutBorrow(inner)
-        | RustExpr::Cast { expr: inner, .. } => collect_mutated_paths_in_expr(inner, out),
+        RustExpr::Try(inner) | RustExpr::Borrow(inner) | RustExpr::Cast { expr: inner, .. } => {
+            collect_mutated_paths_in_expr(inner, out)
+        }
+        RustExpr::MutBorrow(inner) => {
+            // &mut x requires x to be declared `let mut x`
+            if let RustExpr::Path(segments) = inner.as_ref() {
+                if let Some(name) = segments.first() {
+                    out.insert(name.clone());
+                }
+            }
+            collect_mutated_paths_in_expr(inner, out);
+        }
         RustExpr::Int(_)
         | RustExpr::Float(_)
         | RustExpr::Bool(_)
