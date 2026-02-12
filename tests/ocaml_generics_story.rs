@@ -28,7 +28,8 @@ fn explicit_type_application_supports_generic_function_call() {
         }
     "#;
 
-    let output = compile_with_ocaml_profile(source).expect("explicit type application should compile");
+    let output =
+        compile_with_ocaml_profile(source).expect("explicit type application should compile");
     assert!(output.rust_code.contains("fn id<T>(value: T) -> T"));
 }
 
@@ -38,13 +39,13 @@ fn explicit_type_application_supports_associated_constructor_calls() {
         use std::fmt::Display;
 
         struct Point<T> {
-            x: T;
-            y: T;
+            x: T,
+            y: T,
         }
 
         impl<T: Display> Point<T> {
             fn new(x: T, y: T) -> Self {
-                Point { x: x; y: y; }
+                Point { x: x, y: y, }
             }
 
             fn render(self) -> String {
@@ -118,12 +119,12 @@ fn implicit_polymorphism_handles_int_uint_bool_and_vectors() {
 fn structural_polymorphism_handles_nested_object_properties() {
     let source = r#"
         struct Child {
-            values: Vec<i64>;
+            values: Vec<i64>,
         }
 
         struct Parent {
-            child: Child;
-            flags: Vec<bool>;
+            child: Child,
+            flags: Vec<bool>,
         }
 
         fn first_value(obj: Parent) -> i64 {
@@ -136,8 +137,8 @@ fn structural_polymorphism_handles_nested_object_properties() {
 
         fn run() -> bool {
             const p = Parent {
-                child: Child { values: [3, 9] };
-                flags: [true, false];
+                child: Child { values: [3, 9] },
+                flags: [true, false],
             };
             return has_flag(p) and first_value(p) > 0;
         }
@@ -145,19 +146,27 @@ fn structural_polymorphism_handles_nested_object_properties() {
 
     let output = compile_with_ocaml_profile(source)
         .expect("structural generic access should compile for nested fields");
-    assert!(output.rust_code.contains("fn first_value(obj: Parent) -> i64"));
-    assert!(output.rust_code.contains("fn has_flag(obj: Parent) -> bool"));
+    assert!(
+        output
+            .rust_code
+            .contains("fn first_value(obj: Parent) -> i64")
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("fn has_flag(obj: Parent) -> bool")
+    );
 }
 
 #[test]
 fn structural_generic_nested_object_access_compiles_in_profile_mode() {
     let source = r#"
         struct Child {
-            values: Vec<i64>;
+            values: Vec<i64>,
         }
 
         struct Parent {
-            child: Child;
+            child: Child,
         }
 
         fn first_value<T>(obj: T) -> i64 {
@@ -205,8 +214,8 @@ fn ocaml_profile_accepts_expected_u64_with_bidirectional_numeric_inference() {
         }
     "#;
 
-    let output = compile_with_ocaml_profile(source)
-        .expect("profile should steer literal to expected u64");
+    let output =
+        compile_with_ocaml_profile(source).expect("profile should steer literal to expected u64");
     assert!(
         output
             .ownership_notes
@@ -228,7 +237,11 @@ fn ocaml_profile_propagates_expected_type_through_match_arms() {
 
     let output = compile_with_ocaml_profile(source)
         .expect("profile should infer Option<i64> across match arms");
-    assert!(output.rust_code.contains("fn choose(flag: bool) -> Option<i64>"));
+    assert!(
+        output
+            .rust_code
+            .contains("fn choose(flag: bool) -> Option<i64>")
+    );
 }
 
 // Checklist Story: Section 4
@@ -300,17 +313,17 @@ fn integrated_story_case_exercises_multiple_ocaml_like_patterns() {
         use std::fmt::Display;
 
         struct Boxed<T> {
-            value: T;
+            value: T,
         }
 
         struct Scene {
-            points: Vec<Vec<i64>>;
-            active: bool;
+            points: Vec<Vec<i64>>,
+            active: bool,
         }
 
         impl<T: Display> Boxed<T> {
             fn new(value: T) -> Self {
-                Boxed { value: value; }
+                Boxed { value: value, }
             }
 
             fn show(self) -> String {
@@ -324,8 +337,8 @@ fn integrated_story_case_exercises_multiple_ocaml_like_patterns() {
 
         fn run() -> String {
             const scene = Scene {
-                points: [[1, 2], [3, 4]];
-                active: true;
+                points: [[1, 2], [3, 4]],
+                active: true,
             };
             const left = Boxed<i64>::new(pick_first(scene));
             const right = Boxed::new(u64::from(7));
@@ -426,7 +439,7 @@ fn strict_mode_rejects_vector_member_type_mismatch_for_uint_parameter() {
 fn strict_mode_rejects_struct_member_bool_for_uint_field() {
     let source = r#"
         struct Metrics {
-            count: u64;
+            count: u64,
         }
 
         fn run() -> u64 {
@@ -460,7 +473,7 @@ fn explicit_conversion_try_from_accepts_non_literal_signed_value() {
 fn explicit_conversion_try_from_accepts_struct_member_value() {
     let source = r#"
         struct Input {
-            raw: i64;
+            raw: i64,
         }
 
         fn to_u64(input: Input) -> u64 {
@@ -695,7 +708,7 @@ fn capability_story_mixed_generics_map_vector_numeric_coercion_and_ownership() {
 fn capability_story_custom_type_method_without_capability_reports_elevate_error() {
     let source = r#"
         struct Bag {
-            value: i64;
+            value: i64,
         }
 
         fn run(bag: Bag) -> i64 {
@@ -740,8 +753,8 @@ fn strict_mode_still_autoborrows_string_contains() {
         }
     "#;
 
-    let output = compile_source(source)
-        .expect("strict mode should keep string method autoborrow behavior");
+    let output =
+        compile_source(source).expect("strict mode should keep string method autoborrow behavior");
     assert!(output.rust_code.contains("text.contains(&needle)"));
 }
 
@@ -816,12 +829,12 @@ fn capability_story_hashmap_struct_key_index_infers_and_borrows_key() {
 fn capability_story_custom_get_index_with_enum_key_infers_key_type() {
     let source = r#"
         enum Key {
-            A;
-            B;
+            A,
+            B,
         }
 
         struct Lookup {
-            value: i64;
+            value: i64,
         }
 
         impl Lookup {
@@ -849,11 +862,11 @@ fn capability_story_custom_get_index_with_enum_key_infers_key_type() {
 fn capability_story_custom_get_index_with_struct_key_infers_key_type() {
     let source = r#"
         struct Key {
-            id: i64;
+            id: i64,
         }
 
         struct Lookup {
-            value: i64;
+            value: i64,
         }
 
         impl Lookup {
@@ -880,7 +893,7 @@ fn capability_story_custom_get_index_with_struct_key_infers_key_type() {
 fn capability_story_custom_direct_index_with_struct_key_infers_key_type() {
     let source = r#"
         struct Key {
-            id: i64;
+            id: i64,
         }
 
         struct Lookup {}
@@ -906,7 +919,7 @@ fn capability_story_custom_direct_index_with_struct_key_infers_key_type() {
 fn capability_story_custom_get_index_reused_owned_key_triggers_clone_support() {
     let source = r#"
         struct Lookup {
-            value: i64;
+            value: i64,
         }
 
         impl Lookup {

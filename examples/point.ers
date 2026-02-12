@@ -1,13 +1,13 @@
 use std::fmt::Display;
 
 struct Point<T> {
-    x: T;
-    y: T;
+    x: T,
+    y: T,
 }
 
 impl<T: Display> Point<T> {
   fn new(x: T, y: T) -> Self {
-    Point { x: x; y: y; }
+     Point { x: x, y: y,}
   }
 
   fn to_string(self) -> String{

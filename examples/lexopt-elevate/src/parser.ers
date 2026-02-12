@@ -3,25 +3,25 @@ use crate::model::Arg;
 use crate::model::ParseError;
 
 pub struct LongWithValue {
-    name: String;
-    value: String;
+    name: String,
+    value: String,
 }
 
 impl LongWithValue {
     fn new(name: String, value: String) -> Self {
         LongWithValue {
-            name: name;
-            value: value;
+            name: name,
+            value: value,
         }
     }
 }
 
 pub enum RawArgClass {
-    DashDash;
-    Long(String);
-    LongWithValue(LongWithValue);
-    ShortCluster(String);
-    Value(String);
+    DashDash,
+    Long(String),
+    LongWithValue(LongWithValue),
+    ShortCluster(String),
+    Value(String),
 }
 
 impl RawArgClass {
@@ -92,54 +92,54 @@ impl RawArgClass {
 }
 
 pub enum LongPrefixSplit {
-    Long(String);
-    Other(String);
+    Long(String),
+    Other(String),
 }
 
 pub enum ShortPrefixSplit {
-    ShortCluster(String);
-    Value(String);
+    ShortCluster(String),
+    Value(String),
 }
 
 pub enum LongEqSplit {
-    WithValue(LongWithValue);
-    Plain(String);
+    WithValue(LongWithValue),
+    Plain(String),
 }
 
 pub struct ClusterParts {
-    short: String;
-    rest: String;
+    short: String,
+    rest: String,
 }
 
 impl ClusterParts {
     fn new(short: String, rest: String) -> Self {
         ClusterParts {
-            short: short;
-            rest: rest;
+            short: short,
+            rest: rest,
         }
     }
 }
 
 pub struct Parser {
-    raw: i64;
+    raw: i64,
 }
 
 pub enum ClusterSplit {
-    End;
-    UnexpectedValue(String);
-    Short(ClusterParts);
+    End,
+    UnexpectedValue(String),
+    Short(ClusterParts),
 }
 
 impl Parser {
     pub fn from_env() -> Self {
         Parser {
-            raw: elevate_interop::from_env();
+            raw: elevate_interop::from_env(),
         }
     }
 
     pub fn from_raw(raw: String) -> Self {
         Parser {
-            raw: elevate_interop::from_raw(raw);
+            raw: elevate_interop::from_raw(raw),
         }
     }
 

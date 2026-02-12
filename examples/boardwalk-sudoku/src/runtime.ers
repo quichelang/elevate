@@ -4,8 +4,8 @@ use crate::gfx::Canvas;
 use crate::gamekit;
 
 pub enum RenderMode {
-    Neon;
-    Vga;
+    Neon,
+    Vga,
 }
 
 pub fn default_render_mode() -> RenderMode {
@@ -34,8 +34,8 @@ fn mode_is_vga(mode: RenderMode) -> bool {
 }
 
 pub struct Board {
-    cells: Vec<i64>;
-    fixed: Vec<bool>;
+    cells: Vec<i64>,
+    fixed: Vec<bool>,
 }
 
 impl Board {
@@ -44,8 +44,8 @@ impl Board {
         const cells = parse_cells(text);
         const fixed = build_fixed(cells);
         Board {
-            cells: cells;
-            fixed: fixed;
+            cells: cells,
+            fixed: fixed,
         }
     }
 
@@ -522,7 +522,7 @@ fn draw_debug_overlay(canvas: Canvas, mode: RenderMode, enabled: bool, fps: i64)
     if not enabled {
         return canvas;
     }
-    const text = format!("FPS {:>3}", fps);
+     const text = format!("FPS {:>3}", fps);
     Canvas::text_top_right(
         canvas,
         0,

@@ -1,77 +1,77 @@
 use crate::gfx::Canvas;
 
 pub struct Rect {
-    x: i64;
-    y: i64;
-    width: i64;
-    height: i64;
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
 }
 
 pub struct SceneLayout {
-    board_left: i64;
-    board_top: i64;
-    board_width: i64;
-    board_height: i64;
-    hud_left: i64;
-    hud_top: i64;
-    hud_width: i64;
-    footer_y: i64;
+    board_left: i64,
+    board_top: i64,
+    board_width: i64,
+    board_height: i64,
+    hud_left: i64,
+    hud_top: i64,
+    hud_width: i64,
+    footer_y: i64,
 }
 
 pub struct Sprite {
-    width: i64;
-    height: i64;
-    pixels: Vec<char>;
+    width: i64,
+    height: i64,
+    pixels: Vec<char>,
 }
 
 pub struct SpriteLayer {
-    z: i64;
-    x: i64;
-    y: i64;
-    sprite: Sprite;
+    z: i64,
+    x: i64,
+    y: i64,
+    sprite: Sprite,
 }
 
 pub struct TileDef {
-    key: String;
-    sprite_id: i64;
+    key: String,
+    sprite_id: i64,
 }
 
 pub struct TileAtlas {
-    tiles: Vec<TileDef>;
+    tiles: Vec<TileDef>,
 }
 
 pub struct AnimatedSprite {
-    frame_ids: Vec<i64>;
-    frame_durations_ms: Vec<i64>;
-    looped: bool;
+    frame_ids: Vec<i64>,
+    frame_durations_ms: Vec<i64>,
+    looped: bool,
 }
 
 pub fn make_rect(x: i64, y: i64, width: i64, height: i64) -> Rect {
     Rect {
-        x: x;
-        y: y;
-        width: width;
-        height: height;
+        x: x,
+        y: y,
+        width: width,
+        height: height,
     }
 }
 
 pub fn sprite_layer(z: i64, x: i64, y: i64, sprite: Sprite) -> SpriteLayer {
     SpriteLayer {
-        z: z;
-        x: x;
-        y: y;
-        sprite: sprite;
+        z: z,
+        x: x,
+        y: y,
+        sprite: sprite,
     }
 }
 
 pub fn tile_atlas_new() -> TileAtlas {
-    TileAtlas { tiles: [] }
+       TileAtlas { tiles: [] }
 }
 
 pub fn tile_atlas_insert(atlas: TileAtlas, key: String, sprite_id: i64) -> TileAtlas {
     atlas.tiles.push(TileDef {
-        key: key;
-        sprite_id: sprite_id;
+        key: key,
+        sprite_id: sprite_id,
     });
     atlas
 }
@@ -99,9 +99,9 @@ pub fn blit_tile_key(
 
 pub fn animated_sprite(frame_ids: Vec<i64>, frame_durations_ms: Vec<i64>, looped: bool) -> AnimatedSprite {
     AnimatedSprite {
-        frame_ids: frame_ids;
-        frame_durations_ms: frame_durations_ms;
-        looped: looped;
+        frame_ids: frame_ids,
+        frame_durations_ms: frame_durations_ms,
+        looped: looped,
     }
 }
 
@@ -136,9 +136,9 @@ pub fn sprite_from_rows(rows: Vec<String>) -> Sprite {
         height += 1;
     }
     Sprite {
-        width: width;
-        height: height;
-        pixels: pixels;
+        width: width,
+        height: height,
+        pixels: pixels,
     }
 }
 
@@ -153,14 +153,14 @@ pub fn render_sprite_layers(canvas: Canvas, layers: Vec<SpriteLayer>, vga: bool)
 
 pub fn scene_layout() -> SceneLayout {
     SceneLayout {
-        board_left: 13;
-        board_top: 12;
-        board_width: 37;
-        board_height: 19;
-        hud_left: 74;
-        hud_top: 13;
-        hud_width: 34;
-        footer_y: 38;
+        board_left: 13,
+        board_top: 12,
+        board_width: 37,
+        board_height: 19,
+        hud_left: 74,
+        hud_top: 13,
+        hud_width: 34,
+        footer_y: 38,
     }
 }
 
@@ -358,9 +358,9 @@ fn sprite_horizontal_trim(width: i64, ch: char) -> Sprite {
         pixels.push(ch);
     }
     Sprite {
-        width: width;
-        height: 1;
-        pixels: pixels;
+        width: width,
+        height: 1,
+        pixels: pixels,
     }
 }
 
@@ -718,7 +718,7 @@ fn draw_hud_panel(
     const tool_strip = draw_tools(keypad, layout.hud_left + 1, layout.hud_top + 20, vga);
 
     const debug_text = match debug_enabled {
-        true => format!("DEBUG ON  FPS {:>3}", fps);
+           true => format!("DEBUG ON  FPS {:>3}", fps);
         false => String::from("DEBUG OFF");
     };
     const status_panel = Canvas::fill_rect(

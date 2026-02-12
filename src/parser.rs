@@ -174,7 +174,11 @@ impl Parser {
             let field_name = self.expect_ident("Expected field name")?;
             self.expect(TokenKind::Colon, "Expected ':' after field name")?;
             let field_ty = self.parse_type()?;
-            self.expect(TokenKind::Semicolon, "Expected ';' after field declaration")?;
+            if !self.at(TokenKind::RBrace) {
+                self.expect(TokenKind::Comma, "Expected ',' after field declaration")?;
+            } else {
+                self.match_kind(TokenKind::Comma);
+            }
             fields.push(Field {
                 name: field_name,
                 ty: field_ty,
@@ -224,10 +228,14 @@ impl Parser {
                         "Expected ':' after enum variant field name",
                     )?;
                     let field_ty = self.parse_type()?;
-                    self.expect(
-                        TokenKind::Semicolon,
-                        "Expected ';' after enum variant field declaration",
-                    )?;
+                    if !self.at(TokenKind::RBrace) {
+                        self.expect(
+                            TokenKind::Comma,
+                            "Expected ',' after enum variant field declaration",
+                        )?;
+                    } else {
+                        self.match_kind(TokenKind::Comma);
+                    }
                     named.push(Field {
                         name: field_name,
                         ty: field_ty,
@@ -241,7 +249,9 @@ impl Parser {
             } else {
                 EnumVariantFields::Unit
             };
-            self.expect(TokenKind::Semicolon, "Expected ';' after enum variant")?;
+            if !self.at(TokenKind::RBrace) {
+                self.expect(TokenKind::Comma, "Expected ',' after enum variant")?;
+            }
             variants.push(EnumVariant {
                 name: variant_name,
                 fields,
@@ -549,9 +559,7 @@ impl Parser {
             };
             let should_rewrite_as_tail_if = self.at(TokenKind::RBrace)
                 && block_ends_with_tail_expr(&then_block)
-                && else_block
-                    .as_ref()
-                    .is_some_and(block_ends_with_tail_expr);
+                && else_block.as_ref().is_some_and(block_ends_with_tail_expr);
             if should_rewrite_as_tail_if {
                 let else_block = else_block.expect("tail-if rewrite requires else branch");
                 return Some(Stmt::TailExpr(Expr::Match {
@@ -860,21 +868,20 @@ impl Parser {
             self.expect(TokenKind::FatArrow, "Expected `=>` in match arm")?;
             let value = if self.at(TokenKind::LBrace) {
                 let body = self.parse_block()?;
-                Expr::Call {
-                    callee: Box::new(Expr::Closure {
-                        params: Vec::new(),
-                        return_type: None,
-                        body,
-                    }),
-                    args: Vec::new(),
-                }
+                Expr::Block(body)
             } else {
                 self.parse_expr()?
             };
-            self.expect(
-                TokenKind::Semicolon,
-                "Expected ';' after match arm expression",
-            )?;
+            let is_block_arm = matches!(value, Expr::Block(_));
+            if !is_block_arm {
+                self.expect(
+                    TokenKind::Semicolon,
+                    "Expected ';' after match arm expression",
+                )?;
+            } else {
+                // Optional: consume trailing `;` if present
+                self.match_kind(TokenKind::Semicolon);
+            }
             arms.push(MatchArm {
                 pattern,
                 guard,
@@ -1317,12 +1324,10 @@ impl Parser {
             let value = self.parse_expr()?;
             fields.push(StructLiteralField { name, value });
 
-            if self.match_kind(TokenKind::Comma) || self.match_kind(TokenKind::Semicolon) {
-                continue;
-            }
             if !self.at(TokenKind::RBrace) {
-                self.error_current("Expected ',' or ';' between struct literal fields");
-                return None;
+                self.expect(TokenKind::Comma, "Expected ',' after struct literal field")?;
+            } else {
+                self.match_kind(TokenKind::Comma);
             }
         }
         self.expect(TokenKind::RBrace, "Expected '}' after struct literal")?;
@@ -1859,8 +1864,8 @@ mod tests {
     fn parse_match_expression() {
         let source = r#"
             enum Maybe {
-                Some(i64);
-                None;
+                Some(i64),
+                None,
             }
 
             fn unwrap_or_zero(value: Maybe) -> i64 {
@@ -1987,7 +1992,7 @@ mod tests {
     #[test]
     fn parse_impl_methods() {
         let source = r#"
-            struct Point { x: i64; }
+            struct Point { x: i64, }
             impl Point {
                 pub fn get_x(p: Point) -> i64 {
                     return p.x;
@@ -2002,7 +2007,7 @@ mod tests {
     #[test]
     fn parse_impl_methods_with_self_param() {
         let source = r#"
-            struct Point { x: i64; }
+            struct Point { x: i64, }
             impl Point {
                 pub fn bump(self, n: i64) -> Point {
                     self.x += n;
@@ -2021,7 +2026,7 @@ mod tests {
             trait Printable {
                 fn render(self: Self) -> String;
             }
-            struct Point { x: i64; }
+            struct Point { x: i64, }
             impl Printable for Point {
                 pub fn render(self) -> String {
                     format!("{}", self.x)
@@ -2148,10 +2153,10 @@ mod tests {
                 value
             }
 
-            struct Point<T> { x: T; y: T; }
+            struct Point<T> { x: T, y: T, }
             impl<T> Point<T> {
                 fn new(x: T, y: T) -> Self {
-                    Point { x: x; y: y; }
+                    Point { x: x, y: y, }
                 }
             }
 
@@ -2323,7 +2328,7 @@ mod tests {
     #[test]
     fn parse_match_struct_patterns() {
         let source = r#"
-            struct Point { x: i64; y: i64; }
+            struct Point { x: i64, y: i64, }
             fn f(p: Point) -> i64 {
                 return match p {
                     Point { x, y: 0 } => x;
@@ -2477,8 +2482,8 @@ world"#;
     #[test]
     fn parse_generic_type_params_on_struct_enum_and_impl() {
         let source = r#"
-            struct Box<T> { value: T; }
-            enum Maybe<T> { Some(T); None; }
+            struct Box<T> { value: T, }
+            enum Maybe<T> { Some(T), None, }
             impl<T> Box<T> {
                 fn take(self) -> T { self.value }
             }
@@ -2511,8 +2516,8 @@ world"#;
     fn parse_enum_named_variant_payload_fields() {
         let source = r#"
             enum Message {
-                Move { x: i64; y: i64; };
-                Quit;
+                Move { x: i64, y: i64 },
+                Quit,
             }
         "#;
         let tokens = lex(source).expect("expected lex success");

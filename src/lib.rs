@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn compile_smoke_test() {
         let source = r#"
-            pub struct Point { x: i64; y: i64; }
+            pub struct Point { x: i64, y: i64, }
 
             pub fn id(v: i64) -> i64 {
                 return v;
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn compile_assignment_and_add_assign_statements() {
         let source = r#"
-            struct Counter { value: i64; }
+            struct Counter { value: i64, }
 
             fn tick(n: i64, counter: Counter) -> i64 {
                 n += 1;
@@ -629,7 +629,7 @@ mod tests {
     #[test]
     fn compile_auto_clones_reused_user_defined_types() {
         let source = r#"
-            pub struct Packet { id: i64; }
+            pub struct Packet { id: i64, }
 
             fn consume(packet: Packet) {
                 std::mem::drop(packet);
@@ -837,7 +837,7 @@ mod tests {
     #[test]
     fn compile_preserves_move_chain_rebinding_without_clone_in_loops() {
         let source = r#"
-            pub struct Canvas { id: i64; }
+            pub struct Canvas { id: i64, }
 
             impl Canvas {
                 fn put(self: Self, x: i64) -> Self {
@@ -935,8 +935,8 @@ mod tests {
     fn compile_supports_read_views_for_looped_struct_reads() {
         let source = r#"
             pub struct Game {
-                title: String;
-                rounds: Vec<String>;
+                title: String,
+                rounds: Vec<String>,
             }
 
             fn score(game: Game) -> usize {
@@ -960,7 +960,7 @@ mod tests {
     #[test]
     fn compile_auto_clones_reused_struct_field_call_argument() {
         let source = r#"
-            pub struct State { text: String; }
+            pub struct State { text: String, }
 
             fn consume(value: String) {
                 std::mem::drop(value);
@@ -989,7 +989,7 @@ mod tests {
     #[test]
     fn compile_auto_clones_reused_struct_field_owned_method_receiver() {
         let source = r#"
-            pub struct State { text: String; }
+            pub struct State { text: String, }
 
             fn demo(state: State) {
                 std::mem::drop(state.text.into_bytes());
@@ -1013,7 +1013,7 @@ mod tests {
     #[test]
     fn compile_avoids_clone_for_disjoint_struct_fields() {
         let source = r#"
-            pub struct Pair { left: String; right: String; }
+            pub struct Pair { left: String, right: String, }
 
             fn consume(value: String) {
                 std::mem::drop(value);
@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     fn compile_clones_field_when_whole_struct_is_used_later() {
         let source = r#"
-            pub struct Pair { left: String; right: String; }
+            pub struct Pair { left: String, right: String, }
 
             fn consume_text(value: String) {
                 std::mem::drop(value);
@@ -2038,12 +2038,12 @@ mod tests {
     fn compile_supports_generic_struct_and_enum_definitions() {
         let source = r#"
             struct Wrapper<T> {
-                value: T;
+                value: T,
             }
 
             enum Maybe<T> {
-                Some(T);
-                None;
+                Some(T),
+                None,
             }
 
             fn wrap(v: i64) -> Wrapper<i64> {
@@ -2068,7 +2068,7 @@ mod tests {
     fn compile_supports_generic_impl_block_methods() {
         let source = r#"
             struct Wrapper<T> {
-                value: T;
+                value: T,
             }
 
             impl<T> Wrapper<T> {
@@ -2101,7 +2101,7 @@ mod tests {
             }
 
             struct Wrapper<T> {
-                value: T;
+                value: T,
             }
 
             impl<T> Named for Wrapper<T> {
@@ -2208,7 +2208,7 @@ mod tests {
     #[test]
     fn compile_reports_generic_partial_eq_bound_violation_for_user_struct() {
         let source = r#"
-            struct User { id: i64; }
+            struct User { id: i64, }
 
             fn eq_user<T: PartialEq>(left: T, right: T) -> bool {
                 return left == right;
@@ -2230,7 +2230,7 @@ mod tests {
     #[test]
     fn compile_reports_generic_hash_bound_violation_for_user_struct() {
         let source = r#"
-            struct User { id: i64; }
+            struct User { id: i64, }
 
             fn keep<T: Hash>(value: T) -> T {
                 value
@@ -2248,7 +2248,7 @@ mod tests {
     #[test]
     fn compile_supports_structural_method_polymorphism_via_specialization() {
         let source = r#"
-            struct Label { text: String; }
+            struct Label { text: String, }
 
             impl Label {
                 fn draw_label(self: Self, prefix: String) -> String {
@@ -2274,7 +2274,7 @@ mod tests {
     #[test]
     fn compile_supports_structural_field_polymorphism_via_specialization() {
         let source = r#"
-            struct Entry { count: i64; }
+            struct Entry { count: i64, }
 
             fn read<T>(value: T) -> i64 {
                 return value.count;
@@ -2295,13 +2295,13 @@ mod tests {
     fn compile_supports_structural_specialization_for_generic_impl_methods() {
         let source = r#"
             struct Point<T> {
-                x: T;
-                y: T;
+                x: T,
+                y: T,
             }
 
             impl<T> Point<T> {
                 fn new(x: T, y: T) -> Point<T> {
-                    Point { x: x; y: y; }
+                    Point { x: x, y: y, }
                 }
 
                 fn label(self) -> String {
@@ -2326,13 +2326,13 @@ mod tests {
             use std::fmt::Display;
 
             struct Point<T> {
-                x: T;
-                y: T;
+                x: T,
+                y: T,
             }
 
             impl<T> Point<T> {
                 fn new(x: T, y: T) -> Point<T> {
-                    Point { x: x; y: y; }
+                    Point { x: x, y: y, }
                 }
 
                 fn label(self) -> String {
@@ -2365,13 +2365,13 @@ mod tests {
             use std::fmt::Display;
 
             struct Point<T> {
-                x: T;
-                y: T;
+                x: T,
+                y: T,
             }
 
             impl<T> Point<T> {
                 fn new(x: T, y: T) -> Point<T> {
-                    Point { x: x; y: y; }
+                    Point { x: x, y: y, }
                 }
 
                 fn label(self) -> String {
@@ -2405,8 +2405,8 @@ mod tests {
             struct Opaque {}
 
             struct Point<T> {
-                x: T;
-                y: T;
+                x: T,
+                y: T,
             }
 
             impl<T> Point<T> {
@@ -2416,7 +2416,7 @@ mod tests {
             }
 
             fn run(v: Opaque) -> String {
-                const p = Point { x: v; y: Opaque {} };
+                const p = Point { x: v, y: Opaque {} };
                 return p.label();
             }
         "#;
@@ -2433,8 +2433,8 @@ mod tests {
     #[test]
     fn compile_reports_missing_structural_member_at_call_site() {
         let source = r#"
-            struct Entry { count: i64; }
-            struct Empty { id: i64; }
+            struct Entry { count: i64, }
+            struct Empty { id: i64, }
 
             fn read<T>(value: T) -> i64 {
                 return value.count;
@@ -2460,7 +2460,7 @@ mod tests {
                 fn render(self: Self) -> String;
             }
 
-            struct Card { id: i64; }
+            struct Card { id: i64, }
 
             fn print_it<T: Renderable>(value: T) -> String {
                 value.render()
@@ -2489,7 +2489,7 @@ mod tests {
             trait Fancy: Renderable {
             }
 
-            struct Card { id: i64; }
+            struct Card { id: i64, }
 
             impl Fancy for Card {
             }
@@ -2665,8 +2665,8 @@ mod tests {
     fn compile_supports_match_on_enums() {
         let source = r#"
             enum Maybe {
-                Some(i64);
-                None;
+                Some(i64),
+                None,
             }
 
             fn unwrap_or_zero(value: Maybe) -> i64 {
@@ -2687,8 +2687,8 @@ mod tests {
     fn compile_supports_multi_payload_enum_variants() {
         let source = r#"
             enum PairOrNone {
-                Pair(i64, i64);
-                None;
+                Pair(i64, i64),
+                None,
             }
 
             fn make_pair(a: i64, b: i64) -> PairOrNone {
@@ -2713,12 +2713,12 @@ mod tests {
     fn compile_supports_named_payload_enum_variants() {
         let source = r#"
             enum Message {
-                Move { x: i64; y: i64; };
-                Quit;
+                Move { x: i64, y: i64 },
+                Quit,
             }
 
             fn make_move() -> Message {
-                Message::Move { x: 1; y: 2; }
+                Message::Move { x: 1, y: 2, }
             }
         "#;
 
@@ -2732,11 +2732,11 @@ mod tests {
     fn compile_reports_named_payload_enum_unknown_field() {
         let source = r#"
             enum Message {
-                Move { x: i64; y: i64; };
+                Move { x: i64, y: i64 },
             }
 
             fn make_move() -> Message {
-                Message::Move { x: 1; z: 2; }
+                Message::Move { x: 1, z: 2, }
             }
         "#;
 
@@ -2752,11 +2752,11 @@ mod tests {
     fn compile_reports_named_payload_enum_missing_field() {
         let source = r#"
             enum Message {
-                Move { x: i64; y: i64; };
+                Move { x: i64, y: i64 },
             }
 
             fn make_move() -> Message {
-                Message::Move { x: 1; }
+                Message::Move { x: 1, }
             }
         "#;
 
@@ -2768,7 +2768,7 @@ mod tests {
     fn compile_reports_multi_payload_enum_arity_mismatch() {
         let source = r#"
             enum Pair {
-                Two(i64, i64);
+                Two(i64, i64),
             }
 
             fn bad() -> Pair {
@@ -2823,7 +2823,7 @@ mod tests {
     #[test]
     fn compile_supports_match_struct_patterns() {
         let source = r#"
-            struct Point { x: i64; y: i64; }
+            struct Point { x: i64, y: i64, }
             fn classify(p: Point) -> i64 {
                 return match p {
                     Point { x, y: 0 } => x;
@@ -2840,7 +2840,7 @@ mod tests {
     #[test]
     fn compile_supports_match_struct_rest_patterns() {
         let source = r#"
-            struct Point { x: i64; y: i64; z: i64; }
+            struct Point { x: i64, y: i64, z: i64, }
             fn classify(p: Point) -> i64 {
                 return match p {
                     Point { x, .. } => x;
@@ -2856,7 +2856,7 @@ mod tests {
     #[test]
     fn compile_reports_match_struct_missing_fields_without_rest() {
         let source = r#"
-            struct Point { x: i64; y: i64; }
+            struct Point { x: i64, y: i64, }
             fn classify(p: Point) -> i64 {
                 return match p {
                     Point { x } => x;
@@ -2950,8 +2950,8 @@ mod tests {
     fn compile_reports_non_exhaustive_enum_match() {
         let source = r#"
             enum Maybe {
-                Some(i64);
-                None;
+                Some(i64),
+                None,
             }
 
             fn classify(v: Maybe) -> i64 {
@@ -2974,8 +2974,8 @@ mod tests {
     fn compile_reports_non_exhaustive_finite_tuple_match() {
         let source = r#"
             enum Switch {
-                Left;
-                Right;
+                Left,
+                Right,
             }
 
             fn classify() -> i64 {
@@ -3001,8 +3001,8 @@ mod tests {
     fn compile_accepts_exhaustive_finite_tuple_match() {
         let source = r#"
             enum Switch {
-                Left;
-                Right;
+                Left,
+                Right,
             }
 
             fn classify() -> i64 {
@@ -3047,8 +3047,8 @@ mod tests {
     fn compile_skips_finite_tuple_exhaustiveness_for_payload_enums() {
         let source = r#"
             enum Maybe {
-                Some(i64);
-                None;
+                Some(i64),
+                None,
             }
 
             fn classify() -> i64 {
@@ -3411,7 +3411,7 @@ mod tests {
     #[test]
     fn compile_supports_impl_methods() {
         let source = r#"
-            pub struct Point { x: i64; }
+            pub struct Point { x: i64, }
 
             impl Point {
                 pub fn get_x(p: Point) -> i64 {
@@ -3435,8 +3435,8 @@ mod tests {
     fn compile_supports_impl_methods_on_enums() {
         let source = r#"
             pub enum Status {
-                Ok;
-                Err(String);
+                Ok,
+                Err(String),
             }
 
             impl Status {
@@ -3463,7 +3463,7 @@ mod tests {
     #[test]
     fn compile_supports_impl_self_param_and_infers_mut_self() {
         let source = r#"
-            pub struct Point { x: i64; }
+            pub struct Point { x: i64, }
 
             impl Point {
                 pub fn bump(self, n: i64) -> Point {
@@ -3492,11 +3492,11 @@ mod tests {
     #[test]
     fn compile_supports_impl_self_return_alias() {
         let source = r#"
-            pub struct Point { x: i64; }
+            pub struct Point { x: i64, }
 
             impl Point {
                 pub fn new(x: i64) -> Self {
-                    Point { x: x; }
+                    Point { x: x, }
                 }
             }
 
@@ -3544,7 +3544,7 @@ mod tests {
             }
 
             pub struct User {
-                name: String;
+                name: String,
             }
 
             impl Greeter for User {
@@ -3567,7 +3567,7 @@ mod tests {
             use std::fmt::Display;
 
             pub struct Token {
-                value: i64;
+                value: i64,
             }
 
             rust {
@@ -3639,11 +3639,11 @@ mod tests {
     #[test]
     fn compile_supports_instance_method_call_syntax_for_impls() {
         let source = r#"
-            pub struct Counter { value: i64; }
+            pub struct Counter { value: i64, }
 
             impl Counter {
                 pub fn inc(self: Self) -> Counter {
-                    Counter { value: self.value + 1; }
+                    Counter { value: self.value + 1, }
                 }
 
                 pub fn get(self: Self) -> i64 {
@@ -3664,12 +3664,12 @@ mod tests {
     #[test]
     fn compile_supports_struct_literals() {
         let source = r#"
-            pub struct Pair { left: i64; right: i64; }
+            pub struct Pair { left: i64, right: i64, }
 
             fn make_pair(v: i64) -> Pair {
                 return Pair {
-                    left: v;
-                    right: v;
+                    left: v,
+                    right: v,
                 };
             }
         "#;
@@ -3886,7 +3886,7 @@ mod tests {
     fn compile_supports_custom_get_like_index_capability() {
         let source = r#"
             pub struct Lookup {
-                value: i64;
+                value: i64,
             }
 
             impl Lookup {
@@ -3912,12 +3912,12 @@ mod tests {
     fn compile_supports_custom_get_like_index_with_enum_key_without_clone() {
         let source = r#"
             pub enum Key {
-                A;
-                B;
+                A,
+                B,
             }
 
             pub struct Lookup {
-                value: i64;
+                value: i64,
             }
 
             impl Lookup {
@@ -3945,11 +3945,11 @@ mod tests {
     fn compile_supports_custom_get_like_index_with_struct_key() {
         let source = r#"
             pub struct Key {
-                id: i64;
+                id: i64,
             }
 
             pub struct Lookup {
-                value: i64;
+                value: i64,
             }
 
             impl Lookup {
@@ -3977,7 +3977,7 @@ mod tests {
     fn compile_custom_get_like_index_autoclones_reused_owned_key() {
         let source = r#"
             pub struct Lookup {
-                value: i64;
+                value: i64,
             }
 
             impl Lookup {
@@ -4004,7 +4004,7 @@ mod tests {
     fn compile_custom_get_like_index_reused_copy_key_does_not_clone() {
         let source = r#"
             pub struct Lookup {
-                value: i64;
+                value: i64,
             }
 
             impl Lookup {
@@ -4101,7 +4101,7 @@ mod tests {
     fn compile_supports_custom_direct_index_capability_with_struct_key() {
         let source = r#"
             pub struct Key {
-                id: i64;
+                id: i64,
             }
 
             pub struct Lookup {}
@@ -4218,8 +4218,8 @@ mod tests {
     fn compile_supports_advanced_match_patterns() {
         let source = r#"
             enum Maybe {
-                Some(i64);
-                None;
+                Some(i64),
+                None,
             }
 
             pub fn choose(a: i64, b: i64, m: Maybe) -> i64 {

@@ -5,33 +5,33 @@ use crate::gamekit;
 use crate::numeric;
 
 pub enum DisplayMode {
-    Terminal;
-    Window;
+    Terminal,
+    Window,
 }
 
 pub enum PlaceFromRackError {
-    InvalidRackSlot;
-    EmptyRackSlot;
-    CellUnavailable;
+    InvalidRackSlot,
+    EmptyRackSlot,
+    CellUnavailable,
 }
 
 pub enum PlaceFromRackResult {
-    Placed;
-    Rejected(PlaceFromRackError);
+    Placed,
+    Rejected(PlaceFromRackError),
 }
 
 pub enum SubmitTurnError {
-    NoPendingTiles;
-    NotSingleAxis;
-    NonContiguousSpan;
-    MissingCenterOnFirstMove;
-    NotConnectedToCommitted;
-    NoValidWordCreated;
+    NoPendingTiles,
+    NotSingleAxis,
+    NonContiguousSpan,
+    MissingCenterOnFirstMove,
+    NotConnectedToCommitted,
+    NoValidWordCreated,
 }
 
 pub enum SubmitTurnResult {
-    Accepted;
-    Rejected(SubmitTurnError);
+    Accepted,
+    Rejected(SubmitTurnError),
 }
 
 pub fn default_display_mode() -> DisplayMode {
@@ -60,16 +60,16 @@ fn display_mode_prefers_window(mode: DisplayMode) -> bool {
 }
 
 pub struct Board {
-    cells: Vec<i64>;
-    committed: Vec<bool>;
-    pending: Vec<bool>;
-    rack: Vec<i64>;
-    bag_count: u64;
-    score_total: u64;
-    last_turn_score: u64;
-    turn_number: u64;
-    first_move_done: bool;
-    rng_seed: u64;
+    cells: Vec<i64>,
+    committed: Vec<bool>,
+    pending: Vec<bool>,
+    rack: Vec<i64>,
+    bag_count: u64,
+    score_total: u64,
+    last_turn_score: u64,
+    turn_number: u64,
+    first_move_done: bool,
+    rng_seed: u64,
 }
 
 impl Board {
@@ -87,16 +87,16 @@ impl Board {
         const rack0 = empty_rack();
         const seed_u64 = numeric::to_nonneg_u64(seed);
         let board = Board {
-            cells: cells;
-            committed: committed;
-            pending: pending;
-            rack: rack0;
-            bag_count: numeric::to_nonneg_u64(98);
-            score_total: u64::MIN;
-            last_turn_score: u64::MIN;
-            turn_number: numeric::count_inc(u64::MIN);
-            first_move_done: false;
-            rng_seed: seed_u64;
+            cells: cells,
+            committed: committed,
+            pending: pending,
+            rack: rack0,
+            bag_count: numeric::to_nonneg_u64(98),
+            score_total: u64::MIN,
+            last_turn_score: u64::MIN,
+            turn_number: numeric::count_inc(u64::MIN),
+            first_move_done: false,
+            rng_seed: seed_u64,
         };
         Board::refill_rack(board)
     }

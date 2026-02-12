@@ -4,22 +4,22 @@ use crate::runtime::DisplayMode;
 use crate::host::KeyEvent;
 
 pub struct Game {
-    runtime: i64;
-    board: Board;
-    cursor_row: i64;
-    cursor_col: i64;
-    selected_slot: i64;
-    display_mode: DisplayMode;
-    message: String;
-    running: bool;
-    quit_armed: bool;
-    needs_redraw: bool;
-    debug_enabled: bool;
-    fps_window_start_ms: i64;
-    fps_frames: i64;
-    fps_display: i64;
-    timer_started_ms: i64;
-    elapsed_secs: i64;
+    runtime: i64,
+    board: Board,
+    cursor_row: i64,
+    cursor_col: i64,
+    selected_slot: i64,
+    display_mode: DisplayMode,
+    message: String,
+    running: bool,
+    quit_armed: bool,
+    needs_redraw: bool,
+    debug_enabled: bool,
+    fps_window_start_ms: i64,
+    fps_frames: i64,
+    fps_display: i64,
+    timer_started_ms: i64,
+    elapsed_secs: i64,
 }
 
 impl Game {
@@ -28,22 +28,22 @@ impl Game {
         const now_ms: i64 = runtime::runtime_now_millis();
         const board_state = Board::new(now_ms);
         Game {
-            runtime: runtime_handle;
-            board: board_state;
-            cursor_row: 7;
-            cursor_col: 7;
-            selected_slot: 0;
-            display_mode: runtime::default_display_mode();
-            message: String::from("Select rack tile 1-7, c place, 0 recall tile, n submit turn, r undo turn, h next tile");
-            running: true;
-            quit_armed: false;
-            needs_redraw: true;
-            debug_enabled: true;
-            fps_window_start_ms: now_ms;
-            fps_frames: 0;
-            fps_display: 0;
-            timer_started_ms: now_ms;
-            elapsed_secs: 0;
+            runtime: runtime_handle,
+            board: board_state,
+            cursor_row: 7,
+            cursor_col: 7,
+            selected_slot: 0,
+            display_mode: runtime::default_display_mode(),
+            message: String::from("Select rack tile 1-7, c place, 0 recall tile, n submit turn, r undo turn, h next tile"),
+            running: true,
+            quit_armed: false,
+            needs_redraw: true,
+            debug_enabled: true,
+            fps_window_start_ms: now_ms,
+            fps_frames: 0,
+            fps_display: 0,
+            timer_started_ms: now_ms,
+            elapsed_secs: 0,
         }
     }
 

@@ -2368,8 +2368,8 @@ mod tests {
             root.join("src/lib.ers"),
             r#"
                 pub struct Game {
-                    title: String;
-                    rounds: Vec<String>;
+                    title: String,
+                    rounds: Vec<String>,
                 }
 
                 fn consume(value: String) {
@@ -2423,7 +2423,7 @@ mod tests {
         fs::write(
             root.join("src/lib.ers"),
             r#"
-                struct User { id: i64; }
+                struct User { id: i64, }
 
                 fn eq_user<T: PartialEq>(left: T, right: T) -> bool {
                     return left == right;

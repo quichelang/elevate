@@ -143,7 +143,7 @@ fn cli_compiles_explicit_type_application_in_expression_paths() {
     let src = root.join("input.ers");
     fs::write(
         &src,
-        "use std::fmt::Display;\nstruct Point<T> { x: T; y: T; }\nimpl<T: Display> Point<T> { fn new(x: T, y: T) -> Self { Point { x: x; y: y; } } }\nfn run() { const p = Point<i64>::new(1, 2); std::mem::drop(p); }\n",
+        "use std::fmt::Display;\nstruct Point<T> { x: T, y: T, }\nimpl<T: Display> Point<T> { fn new(x: T, y: T) -> Self { Point { x: x, y: y, } } }\nfn run() { const p = Point<i64>::new(1, 2); std::mem::drop(p); }\n",
     )
     .expect("write source should succeed");
 

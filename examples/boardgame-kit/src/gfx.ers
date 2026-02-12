@@ -1,14 +1,14 @@
 pub struct Pixel {
-    ch: char;
-    fg: i64;
-    bg: i64;
-    bold: bool;
+    ch: char,
+    fg: i64,
+    bg: i64,
+    bold: bool,
 }
 
 pub struct Canvas {
-    width: i64;
-    height: i64;
-    cells: Vec<Pixel>;
+    width: i64,
+    height: i64,
+    cells: Vec<Pixel>,
 }
 
 impl Canvas {
@@ -22,9 +22,9 @@ impl Canvas {
             }
         }
         Canvas {
-            width: width;
-            height: height;
-            cells: cells;
+            width: width,
+            height: height,
+            cells: cells,
         }
     }
 
@@ -100,10 +100,10 @@ impl Canvas {
 
 fn make_pixel(ch: char, fg: i64, bg: i64, bold: bool) -> Pixel {
     Pixel {
-        ch: ch;
-        fg: fg;
-        bg: bg;
-        bold: bold;
+        ch: ch,
+        fg: fg,
+        bg: bg,
+        bold: bold,
     }
 }
 

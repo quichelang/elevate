@@ -9,24 +9,24 @@ pub trait GameHudProfile {
 }
 
 pub struct Game {
-    runtime: i64;
-    board: Board;
-    puzzle_index: i64;
-    player_name: String;
-    player_name_index: i64;
-    cursor_row: i64;
-    cursor_col: i64;
-    render_mode: RenderMode;
-    message: String;
-    running: bool;
-    quit_armed: bool;
-    needs_redraw: bool;
-    debug_enabled: bool;
-    fps_window_start_ms: i64;
-    fps_frames: i64;
-    fps_display: i64;
-    timer_started_ms: i64;
-    elapsed_secs: i64;
+    runtime: i64,
+    board: Board,
+    puzzle_index: i64,
+    player_name: String,
+    player_name_index: i64,
+    cursor_row: i64,
+    cursor_col: i64,
+    render_mode: RenderMode,
+    message: String,
+    running: bool,
+    quit_armed: bool,
+    needs_redraw: bool,
+    debug_enabled: bool,
+    fps_window_start_ms: i64,
+    fps_frames: i64,
+    fps_display: i64,
+    timer_started_ms: i64,
+    elapsed_secs: i64,
 }
 
 impl Game {
@@ -35,26 +35,26 @@ impl Game {
         const board_state = Board::from_puzzle(0);
         const now_ms: i64 = runtime::runtime_now_millis();
         Game {
-            runtime: runtime_handle;
-            board: board_state;
-            puzzle_index: 0;
-            player_name: Game::default_player_name();
-            player_name_index: 0;
-            cursor_row: 0;
-            cursor_col: 0;
-            render_mode: runtime::default_render_mode();
+            runtime: runtime_handle,
+            board: board_state,
+            puzzle_index: 0,
+            player_name: Game::default_player_name(),
+            player_name_index: 0,
+            cursor_row: 0,
+            cursor_col: 0,
+            render_mode: runtime::default_render_mode(),
             message: String::from(
                 "Use arrows/WASD, 1-9, 0 clear, c check, n next, r reset, p rename, v renderer, q quit"
-            );
-            running: true;
-            quit_armed: false;
-            needs_redraw: true;
-            debug_enabled: true;
-            fps_window_start_ms: now_ms;
-            fps_frames: 0;
-            fps_display: 0;
-            timer_started_ms: now_ms;
-            elapsed_secs: 0;
+            ),
+            running: true,
+            quit_armed: false,
+            needs_redraw: true,
+            debug_enabled: true,
+            fps_window_start_ms: now_ms,
+            fps_frames: 0,
+            fps_display: 0,
+            timer_started_ms: now_ms,
+            elapsed_secs: 0,
         }
     }
 

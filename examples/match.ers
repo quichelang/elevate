@@ -1,6 +1,6 @@
 enum MaybeI64 {
-  Some(i64);
-  None;
+  Some(i64),
+  None,
 }
 
 fn unwrap_or_zero(value: MaybeI64) -> i64 {
