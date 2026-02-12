@@ -775,6 +775,148 @@ fn expr_contains_return(expr: &TypedExpr) -> bool {
     }
 }
 
+/// Check whether a param is consumed (returned, used as tail, or passed as
+/// owned arg) in the lowered body.  If consumed, promoting to `&mut T` would
+/// break the generated Rust because you can't move out of a mutable reference.
+fn param_is_consumed_in_body(name: &str, stmts: &[RustStmt]) -> bool {
+    // Check the last statement for implicit tail return
+    if let Some(last) = stmts.last() {
+        if let RustStmt::Expr(expr) = last {
+            if expr_consumes_name(name, expr) {
+                return true;
+            }
+        }
+    }
+    stmts.iter().any(|s| stmt_consumes_name(name, s))
+}
+
+fn stmt_consumes_name(name: &str, stmt: &RustStmt) -> bool {
+    match stmt {
+        RustStmt::Return(Some(expr)) => expr_references_name_as_owned(name, expr),
+        RustStmt::Return(None) => false,
+        RustStmt::Assign {
+            target: RustAssignTarget::Path(target_name),
+            value,
+            ..
+        } => {
+            // `name = some_call(name)` — param is consumed on RHS
+            target_name == name && expr_references_name_as_owned(name, value)
+        }
+        RustStmt::Assign { value, .. } => expr_references_name_as_owned(name, value),
+        RustStmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body.iter().any(|s| stmt_consumes_name(name, s))
+                || else_body.as_ref().map_or(false, |body| {
+                    body.iter().any(|s| stmt_consumes_name(name, s))
+                })
+        }
+        RustStmt::While { body, .. } | RustStmt::For { body, .. } | RustStmt::Loop { body } => {
+            body.iter().any(|s| stmt_consumes_name(name, s))
+        }
+        RustStmt::Const(c) => expr_references_name_as_owned(name, &c.value),
+        RustStmt::DestructureConst { value, .. } => expr_references_name_as_owned(name, value),
+        RustStmt::Expr(expr) => {
+            // Method calls with the param as receiver are fine (e.g. name.push())
+            // Only flag if the param is consumed as an owned argument
+            match expr {
+                RustExpr::Call { callee, args, .. } => {
+                    // base.method(...) — receiver is fine, check args only
+                    let callee_consumes = match callee.as_ref() {
+                        RustExpr::Field { base, .. } => {
+                            if matches!(base.as_ref(), RustExpr::Path(p) if p.len() == 1 && p[0] == name)
+                            {
+                                false // receiver position, not consumed
+                            } else {
+                                expr_references_name_as_owned(name, callee)
+                            }
+                        }
+                        _ => expr_references_name_as_owned(name, callee),
+                    };
+                    callee_consumes
+                        || args
+                            .iter()
+                            .any(|arg| expr_references_name_as_owned(name, arg))
+                }
+                _ => false,
+            }
+        }
+        RustStmt::Break | RustStmt::Continue | RustStmt::Raw(_) => false,
+    }
+}
+
+/// Check if an expression references a name as an owned (non-borrowed) value.
+/// Borrowed references (&name, &mut name) are fine — they don't consume.
+fn expr_references_name_as_owned(name: &str, expr: &RustExpr) -> bool {
+    match expr {
+        RustExpr::Path(segments) => segments.len() == 1 && segments[0] == name,
+        // Borrowing is NOT consuming — skip inner
+        RustExpr::Borrow(_) | RustExpr::MutBorrow(_) => false,
+        RustExpr::Call { callee, args, .. } => {
+            expr_references_name_as_owned(name, callee)
+                || args.iter().any(|a| expr_references_name_as_owned(name, a))
+        }
+        RustExpr::Field { base, .. } => expr_references_name_as_owned(name, base),
+        RustExpr::Index { base, index } => {
+            expr_references_name_as_owned(name, base) || expr_references_name_as_owned(name, index)
+        }
+        RustExpr::Binary { left, right, .. } => {
+            expr_references_name_as_owned(name, left) || expr_references_name_as_owned(name, right)
+        }
+        RustExpr::Unary { expr: inner, .. }
+        | RustExpr::Cast { expr: inner, .. }
+        | RustExpr::Try(inner) => expr_references_name_as_owned(name, inner),
+        RustExpr::Tuple(items) | RustExpr::Array(items) => {
+            items.iter().any(|i| expr_references_name_as_owned(name, i))
+        }
+        RustExpr::Match { scrutinee, arms } => {
+            expr_references_name_as_owned(name, scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| expr_references_name_as_owned(name, &arm.value))
+        }
+        RustExpr::Block { body, tail } => {
+            param_is_consumed_in_body(name, body)
+                || tail
+                    .as_ref()
+                    .map_or(false, |t| expr_references_name_as_owned(name, t))
+        }
+        RustExpr::StructLiteral { fields, .. } => fields
+            .iter()
+            .any(|f| expr_references_name_as_owned(name, &f.value)),
+        RustExpr::MacroCall { args, .. } => {
+            args.iter().any(|a| expr_references_name_as_owned(name, a))
+        }
+        RustExpr::Range { start, end, .. } => {
+            start
+                .as_ref()
+                .map_or(false, |s| expr_references_name_as_owned(name, s))
+                || end
+                    .as_ref()
+                    .map_or(false, |e| expr_references_name_as_owned(name, e))
+        }
+        RustExpr::Closure { body, .. } => body.iter().any(|s| stmt_consumes_name(name, s)),
+        RustExpr::Int(_)
+        | RustExpr::Float(_)
+        | RustExpr::Bool(_)
+        | RustExpr::Char(_)
+        | RustExpr::String(_) => false,
+    }
+}
+
+/// Check if the tail expression directly IS the named param (implicit return).
+fn expr_consumes_name(name: &str, expr: &RustExpr) -> bool {
+    match expr {
+        RustExpr::Path(segments) => segments.len() == 1 && segments[0] == name,
+        RustExpr::Block {
+            tail: Some(tail), ..
+        } => expr_consumes_name(name, tail),
+        _ => false,
+    }
+}
+
 fn validate_expr_method_capabilities(
     expr: &TypedExpr,
     type_param_caps: &HashMap<String, EffectRow>,
@@ -1814,12 +1956,11 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         .map(|stmt| lower_stmt_with_context(stmt, &mut context, state))
         .collect();
 
-    // Detect which params are mutated in the body.
-    // NOTE: We register mut-arg indexes for call-site use but do NOT rewrite
-    // param types here.  Promoting T → &mut T requires a full ownership analysis
-    // to avoid breaking functions that return or consume the parameter.
+    // Detect which params are mutated and safe to promote to &mut T.
+    // A param is promotable when it is mutated AND not consumed (returned,
+    // passed as owned arg, or used as a tail expression).
     let mutated = crate::codegen::collect_mutated_paths_in_stmts(&lowered_body);
-    let params: Vec<RustParam> = def
+    let mut params: Vec<RustParam> = def
         .params
         .iter()
         .map(|param| RustParam {
@@ -1827,24 +1968,23 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
             ty: param.ty.clone(),
         })
         .collect();
-    let mut_arg_indexes: Vec<usize> = params
-        .iter()
-        .enumerate()
-        .filter_map(|(index, param)| {
-            if param.name == "self" {
-                return None;
-            }
-            let (head, _) = split_type_head_and_args(param.ty.trim());
-            if is_copy_primitive_type(head) {
-                return None;
-            }
-            if mutated.contains(&param.name) && !param.ty.trim_start().starts_with('&') {
-                Some(index)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let mut mut_arg_indexes = Vec::new();
+    for (index, param) in params.iter_mut().enumerate() {
+        if param.name == "self" {
+            continue;
+        }
+        let (head, _) = split_type_head_and_args(param.ty.trim());
+        if is_copy_primitive_type(head) {
+            continue;
+        }
+        if mutated.contains(&param.name)
+            && !param.ty.trim_start().starts_with('&')
+            && !param_is_consumed_in_body(&param.name, &lowered_body)
+        {
+            param.ty = format!("&mut {}", param.ty);
+            mut_arg_indexes.push(index);
+        }
+    }
     if !mut_arg_indexes.is_empty() {
         state
             .known_function_mut_args

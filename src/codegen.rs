@@ -155,7 +155,7 @@ fn emit_function(def: &RustFunction, out: &mut String) {
         .params
         .iter()
         .map(|p| {
-            if mutated.contains(&p.name) {
+            if mutated.contains(&p.name) && !p.ty.trim_start().starts_with("&mut") {
                 format!("mut {}: {}", p.name, p.ty)
             } else {
                 format!("{}: {}", p.name, p.ty)
@@ -197,7 +197,7 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
             .params
             .iter()
             .map(|p| {
-                if mutated.contains(&p.name) {
+                if mutated.contains(&p.name) && !p.ty.trim_start().starts_with("&mut") {
                     format!("mut {}: {}", p.name, p.ty)
                 } else {
                     format!("{}: {}", p.name, p.ty)

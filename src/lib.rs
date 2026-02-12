@@ -1612,7 +1612,7 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("fn demo(mut values: Vec<i64>, item: i64) -> usize")
+                .contains("fn demo(values: &mut Vec<i64>, item: i64) -> usize")
         );
         assert!(output.rust_code.contains("values.push(item);"));
         assert!(output.rust_code.contains("Vec::len(&values)"));
