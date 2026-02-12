@@ -10568,7 +10568,12 @@ fn collect_place_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<OwnershipPlac
     const LOOP_BODY_WEIGHT: usize = 3;
     match stmt {
         TypedStmt::Const(def) => collect_place_uses_in_expr(&def.value, uses),
-        TypedStmt::DestructureConst { value, .. } => collect_place_uses_in_expr(value, uses),
+        TypedStmt::DestructureConst { value, .. } => {
+            collect_place_uses_in_expr(value, uses);
+            if let Some(place) = place_for_expr(value) {
+                *uses.entry(place).or_insert(0) += 1;
+            }
+        }
         TypedStmt::Assign { target, value, .. } => {
             collect_place_uses_in_expr(value, uses);
             collect_place_uses_in_assign_target(target, uses);
