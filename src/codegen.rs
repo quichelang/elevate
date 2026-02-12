@@ -273,6 +273,8 @@ fn emit_expr(expr: &RustExpr) -> String {
                 format!("&mut {inner_text}")
             }
         }
+        RustExpr::BorrowCall(inner) => format!("{}.borrow()", emit_expr(inner)),
+        RustExpr::BorrowMutCall(inner) => format!("{}.borrow_mut()", emit_expr(inner)),
         RustExpr::Cast { expr, ty } => format!("({} as {})", emit_expr(expr), ty),
         RustExpr::Call { callee, args, .. } => {
             let args = args.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
@@ -1001,10 +1003,11 @@ fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::Ha
                 collect_mutated_paths_in_expr(end, out);
             }
         }
-        RustExpr::Try(inner) | RustExpr::Borrow(inner) | RustExpr::Cast { expr: inner, .. } => {
-            collect_mutated_paths_in_expr(inner, out)
-        }
-        RustExpr::MutBorrow(inner) => {
+        RustExpr::Try(inner)
+        | RustExpr::Borrow(inner)
+        | RustExpr::BorrowCall(inner)
+        | RustExpr::Cast { expr: inner, .. } => collect_mutated_paths_in_expr(inner, out),
+        RustExpr::MutBorrow(inner) | RustExpr::BorrowMutCall(inner) => {
             // &mut x requires x to be declared `let mut x`
             if let RustExpr::Path(segments) = inner.as_ref() {
                 if let Some(name) = segments.first() {

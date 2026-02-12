@@ -2,7 +2,7 @@
 
 Status: Draft v0.9  
 Owner: Language team  
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 ## How To Read This Document
 
@@ -174,7 +174,7 @@ For semantic changes:
 
 ## Informational (Implementation + Progress)
 
-### Current Implementation Status (As of 2026-02-11)
+### Current Implementation Status (As of 2026-02-12)
 
 Implemented:
 - Rust compiler project initialized.
@@ -221,6 +221,7 @@ Implemented:
 - Inline `rust { ... }` escape blocks (top-level and statement position) that pass raw Rust through without Elevate parsing.
 - Centralized interop policy registry for clone/borrow/shim behavior.
 - Auto-borrow coverage for selected associated Rust calls (String/Option/Result/Vec/HashMap/BTreeMap/HashSet/BTreeSet cases).
+- Borrow-trait-based parameter passing: qualifying collection types emit `.borrow()` call-site expressions via `std::borrow::Borrow` trait, with automatic `use std::borrow::Borrow` injection. `String` is excluded due to multiple-impl ambiguity. See [details](details/borrow-trait-parameter-passing.md).
 - Capability-driven method/index resolution now fronts standard container method/index behavior.
 - rustdex metadata is required for capability resolution; unsupported/unknown capability paths fail at Elevate level with diagnostics.
 - Method-call ownership lowering for known Rust receiver methods:

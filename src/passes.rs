@@ -853,7 +853,10 @@ fn expr_references_name_as_owned(name: &str, expr: &RustExpr) -> bool {
     match expr {
         RustExpr::Path(segments) => segments.len() == 1 && segments[0] == name,
         // Borrowing is NOT consuming — skip inner
-        RustExpr::Borrow(_) | RustExpr::MutBorrow(_) => false,
+        RustExpr::Borrow(_)
+        | RustExpr::MutBorrow(_)
+        | RustExpr::BorrowCall(_)
+        | RustExpr::BorrowMutCall(_) => false,
         RustExpr::Call { callee, args, .. } => {
             expr_references_name_as_owned(name, callee)
                 || args.iter().any(|a| expr_references_name_as_owned(name, a))
@@ -1369,6 +1372,23 @@ pub fn lower_to_rust_with_hints(
             items.push(RustItem::Function(lower_interop_shim(shim)));
         }
     }
+    if state.needs_borrow_trait_import {
+        items.insert(
+            0,
+            RustItem::Use(RustUse {
+                tree: RustUseTree::Path {
+                    segment: "std".to_string(),
+                    next: Box::new(RustUseTree::Path {
+                        segment: "borrow".to_string(),
+                        next: Box::new(RustUseTree::Group(vec![
+                            RustUseTree::Name("Borrow".to_string()),
+                            RustUseTree::Name("BorrowMut".to_string()),
+                        ])),
+                    }),
+                },
+            }),
+        );
+    }
     RustModule {
         items,
         ownership_notes: state.ownership_notes.clone(),
@@ -1503,6 +1523,7 @@ struct LoweringState {
     ownership_note_keys: BTreeSet<String>,
     registry: InteropPolicyRegistry,
     forced_clone_places: BTreeSet<String>,
+    needs_borrow_trait_import: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9188,7 +9209,12 @@ fn lower_expr_with_context(
                                 ExprPosition::CallArgBorrowed,
                                 state,
                             );
-                            RustExpr::MutBorrow(Box::new(lowered))
+                            if type_supports_borrow_trait(&arg.ty, "BorrowMut") {
+                                state.needs_borrow_trait_import = true;
+                                RustExpr::BorrowMutCall(Box::new(lowered))
+                            } else {
+                                RustExpr::MutBorrow(Box::new(lowered))
+                            }
                         } else if arg_modes.get(index) == Some(&CallArgMode::Borrowed) {
                             let lowered = lower_expr_with_context(
                                 arg,
@@ -9205,6 +9231,9 @@ fn lower_expr_with_context(
                                     args: Vec::new(),
                                     mutates_receiver: false,
                                 }
+                            } else if type_supports_borrow_trait(&arg.ty, "Borrow") {
+                                state.needs_borrow_trait_import = true;
+                                RustExpr::BorrowCall(Box::new(lowered))
                             } else {
                                 borrow_expr(lowered)
                             }
@@ -9881,6 +9910,36 @@ fn clone_expr(expr: RustExpr) -> RustExpr {
 
 fn borrow_expr(expr: RustExpr) -> RustExpr {
     RustExpr::Borrow(Box::new(expr))
+}
+
+/// Check whether a type (given as a type-string like `"Vec<i64>"` or `"String"`)
+/// implements the given trait (e.g. `"Borrow"` or `"BorrowMut"`) according to
+/// the rustdex standard-library index.
+///
+/// Returns `false` for references, copy primitives, unknown/generic types, or
+/// when rustdex is unavailable.
+fn type_supports_borrow_trait(ty: &str, trait_name: &str) -> bool {
+    let ty = ty.trim();
+    // Already a reference — no point wrapping in .borrow()
+    if ty.starts_with('&') {
+        return false;
+    }
+    // Extract the head type name before any generic args
+    let head = if let Some(idx) = ty.find('<') {
+        ty[..idx].trim()
+    } else {
+        ty
+    };
+    // Skip empty, wildcards, copy primitives, and String (String has multiple
+    // Borrow impls — Borrow<String> and Borrow<str> — causing E0283 ambiguity
+    // errors with methods using Borrow<Q> bounds like HashMap::get, str::contains)
+    if head.is_empty() || head == "_" || is_copy_primitive_type(head) || head == "String" {
+        return false;
+    }
+    // Use just the last segment for qualified paths (e.g. "std::vec::Vec" → "Vec")
+    let short_name = head.rsplit("::").next().unwrap_or(head);
+    // Query rustdex
+    rustdex_backend::type_implements(short_name, trait_name).unwrap_or(false)
 }
 
 fn lower_call_callee(

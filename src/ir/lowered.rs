@@ -193,6 +193,8 @@ pub enum RustExpr {
     Path(Vec<String>),
     Borrow(Box<RustExpr>),
     MutBorrow(Box<RustExpr>),
+    BorrowCall(Box<RustExpr>),
+    BorrowMutCall(Box<RustExpr>),
     Cast {
         expr: Box<RustExpr>,
         ty: String,

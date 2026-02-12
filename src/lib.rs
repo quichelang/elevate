@@ -1117,7 +1117,7 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("text.push_str(&suffix);"));
+        assert!(output.rust_code.contains("text.push_str(&suffix)"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1233,12 +1233,12 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("runtime_draw_scene(&cells, &fixed)")
+                .contains("runtime_draw_scene(cells.borrow(), fixed.borrow())")
         );
         assert!(
             output
                 .rust_code
-                .contains("return runtime_draw_scene(&cells, &fixed);")
+                .contains("return runtime_draw_scene(cells.borrow(), fixed.borrow());")
         );
         assert!(!output.rust_code.contains("cells.clone()"));
         assert!(!output.rust_code.contains("fixed.clone()"));
@@ -1260,7 +1260,7 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("has_values(&values)"));
+        assert!(output.rust_code.contains("has_values(values.borrow())"));
         assert!(output.rust_code.contains("consume(values)"));
         assert!(!output.rust_code.contains("consume(values.clone())"));
         assert_rust_code_compiles(&output.rust_code);
@@ -1339,7 +1339,7 @@ mod tests {
                 "#,
                 max_clone_calls: 0,
                 max_hot_clone_notes: 0,
-                required_snippets: &["runtime_draw_scene(&cells, &fixed)"],
+                required_snippets: &["runtime_draw_scene(cells.borrow(), fixed.borrow())"],
                 forbidden_snippets: &["cells.clone()", "fixed.clone()"],
             },
             Case {
@@ -1576,11 +1576,11 @@ mod tests {
 
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("String::len(&text)"));
-        assert!(output.rust_code.contains("Option::is_some(&v)"));
-        assert!(output.rust_code.contains("Result::is_ok(&r)"));
+        assert!(output.rust_code.contains("Option::is_some(v.borrow())"));
+        assert!(output.rust_code.contains("Result::is_ok(r.borrow())"));
         assert!(output.rust_code.contains("String::is_empty(&text)"));
-        assert!(output.rust_code.contains("Option::is_none(&v)"));
-        assert!(output.rust_code.contains("Result::is_err(&r)"));
+        assert!(output.rust_code.contains("Option::is_none(v.borrow())"));
+        assert!(output.rust_code.contains("Result::is_err(r.borrow())"));
         assert!(!output.rust_code.contains("text.clone()"));
         assert_rust_code_compiles(&output.rust_code);
     }
@@ -1595,8 +1595,8 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("Vec::len(&values)"));
-        assert!(output.rust_code.contains("Vec::is_empty(&values)"));
+        assert!(output.rust_code.contains("Vec::len(values.borrow())"));
+        assert!(output.rust_code.contains("Vec::is_empty(values.borrow())"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1616,7 +1616,7 @@ mod tests {
                 .contains("fn demo(values: &mut Vec<i64>, item: i64) -> usize")
         );
         assert!(output.rust_code.contains("values.push(item);"));
-        assert!(output.rust_code.contains("Vec::len(&values)"));
+        assert!(output.rust_code.contains("Vec::len(values.borrow())"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1637,7 +1637,7 @@ mod tests {
                 .contains("let mut values: Vec<i64> = vec![];")
         );
         assert!(output.rust_code.contains("values.push(1);"));
-        assert!(output.rust_code.contains("Vec::len(&values)"));
+        assert!(output.rust_code.contains("Vec::len(values.borrow())"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1711,13 +1711,17 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("HashMap::len(&h)"));
-        assert!(output.rust_code.contains("BTreeMap::is_empty(&b)"));
-        assert!(output.rust_code.contains("HashMap::contains_key(&h, &key)"));
+        assert!(output.rust_code.contains("HashMap::len(h.borrow())"));
+        assert!(output.rust_code.contains("BTreeMap::is_empty(b.borrow())"));
         assert!(
             output
                 .rust_code
-                .contains("BTreeMap::contains_key(&b, &key)")
+                .contains("HashMap::contains_key(h.borrow(), &key)")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("BTreeMap::contains_key(b.borrow(), &key)")
         );
         assert!(!output.rust_code.contains("key.clone()"));
         assert_rust_code_compiles(&output.rust_code);
@@ -1736,8 +1740,16 @@ mod tests {
         "#;
 
         let output = compile_source(source).expect("expected successful compile");
-        assert!(output.rust_code.contains("HashSet::contains(&hs, &key)"));
-        assert!(output.rust_code.contains("BTreeSet::contains(&bs, &key)"));
+        assert!(
+            output
+                .rust_code
+                .contains("HashSet::contains(hs.borrow(), &key)")
+        );
+        assert!(
+            output
+                .rust_code
+                .contains("BTreeSet::contains(bs.borrow(), &key)")
+        );
         assert!(!output.rust_code.contains("key.clone()"));
         assert_rust_code_compiles(&output.rust_code);
     }
