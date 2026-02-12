@@ -199,6 +199,7 @@ pub enum RustExpr {
     Call {
         callee: Box<RustExpr>,
         args: Vec<RustExpr>,
+        mutates_receiver: bool,
     },
     MacroCall {
         path: Vec<String>,

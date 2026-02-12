@@ -55,6 +55,7 @@ pub(crate) enum SemType {
 pub(crate) enum CapabilityReceiverMode {
     Owned,
     Borrowed,
+    MutBorrowed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -733,6 +734,47 @@ fn validate_stmt_method_capabilities(
     }
 }
 
+/// Recursively check whether a body contains at least one `Return` statement,
+/// including those nested inside `if`, `match`, `for`, `while`, `loop`, and
+/// block expressions. Used by the return-type checker to avoid false
+/// "must explicitly return" diagnostics when returns live inside match arms.
+fn body_contains_return(stmts: &[TypedStmt]) -> bool {
+    stmts.iter().any(|s| stmt_contains_return(s))
+}
+
+fn stmt_contains_return(stmt: &TypedStmt) -> bool {
+    match stmt {
+        TypedStmt::Return(_) => true,
+        TypedStmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            body_contains_return(then_body)
+                || else_body
+                    .as_ref()
+                    .map_or(false, |b| body_contains_return(b))
+        }
+        TypedStmt::While { body, .. } | TypedStmt::For { body, .. } | TypedStmt::Loop { body } => {
+            body_contains_return(body)
+        }
+        TypedStmt::Expr(expr) => expr_contains_return(expr),
+        _ => false,
+    }
+}
+
+fn expr_contains_return(expr: &TypedExpr) -> bool {
+    match &expr.kind {
+        TypedExprKind::Match { arms, .. } => {
+            arms.iter().any(|arm| expr_contains_return(&arm.value))
+        }
+        TypedExprKind::Block { body, tail } => {
+            body_contains_return(body) || tail.as_ref().map_or(false, |t| expr_contains_return(t))
+        }
+        _ => false,
+    }
+}
+
 fn validate_expr_method_capabilities(
     expr: &TypedExpr,
     type_param_caps: &HashMap<String, EffectRow>,
@@ -1339,6 +1381,7 @@ pub(crate) enum CallArgMode {
 struct MethodCallModes {
     receiver: CallArgMode,
     args: Vec<CallArgMode>,
+    mutates_receiver: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2953,6 +2996,7 @@ fn lower_item(
                     if final_return_ty != SemType::Unit
                         && inferred_returns.is_empty()
                         && !has_rust_block
+                        && !body_contains_return(&body)
                     {
                         diagnostics.push(Diagnostic::new(
                             format!(
@@ -3253,6 +3297,7 @@ fn lower_item(
                 if final_return_ty != SemType::Unit
                     && inferred_returns.is_empty()
                     && !has_rust_block
+                    && !body_contains_return(&body)
                 {
                     diagnostics.push(Diagnostic::new(
                         format!(
@@ -8933,9 +8978,11 @@ fn lower_expr_with_context(
             {
                 return rewritten;
             }
-            let (lowered_callee, arg_modes) = lower_call_callee(callee, args, context, state);
+            let (lowered_callee, arg_modes, receiver_mutates) =
+                lower_call_callee(callee, args, context, state);
             let lowered_call = RustExpr::Call {
                 callee: Box::new(lowered_callee),
+                mutates_receiver: receiver_mutates,
                 args: args
                     .iter()
                     .enumerate()
@@ -8954,6 +9001,7 @@ fn lower_expr_with_context(
                                         field: "as_ref".to_string(),
                                     }),
                                     args: Vec::new(),
+                                    mutates_receiver: false,
                                 }
                             } else {
                                 borrow_expr(lowered)
@@ -8971,6 +9019,7 @@ fn lower_expr_with_context(
                         field: "cloned".to_string(),
                     }),
                     args: Vec::new(),
+                    mutates_receiver: false,
                 }
             } else {
                 lowered_call
@@ -9082,6 +9131,7 @@ fn lower_expr_with_context(
                         RustExpr::Call {
                             callee: Box::new(RustExpr::Path(method_path)),
                             args: vec![lowered_base, lowered_key_arg],
+                            mutates_receiver: false,
                         }
                     } else {
                         let mut lowered = RustExpr::Index {
@@ -9097,6 +9147,7 @@ fn lower_expr_with_context(
                                     field: "to_vec".to_string(),
                                 }),
                                 args: Vec::new(),
+                                mutates_receiver: false,
                             };
                         }
                         lowered
@@ -9111,6 +9162,7 @@ fn lower_expr_with_context(
                         RustExpr::Call {
                             callee: Box::new(RustExpr::Path(method_path)),
                             args: vec![lowered_base, lowered_key_arg],
+                            mutates_receiver: false,
                         }
                     } else {
                         let option_finalize = if option_value_prefers_copied(&indexing.value_ty) {
@@ -9126,10 +9178,12 @@ fn lower_expr_with_context(
                                         field: "get".to_string(),
                                     }),
                                     args: vec![lowered_key_arg],
+                                    mutates_receiver: false,
                                 }),
                                 field: option_finalize.to_string(),
                             }),
                             args: Vec::new(),
+                            mutates_receiver: false,
                         }
                     }
                 }
@@ -9446,6 +9500,7 @@ fn lower_map_from_vec_associated_from_call(
             field: "into_iter".to_string(),
         }),
         args: Vec::new(),
+        mutates_receiver: false,
     };
     let mut from_iter_path = path.clone();
     if let Some(last) = from_iter_path.last_mut() {
@@ -9454,6 +9509,7 @@ fn lower_map_from_vec_associated_from_call(
     Some(RustExpr::Call {
         callee: Box::new(RustExpr::Path(from_iter_path)),
         args: vec![iter_arg],
+        mutates_receiver: false,
     })
 }
 
@@ -9519,6 +9575,7 @@ fn cast_integral_expr_for_coercion(expr: RustExpr, from_ty: &str, to_ty: &str) -
                 field: "saturating_abs".to_string(),
             }),
             args: Vec::new(),
+            mutates_receiver: false,
         };
         return cast_expr(abs_expr, to_ty.to_string());
     }
@@ -9616,6 +9673,7 @@ fn clone_expr(expr: RustExpr) -> RustExpr {
             field: "clone".to_string(),
         }),
         args: Vec::new(),
+        mutates_receiver: false,
     }
 }
 
@@ -9628,48 +9686,55 @@ fn lower_call_callee(
     args: &[TypedExpr],
     context: &mut LoweringContext,
     state: &mut LoweringState,
-) -> (RustExpr, Vec<CallArgMode>) {
+) -> (RustExpr, Vec<CallArgMode>, bool) {
     let arg_count = args.len();
     if let Some(shim) = resolve_interop_shim(callee, state) {
         state.used_shims.insert(shim.name.clone());
         return (
             RustExpr::Path(vec![shim.name.clone()]),
             interop_arg_modes(&shim, arg_count),
+            false,
         );
     }
     if let Some(modes) = resolve_method_call_modes(callee, args, context, state) {
         return (
             lower_method_callee(callee, modes.receiver, context, state),
             modes.args,
+            modes.mutates_receiver,
         );
     }
     if let Some(modes) = resolve_associated_call_modes(callee, args) {
         return (
             lower_expr_with_context(callee, context, ExprPosition::Value, state),
             modes,
+            false,
         );
     }
     if let Some(modes) = resolve_direct_borrow_arg_modes(callee, state, arg_count) {
         return (
             lower_expr_with_context(callee, context, ExprPosition::Value, state),
             modes,
+            false,
         );
     }
     if let Some(modes) = resolve_declared_borrow_arg_modes(callee, state, arg_count) {
         return (
             lower_expr_with_context(callee, context, ExprPosition::Value, state),
             modes,
+            false,
         );
     }
     if let Some(modes) = resolve_heuristic_path_call_arg_modes(callee, args, context, state) {
         return (
             lower_expr_with_context(callee, context, ExprPosition::Value, state),
             modes,
+            false,
         );
     }
     (
         lower_expr_with_context(callee, context, ExprPosition::Value, state),
         vec![CallArgMode::Owned; arg_count],
+        false,
     )
 }
 
@@ -9746,6 +9811,7 @@ fn resolve_method_call_modes(
             return Some(MethodCallModes {
                 receiver,
                 args: arg_modes,
+                mutates_receiver: false,
             });
         }
     }
@@ -9763,9 +9829,12 @@ fn resolve_method_call_modes(
         &Context::default(),
         &mut cap_diagnostics,
     ) {
+        let mutates = capability.receiver_mode == CapabilityReceiverMode::MutBorrowed;
         let receiver = match capability.receiver_mode {
             CapabilityReceiverMode::Owned => CallArgMode::Owned,
-            CapabilityReceiverMode::Borrowed => CallArgMode::Borrowed,
+            CapabilityReceiverMode::Borrowed | CapabilityReceiverMode::MutBorrowed => {
+                CallArgMode::Borrowed
+            }
         };
         let mut arg_modes = capability.arg_modes;
         if arg_modes.len() < args.len() {
@@ -9785,6 +9854,7 @@ fn resolve_method_call_modes(
         return Some(MethodCallModes {
             receiver,
             args: arg_modes,
+            mutates_receiver: mutates,
         });
     }
 
@@ -9803,6 +9873,7 @@ fn resolve_method_call_modes(
     Some(MethodCallModes {
         receiver,
         args: arg_modes,
+        mutates_receiver: false,
     })
 }
 
@@ -9832,7 +9903,9 @@ fn resolve_associated_call_modes(
     let mut modes = vec![CallArgMode::Owned; args.len()];
     modes[0] = match capability.receiver_mode {
         CapabilityReceiverMode::Owned => CallArgMode::Owned,
-        CapabilityReceiverMode::Borrowed => CallArgMode::Borrowed,
+        CapabilityReceiverMode::Borrowed | CapabilityReceiverMode::MutBorrowed => {
+            CallArgMode::Borrowed
+        }
     };
     for (index, mode) in capability.arg_modes.iter().enumerate() {
         if let Some(slot) = modes.get_mut(index + 1) {
@@ -10239,11 +10312,13 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
         InteropShimBody::DirectCall => vec![RustStmt::Return(Some(RustExpr::Call {
             callee: Box::new(RustExpr::Path(shim.target_path.clone())),
             args,
+            mutates_receiver: false,
         }))],
         InteropShimBody::StrStripPrefixKnown => {
             let strip_call = RustExpr::Call {
                 callee: Box::new(RustExpr::Path(shim.target_path.clone())),
                 args,
+                mutates_receiver: false,
             };
             let unwrap_call = RustExpr::Call {
                 callee: Box::new(RustExpr::Field {
@@ -10251,6 +10326,7 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
                     field: "unwrap".to_string(),
                 }),
                 args: Vec::new(),
+                mutates_receiver: false,
             };
             let to_string_call = RustExpr::Call {
                 callee: Box::new(RustExpr::Field {
@@ -10258,6 +10334,7 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
                     field: "to_string".to_string(),
                 }),
                 args: Vec::new(),
+                mutates_receiver: false,
             };
             vec![RustStmt::Return(Some(to_string_call))]
         }
@@ -10265,6 +10342,7 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
             let split_call = RustExpr::Call {
                 callee: Box::new(RustExpr::Path(shim.target_path.clone())),
                 args,
+                mutates_receiver: false,
             };
             let unwrap_call = RustExpr::Call {
                 callee: Box::new(RustExpr::Field {
@@ -10272,6 +10350,7 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
                     field: "unwrap".to_string(),
                 }),
                 args: Vec::new(),
+                mutates_receiver: false,
             };
             vec![
                 RustStmt::DestructureConst {
@@ -10289,6 +10368,7 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
                             field: "to_string".to_string(),
                         }),
                         args: Vec::new(),
+                        mutates_receiver: false,
                     },
                     RustExpr::Call {
                         callee: Box::new(RustExpr::Field {
@@ -10296,6 +10376,7 @@ fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
                             field: "to_string".to_string(),
                         }),
                         args: Vec::new(),
+                        mutates_receiver: false,
                     },
                 ]))),
             ]

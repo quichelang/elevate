@@ -266,7 +266,7 @@ fn emit_expr(expr: &RustExpr) -> String {
             }
         }
         RustExpr::Cast { expr, ty } => format!("({} as {})", emit_expr(expr), ty),
-        RustExpr::Call { callee, args } => {
+        RustExpr::Call { callee, args, .. } => {
             let args = args.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
             let callee_text = emit_expr(callee);
             let callee_text = if needs_parens_for_call(callee.as_ref()) {
@@ -430,7 +430,9 @@ fn emit_assign_target(target: &RustAssignTarget) -> String {
     match target {
         RustAssignTarget::Path(name) => name.clone(),
         RustAssignTarget::Field { base, field } => format!("{}.{}", emit_expr(base), field),
-        RustAssignTarget::Index { base, index } => format!("{}[{}]", emit_expr(base), emit_expr(index)),
+        RustAssignTarget::Index { base, index } => {
+            format!("{}[{}]", emit_expr(base), emit_expr(index))
+        }
         RustAssignTarget::Tuple(items) => {
             let inner = items
                 .iter()
@@ -917,12 +919,17 @@ fn collect_mutated_paths_in_target(
 
 fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::HashSet<String>) {
     match expr {
-        RustExpr::Call { callee, args } => {
-            if let RustExpr::Field { base, field } = callee.as_ref()
-                && method_mutates_receiver(field)
-                && let Some(name) = root_path_name(base)
-            {
-                out.insert(name.to_string());
+        RustExpr::Call {
+            callee,
+            args,
+            mutates_receiver,
+        } => {
+            if *mutates_receiver {
+                if let RustExpr::Field { base, .. } = callee.as_ref() {
+                    if let Some(name) = root_path_name(base) {
+                        out.insert(name.to_string());
+                    }
+                }
             }
             collect_mutated_paths_in_expr(callee, out);
             for arg in args {
@@ -994,10 +1001,6 @@ fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::Ha
         | RustExpr::String(_)
         | RustExpr::Path(_) => {}
     }
-}
-
-fn method_mutates_receiver(field: &str) -> bool {
-    matches!(field, "push" | "push_str")
 }
 
 fn emit_char_literal(value: char) -> String {

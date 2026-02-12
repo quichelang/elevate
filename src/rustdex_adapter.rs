@@ -103,9 +103,8 @@ pub(crate) fn trait_method_sig_to_override(
 /// Map rustdex `ReceiverMode` → Elevate `CapabilityReceiverMode`.
 fn convert_receiver(mode: &rustdex::ReceiverMode) -> CapabilityReceiverMode {
     match mode {
-        rustdex::ReceiverMode::Ref | rustdex::ReceiverMode::RefMut => {
-            CapabilityReceiverMode::Borrowed
-        }
+        rustdex::ReceiverMode::Ref => CapabilityReceiverMode::Borrowed,
+        rustdex::ReceiverMode::RefMut => CapabilityReceiverMode::MutBorrowed,
         rustdex::ReceiverMode::Owned | rustdex::ReceiverMode::None => CapabilityReceiverMode::Owned,
     }
 }
@@ -397,7 +396,7 @@ mod tests {
         );
         assert_eq!(
             convert_receiver(&rustdex::ReceiverMode::RefMut),
-            CapabilityReceiverMode::Borrowed
+            CapabilityReceiverMode::MutBorrowed
         );
         assert_eq!(
             convert_receiver(&rustdex::ReceiverMode::Owned),
