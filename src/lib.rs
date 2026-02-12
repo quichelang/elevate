@@ -3,6 +3,7 @@ pub mod codegen;
 pub mod crate_builder;
 pub mod data;
 pub mod diag;
+pub mod emit_elevate;
 pub mod ir;
 pub mod lexer;
 pub mod ownership_planner;
