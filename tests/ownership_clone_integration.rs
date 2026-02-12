@@ -34,9 +34,9 @@ fn integration_clone_regressions_cover_nested_and_convoluted_ownership_paths() {
         CloneCase {
             name: "deep nested struct field reused",
             source: r#"
-                pub struct Layer3 { word: String; }
-                pub struct Layer2 { inner: Layer3; }
-                pub struct Layer1 { inner: Layer2; }
+                pub struct Layer3 { word: String, }
+                pub struct Layer2 { inner: Layer3, }
+                pub struct Layer1 { inner: Layer2, }
 
                 fn consume_text(text: String) -> i64 {
                     std::mem::drop(text);
@@ -135,7 +135,7 @@ fn integration_clone_regressions_cover_nested_and_convoluted_ownership_paths() {
         CloneCase {
             name: "nested vec struct reused in helper chain",
             source: r#"
-                pub struct Cell { token: String; }
+                pub struct Cell { token: String, }
 
                 fn consume_cells(cells: Vec<Cell>) -> i64 {
                     std::mem::drop(cells);
@@ -161,8 +161,8 @@ fn integration_clone_regressions_cover_nested_and_convoluted_ownership_paths() {
         CloneCase {
             name: "deep path element in loop body reused after loop",
             source: r#"
-                pub struct Inner { values: Vec<String>; }
-                pub struct Outer { inner: Inner; }
+                pub struct Inner { values: Vec<String>, }
+                pub struct Outer { inner: Inner, }
 
                 fn consume_words(words: Vec<String>) -> i64 {
                     std::mem::drop(words);

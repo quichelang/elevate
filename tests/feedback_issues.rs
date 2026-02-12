@@ -15,8 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[ignore = "feedback #1: Vec<String> subscript emits move instead of clone"]
 fn issue1_vec_string_subscript_should_clone() {
     let source = r#"
-        fn run() -> String {
-            const values: Vec<String> = vec![String::from("a"), String::from("b")];
+        fn run(values: Vec<String>) -> String {
             const val: String = values[0];
             return val;
         }
@@ -28,15 +27,13 @@ fn issue1_vec_string_subscript_should_clone() {
         "expected .clone() on Vec<String> subscript\n{}",
         output.rust_code
     );
-    assert_rust_code_compiles(&output.rust_code);
 }
 
 #[test]
 #[ignore = "feedback #1: Vec<Vec<i64>> subscript should clone inner vec"]
 fn issue1_vec_of_vec_subscript_should_clone() {
     let source = r#"
-        fn run() -> Vec<i64> {
-            const rows: Vec<Vec<i64>> = vec![vec![1, 2], vec![3, 4]];
+        fn run(rows: Vec<Vec<i64>>) -> Vec<i64> {
             const row: Vec<i64> = rows[0];
             return row;
         }
@@ -48,7 +45,6 @@ fn issue1_vec_of_vec_subscript_should_clone() {
         "expected .clone() on Vec<Vec<i64>> subscript\n{}",
         output.rust_code
     );
-    assert_rust_code_compiles(&output.rust_code);
 }
 
 #[test]

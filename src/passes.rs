@@ -20,11 +20,11 @@ use crate::ir::lowered::{
 };
 use crate::ir::typed::{
     TypedAssignOp, TypedAssignTarget, TypedBinaryOp, TypedConst, TypedDestructurePattern,
-    TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl, TypedIndexKeyPassing,
-    TypedIndexMetadata, TypedIndexMode, TypedIndexSource, TypedItem, TypedMatchArm, TypedModule,
-    TypedParam, TypedPattern, TypedPatternField, TypedRustUse, TypedStatic, TypedStmt, TypedStruct,
-    TypedStructLiteralField, TypedTrait, TypedTraitMethod, TypedTypeParam, TypedUnaryOp,
-    TypedUseTree, TypedVariant, TypedVariantFields,
+    TypedEnum, TypedExpr, TypedExprKind, TypedField, TypedFunction, TypedImpl,
+    TypedIndexKeyPassing, TypedIndexMetadata, TypedIndexMode, TypedIndexSource, TypedItem,
+    TypedMatchArm, TypedModule, TypedParam, TypedPattern, TypedPatternField, TypedRustUse,
+    TypedStatic, TypedStmt, TypedStruct, TypedStructLiteralField, TypedTrait, TypedTraitMethod,
+    TypedTypeParam, TypedUnaryOp, TypedUseTree, TypedVariant, TypedVariantFields,
 };
 use crate::ownership_planner::{CloneDecision, ClonePlannerInput, decide_clone};
 use crate::rustdex_backend;
@@ -8319,7 +8319,8 @@ fn emit_constraint_partition_diagnostic(
     let mut uf = UnionFind::with_size(observed.len());
     for i in 0..observed.len() {
         for j in (i + 1)..observed.len() {
-            if is_compatible(&observed[i], &observed[j]) && is_compatible(&observed[j], &observed[i])
+            if is_compatible(&observed[i], &observed[j])
+                && is_compatible(&observed[j], &observed[i])
             {
                 uf.union(i, j);
                 let _ = graph.add_edge(nodes[i], nodes[j], "compatible");
@@ -9121,8 +9122,9 @@ fn lower_expr_with_context(
             let lowered_index_expr = match indexing.mode {
                 TypedIndexMode::DirectIndex => {
                     if indexing.source == TypedIndexSource::CustomMethod {
-                        let mut method_path =
-                            base_type_path.clone().unwrap_or_else(|| vec!["index".to_string()]);
+                        let mut method_path = base_type_path
+                            .clone()
+                            .unwrap_or_else(|| vec!["index".to_string()]);
                         method_path.push("index".to_string());
                         RustExpr::Call {
                             callee: Box::new(RustExpr::Path(method_path)),
@@ -9149,8 +9151,9 @@ fn lower_expr_with_context(
                 }
                 TypedIndexMode::GetLikeOption => {
                     if indexing.source == TypedIndexSource::CustomMethod {
-                        let mut method_path =
-                            base_type_path.clone().unwrap_or_else(|| vec!["get".to_string()]);
+                        let mut method_path = base_type_path
+                            .clone()
+                            .unwrap_or_else(|| vec!["get".to_string()]);
                         method_path.push("get".to_string());
                         RustExpr::Call {
                             callee: Box::new(RustExpr::Path(method_path)),
@@ -9190,7 +9193,21 @@ fn lower_expr_with_context(
                 context,
                 state,
             );
-            match decision {
+            // Rust's Index trait always returns &T — must clone if T is non-Copy.
+            // Range-index slices already produce owned Vec via .to_vec(), and
+            // custom method sources may return owned values, so both are excluded.
+            // ProjectionBase means this is an intermediate index (e.g., board[1] in
+            // board[1][2]) where the &T reference is fine for further access.
+            let force_clone_subscript = !matches!(indexing.mode, TypedIndexMode::GetLikeOption)
+                && indexing.source != TypedIndexSource::CustomMethod
+                && !matches!(index.kind, TypedExprKind::Range { .. })
+                && position != ExprPosition::ProjectionBase
+                && !option_value_prefers_copied(&expr.ty);
+            match if force_clone_subscript {
+                CloneDecision::Clone { is_hot: false }
+            } else {
+                decision
+            } {
                 CloneDecision::Clone { is_hot } => {
                     if !forced_clone && let Some(name) = place_name {
                         push_auto_clone_notes(state, context, &name, expr.ty.trim(), is_hot);
@@ -10436,9 +10453,7 @@ fn option_value_prefers_copied(ty: &str) -> bool {
         return true;
     }
     if let Some(items) = parse_tuple_items(ty) {
-        return items
-            .iter()
-            .all(|item| option_value_prefers_copied(item));
+        return items.iter().all(|item| option_value_prefers_copied(item));
     }
     let (head, args) = split_type_head_and_args(ty);
     if !args.is_empty() {
@@ -12701,12 +12716,18 @@ fn lower_assign_target(
     match target {
         TypedAssignTarget::Path(name) => RustAssignTarget::Path(name.clone()),
         TypedAssignTarget::Field { base, field } => RustAssignTarget::Field {
-            base: lower_expr_with_context(base, context, ExprPosition::Value, state),
+            base: lower_expr_with_context(base, context, ExprPosition::ProjectionBase, state),
             field: field.clone(),
         },
         TypedAssignTarget::Index { base, index } => RustAssignTarget::Index {
-            base: lower_expr_with_context(base, context, ExprPosition::Value, state),
-            index: lower_index_expr(index, &base.ty, ExprPosition::Value, context, state),
+            base: lower_expr_with_context(base, context, ExprPosition::ProjectionBase, state),
+            index: lower_index_expr(
+                index,
+                &base.ty,
+                ExprPosition::ProjectionBase,
+                context,
+                state,
+            ),
         },
         TypedAssignTarget::Tuple(items) => RustAssignTarget::Tuple(
             items
