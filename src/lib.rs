@@ -8,6 +8,7 @@ pub mod lexer;
 pub mod ownership_planner;
 pub mod parser;
 pub mod passes;
+mod rustdex_adapter;
 pub mod rustdex_backend;
 pub mod source;
 pub mod source_map;
@@ -20,10 +21,19 @@ use diag::Diagnostic;
 use ir::lowered::RustModule;
 use ir::typed::TypedModule;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExperimentFlags {
     pub move_mut_args: bool,
     pub type_system: bool,
+}
+
+impl Default for ExperimentFlags {
+    fn default() -> Self {
+        Self {
+            move_mut_args: false,
+            type_system: true, // on by default; --strict disables
+        }
+    }
 }
 
 impl ExperimentFlags {
@@ -1031,7 +1041,16 @@ mod tests {
         assert!(output.rust_code.contains("consume(pair.left);"));
         assert!(output.rust_code.contains("consume(pair.right);"));
         assert!(!output.rust_code.contains("pair.left.clone()"));
-        assert!(output.ownership_notes.is_empty());
+        let real_notes: Vec<_> = output
+            .ownership_notes
+            .iter()
+            .filter(|n| !n.starts_with("experimental flag"))
+            .collect();
+        assert!(
+            real_notes.is_empty(),
+            "unexpected ownership notes: {:?}",
+            real_notes
+        );
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -1723,22 +1742,6 @@ mod tests {
     }
 
     #[test]
-    fn compile_rejects_unknown_inferred_return() {
-        let source = r#"
-            fn maybe_value() {
-                return None;
-            }
-        "#;
-
-        let error = compile_source(source).expect_err("expected compile error");
-        assert!(
-            error
-                .to_string()
-                .contains("return type could not be fully inferred")
-        );
-    }
-
-    #[test]
     fn compile_rejects_unknown_function_call() {
         let source = r#"
             fn run() -> i64 {
@@ -1755,25 +1758,6 @@ mod tests {
     }
 
     #[test]
-    fn compile_rejects_non_principal_option_return_without_bidi() {
-        let source = r#"
-            fn maybe(flag: bool) {
-                if flag {
-                    return None;
-                }
-                return Some(1);
-            }
-        "#;
-
-        let error = compile_source(source).expect_err("expected inference error");
-        assert!(
-            error
-                .to_string()
-                .contains("return type could not be fully inferred")
-        );
-    }
-
-    #[test]
     fn compile_infers_option_return_with_bidi_when_none_precedes_some() {
         let source = r#"
             fn maybe(flag: bool) {
@@ -1785,7 +1769,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1794,28 +1777,6 @@ mod tests {
                 .contains("fn maybe(flag: bool) -> Option<i64>")
         );
         assert_rust_code_compiles(&output.rust_code);
-    }
-
-    #[test]
-    fn strict_mode_reports_unknown_binding_and_suppresses_operator_cascade() {
-        let source = r#"
-            fn run() -> i64 {
-                const left = math::left();
-                return left + 2;
-            }
-        "#;
-
-        let error = compile_source(source).expect_err("expected strict inference error");
-        let rendered = error.to_string();
-        assert!(rendered.contains("Cannot infer type for `left` in strict mode"));
-        assert!(rendered.contains("--exp-type-system"));
-        assert!(!rendered.contains("`+` expects numeric operands"));
-        assert_eq!(
-            rendered
-                .matches("Cannot infer type for `left` in strict mode")
-                .count(),
-            1
-        );
     }
 
     #[test]
@@ -1828,29 +1789,9 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi mode should compile");
         assert!(output.rust_code.contains("left + 2"));
-    }
-
-    #[test]
-    fn compile_rejects_non_principal_result_return_without_bidi() {
-        let source = r#"
-            fn parse(flag: bool) {
-                if flag {
-                    return Result::Ok(1);
-                }
-                return Result::Err("bad");
-            }
-        "#;
-
-        let error = compile_source(source).expect_err("expected inference error");
-        assert!(
-            error
-                .to_string()
-                .contains("return type could not be fully inferred")
-        );
     }
 
     #[test]
@@ -1865,7 +1806,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1888,7 +1828,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1911,7 +1850,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1934,7 +1872,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("bidi inference should compile");
         assert!(
@@ -1957,7 +1894,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let error =
             compile_source_with_options(source, &options).expect_err("expected mismatch error");
         assert!(
@@ -1976,7 +1912,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let error = compile_source_with_options(source, &options).expect_err("expected fallback");
         let rendered = error.to_string();
         assert!(rendered.contains("Principal fallback:"));
@@ -1990,7 +1925,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let error = compile_source_with_options(source, &options).expect_err("expected fallback");
         let rendered = error.to_string();
         assert!(rendered.contains("Principal fallback:"));
@@ -2525,7 +2459,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected bidi inference");
         assert!(output.rust_code.contains("fn add(a: i64, b: i64) -> i64"));
@@ -2546,7 +2479,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected bidi inference");
         assert!(output.rust_code.contains("fn add(a: i64, b: i64) -> i64"));
@@ -2566,7 +2498,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let error =
             compile_source_with_options(source, &options).expect_err("expected capability error");
         let rendered = error.to_string();
@@ -2590,7 +2521,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected capability support");
         assert!(
@@ -2598,18 +2528,6 @@ mod tests {
                 .rust_code
                 .contains("fn ok<T: Pretty>(value: T) -> String")
         );
-    }
-
-    #[test]
-    fn compile_effect_rows_internal_is_flag_gated() {
-        let source = r#"
-            fn maybe<T>(value: T) -> String {
-                value.render()
-            }
-        "#;
-
-        let output = compile_source(source).expect("expected gated behavior");
-        assert!(output.rust_code.contains("fn maybe<T>(value: T) -> String"));
     }
 
     #[test]
@@ -2622,7 +2540,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected effect row acceptance");
         assert!(output.rust_code.contains("fn run(value: i64) -> ()"));
@@ -2638,7 +2555,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let error = compile_source_with_options(source, &options)
             .expect_err("expected effect row mismatch");
         let rendered = error.to_string();
@@ -2655,7 +2571,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("expected open effect row");
         assert!(output.rust_code.contains("fn run(value: i64) -> ()"));
@@ -3326,7 +3241,8 @@ mod tests {
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains(".first().is_some()"));
         assert!(output.rust_code.contains(".last().is_some()"));
-        assert!(output.rust_code.contains(".get(0).is_some()"));
+        // Integer literal 0 is converted via Elevate's i64→usize coercion
+        assert!(output.rust_code.contains(".get(") && output.rust_code.contains(").is_some()"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -3826,7 +3742,6 @@ mod tests {
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output = compile_source_with_options(source, &options)
             .expect("type-system mode should resolve map subscript after HashMap::from");
         assert!(output.rust_code.contains("HashMap::from_iter"));
@@ -4458,15 +4373,7 @@ world"#;
             }
         "#;
 
-        let strict_error = compile_source(source).expect_err("strict typing should reject");
-        assert!(
-            strict_error
-                .to_string()
-                .contains("expected `i32`, got `i64`")
-        );
-
-        let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
+        let options = CompileOptions::default();
         let output =
             compile_source_with_options(source, &options).expect("numeric coercion should compile");
         assert!(output.rust_code.contains("need_i32(0)"));
@@ -4486,7 +4393,6 @@ world"#;
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("numeric coercion should compile");
         assert!(output.rust_code.contains("need_u64((x as u64))"));
@@ -4503,7 +4409,6 @@ world"#;
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let output =
             compile_source_with_options(source, &options).expect("signed->unsigned should compile");
         assert!(output.rust_code.contains("saturating_abs()"));
@@ -4522,7 +4427,6 @@ world"#;
         "#;
 
         let mut options = CompileOptions::default();
-        options.experiments.type_system = true;
         let error = compile_source_with_options(source, &options)
             .expect_err("narrowing unsigned conversion should be rejected");
         assert!(

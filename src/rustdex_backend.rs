@@ -8,6 +8,7 @@ use rustdex::{IndexBuilder, StdIndex};
 pub struct TraitMethodSignature {
     pub param_rust_types: Vec<String>,
     pub return_rust_type: String,
+    pub trait_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,21 +153,131 @@ fn direct_type_implements(type_name: &str, trait_name: &str) -> Result<bool, Rus
 
 fn direct_type_has_associated_method(type_name: &str, method: &str) -> Result<bool, RustdexError> {
     let index = direct_index()?;
-    let implemented = index.find_impls_for(type_name);
-    Ok(implemented
-        .iter()
-        .any(|imp| imp.methods.iter().any(|candidate| candidate == method)))
+    Ok(index.has_method(type_name, method))
 }
 
 fn direct_trait_method_signature(
     trait_name: &str,
     method_name: &str,
 ) -> Result<TraitMethodSignature, RustdexError> {
-    let _ = direct_index()?;
+    let index = direct_index()?;
+    // Search trait impls for this method
+    for imp in &index.impls {
+        if !imp.trait_name.is_empty()
+            && (imp.trait_name == trait_name || imp.trait_path.contains(trait_name))
+        {
+            for method in &imp.methods {
+                if method.name == method_name {
+                    // Build param list including receiver as first param.
+                    // Receiver uses "Self" which resolve_rustdex_trait_method_signature
+                    // maps to the actual impl target type.
+                    let mut param_rust_types = Vec::new();
+                    match method.receiver {
+                        rustdex::ReceiverMode::Ref => {
+                            param_rust_types.push("&Self".to_string());
+                        }
+                        rustdex::ReceiverMode::RefMut => {
+                            param_rust_types.push("&mut Self".to_string());
+                        }
+                        rustdex::ReceiverMode::Owned => {
+                            param_rust_types.push("Self".to_string());
+                        }
+                        rustdex::ReceiverMode::None => {}
+                    }
+                    for p in &method.params {
+                        param_rust_types.push(p.ty.clone());
+                    }
+                    if param_rust_types.is_empty() {
+                        continue;
+                    }
+
+                    // Qualify short return types using the trait's module path.
+                    // e.g. for trait_path "std::fmt::Display", qualify "Result"
+                    // as "std::fmt::Result".
+                    let return_type =
+                        qualify_type_with_trait_path(&method.return_type, &imp.trait_path);
+
+                    return Ok(TraitMethodSignature {
+                        param_rust_types,
+                        return_rust_type: return_type,
+                        trait_path: imp.trait_path.clone(),
+                    });
+                }
+            }
+        }
+    }
     Err(RustdexError::SignatureUnavailable {
         trait_name: trait_name.to_string(),
         method_name: method_name.to_string(),
     })
+}
+
+/// Qualify short type names using the trait's module path.
+/// For example, if `trait_path` is "std::fmt::Display" and `ty` is "Result",
+/// this returns "std::fmt::Result". Already-qualified types are left as-is.
+fn qualify_type_with_trait_path(ty: &str, trait_path: &str) -> String {
+    let trimmed = ty.trim();
+    // Already qualified or a primitive — leave as-is
+    if trimmed.contains("::") || trimmed == "()" || trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    // Extract module prefix from trait_path (e.g. "std::fmt" from "std::fmt::Display")
+    if let Some(module) = trait_path.rsplit_once("::").map(|(prefix, _)| prefix) {
+        format!("{module}::{trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Look up the full method signature from the rustdex index.
+/// Returns None if the index is unavailable or the method is not found.
+///
+/// Automatically follows Deref coercion chains:
+///   Vec<T> → [T], String → str, Box<T>/Arc<T>/Rc<T> → T
+pub fn lookup_method_signature(type_name: &str, method_name: &str) -> Option<rustdex::MethodSig> {
+    let index = direct_index().ok()?;
+
+    // Direct lookup
+    if let Some(sig) = index.method_signature(type_name, method_name) {
+        return Some(sig.clone());
+    }
+
+    // Deref coercion fallback: try the Deref target type
+    let deref_targets: &[&str] = match type_name {
+        "Vec" => &["[T]"],
+        "String" => &["str"],
+        "Box" | "Arc" | "Rc" => &["T"],
+        _ => &[],
+    };
+    for target in deref_targets {
+        if let Some(sig) = index.method_signature(target, method_name) {
+            return Some(sig.clone());
+        }
+    }
+
+    None
+}
+
+/// Look up a trait method's raw signature from the rustdex index.
+/// Returns the `MethodSig` plus the full trait path (e.g. `"core::fmt::Display"`).
+/// This exposes raw rustdex data for the adapter layer to convert.
+pub fn lookup_trait_method_sig(
+    trait_name: &str,
+    method_name: &str,
+) -> Option<(rustdex::MethodSig, String)> {
+    let index = direct_index().ok()?;
+    for imp in &index.impls {
+        if !imp.trait_name.is_empty()
+            && (imp.trait_name == trait_name || imp.trait_path.contains(trait_name))
+        {
+            for method in &imp.methods {
+                if method.name == method_name {
+                    return Some((method.clone(), imp.trait_path.clone()));
+                }
+            }
+        }
+    }
+    None
 }
 
 fn direct_index() -> Result<&'static StdIndex, RustdexError> {
@@ -175,14 +286,17 @@ fn direct_index() -> Result<&'static StdIndex, RustdexError> {
             if let Ok(index) = StdIndex::load_from_sysroot() {
                 return Ok(index);
             }
-            let builder = IndexBuilder::from_sysroot().map_err(|err| RustdexError::IndexUnavailable {
-                backend: "direct",
-                detail: format!("failed to initialize index builder from sysroot: {err}"),
-            })?;
-            let index = builder.build().map_err(|err| RustdexError::IndexUnavailable {
-                backend: "direct",
-                detail: format!("failed to build std index from sysroot: {err}"),
-            })?;
+            let builder =
+                IndexBuilder::from_sysroot().map_err(|err| RustdexError::IndexUnavailable {
+                    backend: "direct",
+                    detail: format!("failed to initialize index builder from sysroot: {err}"),
+                })?;
+            let index = builder
+                .build()
+                .map_err(|err| RustdexError::IndexUnavailable {
+                    backend: "direct",
+                    detail: format!("failed to build std index from sysroot: {err}"),
+                })?;
             let _ = index.save_to_sysroot();
             Ok(index)
         })
@@ -309,6 +423,7 @@ fn cli_trait_method_signature(
     Ok(TraitMethodSignature {
         param_rust_types,
         return_rust_type,
+        trait_path: String::new(), // CLI path doesn't have trait_path
     })
 }
 

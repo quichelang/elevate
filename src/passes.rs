@@ -35,7 +35,7 @@ use index_capability::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum SemType {
+pub(crate) enum SemType {
     Path {
         path: Vec<String>,
         args: Vec<SemType>,
@@ -52,17 +52,17 @@ enum SemType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CapabilityReceiverMode {
+pub(crate) enum CapabilityReceiverMode {
     Owned,
     Borrowed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MethodCapability {
-    receiver_mode: CapabilityReceiverMode,
-    arg_modes: Vec<CallArgMode>,
-    expected_args: Vec<SemType>,
-    return_ty: SemType,
+pub(crate) struct MethodCapability {
+    pub(crate) receiver_mode: CapabilityReceiverMode,
+    pub(crate) arg_modes: Vec<CallArgMode>,
+    pub(crate) expected_args: Vec<SemType>,
+    pub(crate) return_ty: SemType,
 }
 
 #[derive(Debug, Clone)]
@@ -83,11 +83,11 @@ struct ResolvedImplMethodSignature {
 }
 
 #[derive(Debug, Clone)]
-struct TraitMethodSignatureOverride {
-    param_sem_types: Vec<SemType>,
-    return_sem_type: SemType,
-    param_rust_types: Vec<String>,
-    return_rust_type: String,
+pub(crate) struct TraitMethodSignatureOverride {
+    pub(crate) param_sem_types: Vec<SemType>,
+    pub(crate) return_sem_type: SemType,
+    pub(crate) param_rust_types: Vec<String>,
+    pub(crate) return_rust_type: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -201,7 +201,7 @@ pub struct TypecheckOptions {
 }
 
 thread_local! {
-    static TYPE_SYSTEM_ENABLED: Cell<bool> = Cell::new(false);
+    static TYPE_SYSTEM_ENABLED: Cell<bool> = Cell::new(true);
     static STRICT_HOLE_REPORTED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static STRICT_HOLE_EMITTED: Cell<bool> = Cell::new(false);
     static CURRENT_DIAG_SPAN: Cell<Option<Span>> = Cell::new(None);
@@ -1330,7 +1330,7 @@ enum ExprPosition {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CallArgMode {
+pub(crate) enum CallArgMode {
     Owned,
     Borrowed,
 }
@@ -7376,288 +7376,43 @@ fn resolve_method_capability(
         return None;
     }
 
-    let capability = match type_name {
-        "String" => match method {
-            "len" => MethodCapability {
-                receiver_mode: CapabilityReceiverMode::Borrowed,
-                arg_modes: vec![],
-                expected_args: vec![],
-                return_ty: named_type("usize"),
-            },
-            "is_empty" | "contains" | "starts_with" | "ends_with" => MethodCapability {
-                receiver_mode: CapabilityReceiverMode::Borrowed,
-                arg_modes: if method == "is_empty" {
-                    vec![]
-                } else {
-                    vec![CallArgMode::Borrowed]
-                },
-                expected_args: if method == "is_empty" {
-                    vec![]
-                } else {
-                    vec![named_type("String")]
-                },
-                return_ty: named_type("bool"),
-            },
-            "strip_prefix" => MethodCapability {
-                receiver_mode: CapabilityReceiverMode::Borrowed,
-                arg_modes: vec![CallArgMode::Borrowed],
-                expected_args: vec![named_type("String")],
-                return_ty: option_type(named_type("String")),
-            },
-            "split_once" => MethodCapability {
-                receiver_mode: CapabilityReceiverMode::Borrowed,
-                arg_modes: vec![CallArgMode::Borrowed],
-                expected_args: vec![named_type("String")],
-                return_ty: option_type(SemType::Tuple(vec![
-                    named_type("String"),
-                    named_type("String"),
-                ])),
-            },
-            "push_str" => MethodCapability {
-                receiver_mode: CapabilityReceiverMode::Borrowed,
-                arg_modes: vec![CallArgMode::Borrowed],
-                expected_args: vec![named_type("String")],
-                return_ty: SemType::Unit,
-            },
-            "into_bytes" => MethodCapability {
-                receiver_mode: CapabilityReceiverMode::Owned,
-                arg_modes: vec![],
-                expected_args: vec![],
-                return_ty: SemType::Path {
-                    path: vec!["Vec".to_string()],
-                    args: vec![named_type("u8")],
-                },
-            },
-            "chars" => MethodCapability {
-                receiver_mode: CapabilityReceiverMode::Borrowed,
-                arg_modes: vec![],
-                expected_args: vec![],
-                return_ty: SemType::Iter(Box::new(named_type("char"))),
-            },
-            "to_string" => MethodCapability {
-                receiver_mode: CapabilityReceiverMode::Borrowed,
-                arg_modes: vec![],
-                expected_args: vec![],
-                return_ty: named_type("String"),
-            },
-            _ => return None,
-        },
-        "Vec" => {
-            let item_ty = generic_args.first().cloned().unwrap_or(SemType::Unknown);
-            match method {
-                "len" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: named_type("usize"),
-                },
-                "is_empty" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: named_type("bool"),
-                },
-                "contains" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![CallArgMode::Borrowed],
-                    expected_args: vec![item_ty.clone()],
-                    return_ty: named_type("bool"),
-                },
-                "push" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![CallArgMode::Owned],
-                    expected_args: vec![item_ty.clone()],
-                    return_ty: SemType::Unit,
-                },
-                "first" | "last" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: option_type(item_ty.clone()),
-                },
-                "get" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![CallArgMode::Owned],
-                    expected_args: vec![named_type("usize")],
-                    return_ty: option_type(item_ty),
-                },
-                "iter" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(
-                        generic_args.first().cloned().unwrap_or(SemType::Unknown),
-                    )),
-                },
-                "into_iter" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Owned,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(
-                        generic_args.first().cloned().unwrap_or(SemType::Unknown),
-                    )),
-                },
-                _ => return None,
-            }
+    // ── Dynamic resolution via rustdex ──────────────────────────────────
+    // Look up method signature from rustdoc JSON index.
+    if let Some(sig) = crate::rustdex_backend::lookup_method_signature(type_name, method) {
+        let mut capability =
+            crate::rustdex_adapter::method_sig_to_capability(&sig, type_name, generic_args);
+
+        // Override return type for iterator-producing methods (Elevate semantics)
+        capability.return_ty =
+            override_iterator_return_type(method, capability.return_ty, type_name, generic_args);
+
+        expect_method_arity(
+            type_name,
+            method,
+            actual_arity,
+            capability.expected_args.len(),
+            diagnostics,
+        );
+        return Some(capability);
+    }
+
+    // ── Heuristic fallback for methods not in rustdex ──────────────────
+    let capability = if method.starts_with("is_") || method.starts_with("has_") {
+        MethodCapability {
+            receiver_mode: CapabilityReceiverMode::Borrowed,
+            arg_modes: vec![CallArgMode::Borrowed; actual_arity],
+            expected_args: vec![SemType::Unknown; actual_arity],
+            return_ty: named_type("bool"),
         }
-        "Option" => {
-            let inner = generic_args.first().cloned().unwrap_or(SemType::Unknown);
-            match method {
-                "is_some" | "is_none" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: named_type("bool"),
-                },
-                "into_iter" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Owned,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(inner)),
-                },
-                "unwrap_or" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Owned,
-                    arg_modes: vec![CallArgMode::Owned],
-                    expected_args: vec![inner.clone()],
-                    return_ty: inner,
-                },
-                _ => return None,
-            }
+    } else if method_name_suggests_mutating(method) {
+        MethodCapability {
+            receiver_mode: CapabilityReceiverMode::Borrowed,
+            arg_modes: vec![CallArgMode::Owned; actual_arity],
+            expected_args: vec![SemType::Unknown; actual_arity],
+            return_ty: SemType::Unit,
         }
-        "Result" => {
-            let ok_ty = generic_args.first().cloned().unwrap_or(SemType::Unknown);
-            match method {
-                "is_ok" | "is_err" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: named_type("bool"),
-                },
-                "into_iter" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Owned,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(ok_ty.clone())),
-                },
-                "unwrap_or" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Owned,
-                    arg_modes: vec![CallArgMode::Owned],
-                    expected_args: vec![ok_ty.clone()],
-                    return_ty: ok_ty,
-                },
-                _ => return None,
-            }
-        }
-        "HashMap" | "BTreeMap" => {
-            let key_ty = generic_args.first().cloned().unwrap_or(SemType::Unknown);
-            let value_ty = generic_args.get(1).cloned().unwrap_or(SemType::Unknown);
-            match method {
-                "len" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: named_type("usize"),
-                },
-                "is_empty" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: named_type("bool"),
-                },
-                "contains_key" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![CallArgMode::Borrowed],
-                    expected_args: vec![key_ty.clone()],
-                    return_ty: named_type("bool"),
-                },
-                "get" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![CallArgMode::Borrowed],
-                    expected_args: vec![key_ty.clone()],
-                    return_ty: option_type(value_ty.clone()),
-                },
-                "keys" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(key_ty.clone())),
-                },
-                "values" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(value_ty.clone())),
-                },
-                "iter" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(SemType::Tuple(vec![key_ty, value_ty]))),
-                },
-                "into_iter" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Owned,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(SemType::Tuple(vec![key_ty, value_ty]))),
-                },
-                _ => return None,
-            }
-        }
-        "HashSet" | "BTreeSet" => {
-            let item_ty = generic_args.first().cloned().unwrap_or(SemType::Unknown);
-            match method {
-                "len" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: named_type("usize"),
-                },
-                "is_empty" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: named_type("bool"),
-                },
-                "contains" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![CallArgMode::Borrowed],
-                    expected_args: vec![item_ty.clone()],
-                    return_ty: named_type("bool"),
-                },
-                "iter" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(item_ty.clone())),
-                },
-                "into_iter" => MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Owned,
-                    arg_modes: vec![],
-                    expected_args: vec![],
-                    return_ty: SemType::Iter(Box::new(item_ty)),
-                },
-                _ => return None,
-            }
-        }
-        _ => {
-            if method.starts_with("is_") || method.starts_with("has_") {
-                MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![CallArgMode::Borrowed; actual_arity],
-                    expected_args: vec![SemType::Unknown; actual_arity],
-                    return_ty: named_type("bool"),
-                }
-            } else if method_name_suggests_mutating(method) {
-                MethodCapability {
-                    receiver_mode: CapabilityReceiverMode::Borrowed,
-                    arg_modes: vec![CallArgMode::Owned; actual_arity],
-                    expected_args: vec![SemType::Unknown; actual_arity],
-                    return_ty: SemType::Unit,
-                }
-            } else {
-                return None;
-            }
-        }
+    } else {
+        return None;
     };
 
     expect_method_arity(
@@ -7670,6 +7425,40 @@ fn resolve_method_capability(
     Some(capability)
 }
 
+/// Override the return type for well-known iterator-producing methods.
+///
+/// Elevate models iteration as `SemType::Iter(item)`, but rustdex may return
+/// a concrete iterator struct type. This function replaces those with
+/// the expected `Iter` semantic type.
+fn override_iterator_return_type(
+    method: &str,
+    default: SemType,
+    type_name: &str,
+    generic_args: &[SemType],
+) -> SemType {
+    if method == "iter" || method == "into_iter" {
+        let is_map = matches!(type_name, "HashMap" | "BTreeMap");
+        let item = if is_map && generic_args.len() >= 2 {
+            SemType::Tuple(generic_args.iter().take(2).cloned().collect())
+        } else {
+            generic_args.first().cloned().unwrap_or(SemType::Unknown)
+        };
+        SemType::Iter(Box::new(item))
+    } else if method == "keys" {
+        let key = generic_args.first().cloned().unwrap_or(SemType::Unknown);
+        SemType::Iter(Box::new(key))
+    } else if method == "values" {
+        let value = generic_args.get(1).cloned().unwrap_or(SemType::Unknown);
+        SemType::Iter(Box::new(value))
+    } else if method == "chars" {
+        SemType::Iter(Box::new(named_type("char")))
+    } else if method == "enumerate" {
+        let item = generic_args.first().cloned().unwrap_or(SemType::Unknown);
+        SemType::Iter(Box::new(SemType::Tuple(vec![named_type("usize"), item])))
+    } else {
+        default
+    }
+}
 fn expect_method_arity(
     type_name: &str,
     method: &str,
@@ -9982,6 +9771,17 @@ fn resolve_method_call_modes(
         if arg_modes.len() < args.len() {
             arg_modes.resize(args.len(), CallArgMode::Owned);
         }
+        // Rustdex generic params (e.g. `P: Pattern`) have Owned mode, but
+        // for read-only methods, String args should be borrowed since Rust
+        // deref-coerces &String → &str.
+        if call_name_suggests_read_only(field) {
+            for (index, arg) in args.iter().enumerate() {
+                if arg_modes.get(index) == Some(&CallArgMode::Owned) && type_is_string_like(&arg.ty)
+                {
+                    set_borrowed(&mut arg_modes, index);
+                }
+            }
+        }
         return Some(MethodCallModes {
             receiver,
             args: arg_modes,
@@ -10013,7 +9813,7 @@ fn resolve_associated_call_modes(
     let TypedExprKind::Path(path) = &callee.kind else {
         return None;
     };
-    if path.len() < 2 || args.is_empty() {
+    if path.len() != 2 || args.is_empty() {
         return None;
     }
     let method = path.last()?;
@@ -11016,16 +10816,7 @@ fn resolve_impl_method_signature(
         &imp.target_args,
         context,
         diagnostics,
-    )
-    .or_else(|| {
-        resolve_std_trait_method_signature(
-            trait_name,
-            &method.name,
-            &imp.target,
-            &imp.target_args,
-            context,
-        )
-    });
+    );
     let Some(signature_override) = signature_override else {
         return resolved;
     };
@@ -11072,89 +10863,76 @@ fn resolve_rustdex_trait_method_signature(
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<TraitMethodSignatureOverride> {
-    let signature = match rustdex_backend::trait_method_signature(trait_name, method_name) {
-        Ok(signature) => signature,
-        Err(rustdex_backend::RustdexError::SignatureUnavailable { .. }) => return None,
-        Err(err) => {
-            diagnostics.push(Diagnostic::new(
-                format!(
-                    "E_CAPABILITY_METADATA_MISSING: rustdex trait signature metadata unavailable for `{trait_name}::{method_name}` ({err:?})"
-                ),
-                default_diag_span(),
-            ));
-            return None;
+    // Look up the raw MethodSig + trait_path from rustdex
+    let (sig, trait_path) = match rustdex_backend::lookup_trait_method_sig(trait_name, method_name)
+    {
+        Some(pair) => pair,
+        None => {
+            // Fall back to the old trait_method_signature path for CLI backend
+            let signature = match rustdex_backend::trait_method_signature(trait_name, method_name) {
+                Ok(sig) => sig,
+                Err(rustdex_backend::RustdexError::SignatureUnavailable { .. }) => return None,
+                Err(err) => {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "E_CAPABILITY_METADATA_MISSING: rustdex trait signature metadata unavailable for `{trait_name}::{method_name}` ({err:?})"
+                        ),
+                        default_diag_span(),
+                    ));
+                    return None;
+                }
+            };
+            // CLI path still uses the old TraitMethodSignature struct — convert it
+            let impl_target_sem = sem_type_for_impl_target(impl_target, impl_target_args, context);
+            let impl_target_rust = rust_owned_type_string(&impl_target_sem);
+            let mut param_rust_types = signature.param_rust_types;
+            if param_rust_types.is_empty() {
+                return None;
+            }
+            for ty in &mut param_rust_types {
+                *ty = crate::rustdex_adapter::normalize_type_string(
+                    ty,
+                    &impl_target_rust,
+                    &signature.trait_path,
+                );
+            }
+            let param_sem_types = param_rust_types
+                .iter()
+                .map(|ty| crate::rustdex_adapter::parse_rustdoc_type_str(ty, &[], impl_target))
+                .collect::<Vec<_>>();
+            let mut return_rust_type = signature.return_rust_type;
+            if return_rust_type.is_empty() {
+                return None;
+            }
+            return_rust_type = crate::rustdex_adapter::normalize_type_string(
+                &return_rust_type,
+                &impl_target_rust,
+                &signature.trait_path,
+            );
+            let return_sem_type =
+                crate::rustdex_adapter::parse_rustdoc_type_str(&return_rust_type, &[], impl_target);
+            return Some(TraitMethodSignatureOverride {
+                param_sem_types,
+                return_sem_type,
+                param_rust_types,
+                return_rust_type,
+            });
         }
     };
-    let impl_target_sem = sem_type_for_impl_target(impl_target, impl_target_args, context);
-    let mut param_rust_types = signature.param_rust_types;
-    if param_rust_types.is_empty() {
-        return None;
-    }
-    let param_sem_types = param_rust_types
-        .iter()
-        .map(|ty| sem_type_from_rust_signature_type(ty, &impl_target_sem))
-        .collect::<Vec<_>>();
-    let return_rust_type = signature.return_rust_type;
-    if return_rust_type.is_empty() {
-        return None;
-    }
-    let return_sem_type = sem_type_from_rust_signature_type(&return_rust_type, &impl_target_sem);
-    Some(TraitMethodSignatureOverride {
-        param_sem_types,
-        return_sem_type,
-        param_rust_types: std::mem::take(&mut param_rust_types),
-        return_rust_type,
-    })
-}
 
-fn resolve_std_trait_method_signature(
-    trait_name: &str,
-    method_name: &str,
-    impl_target: &str,
-    impl_target_args: &[Type],
-    context: &Context,
-) -> Option<TraitMethodSignatureOverride> {
-    if method_name != "fmt" {
+    // Direct backend path — use the full adapter
+    let impl_target_sem = sem_type_for_impl_target(impl_target, impl_target_args, context);
+    let ctx = crate::rustdex_adapter::TraitMethodContext {
+        trait_path: &trait_path,
+        impl_target,
+        impl_target_sem: &impl_target_sem,
+    };
+    let result = crate::rustdex_adapter::trait_method_sig_to_override(&sig, &ctx);
+
+    if result.param_rust_types.is_empty() {
         return None;
     }
-    if !matches!(
-        trait_name,
-        "Display"
-            | "Debug"
-            | "Binary"
-            | "Octal"
-            | "LowerHex"
-            | "UpperHex"
-            | "LowerExp"
-            | "UpperExp"
-            | "Pointer"
-    ) {
-        return None;
-    }
-    let target_sem = sem_type_for_impl_target(impl_target, impl_target_args, context);
-    let target_rust = rust_owned_type_string(&target_sem);
-    Some(TraitMethodSignatureOverride {
-        param_sem_types: vec![
-            target_sem,
-            SemType::Path {
-                path: vec![
-                    "std".to_string(),
-                    "fmt".to_string(),
-                    "Formatter".to_string(),
-                ],
-                args: Vec::new(),
-            },
-        ],
-        return_sem_type: SemType::Path {
-            path: vec!["std".to_string(), "fmt".to_string(), "Result".to_string()],
-            args: Vec::new(),
-        },
-        param_rust_types: vec![
-            format!("&{target_rust}"),
-            "&mut std::fmt::Formatter<'_>".to_string(),
-        ],
-        return_rust_type: "std::fmt::Result".to_string(),
-    })
+    Some(result)
 }
 
 fn sem_type_for_impl_target(
@@ -11171,43 +10949,6 @@ fn sem_type_for_impl_target(
             .iter()
             .map(|arg| type_from_ast_in_context(arg, context))
             .collect(),
-    }
-}
-
-fn sem_type_from_rust_signature_type(ty: &str, impl_target: &SemType) -> SemType {
-    let mut inner = ty.trim();
-    if inner == "self" {
-        return impl_target.clone();
-    }
-    while let Some(stripped) = inner.strip_prefix('&') {
-        inner = stripped.trim_start();
-        if let Some(stripped_mut) = inner.strip_prefix("mut ") {
-            inner = stripped_mut.trim_start();
-        }
-    }
-    if let Some(stripped_mut) = inner.strip_prefix("mut ") {
-        inner = stripped_mut.trim_start();
-    }
-    inner = inner.trim_matches(|ch| ch == '(' || ch == ')');
-    if inner == "Self" {
-        return impl_target.clone();
-    }
-    if inner == "_" {
-        return SemType::Unknown;
-    }
-    if inner == "()" {
-        return SemType::Unit;
-    }
-    let without_generics = inner.split('<').next().unwrap_or(inner).trim();
-    if without_generics.is_empty() {
-        return SemType::Unknown;
-    }
-    SemType::Path {
-        path: without_generics
-            .split("::")
-            .map(|segment| segment.to_string())
-            .collect(),
-        args: Vec::new(),
     }
 }
 
@@ -11341,7 +11082,7 @@ fn type_to_string(ty: &SemType) -> String {
     }
 }
 
-fn rust_owned_type_string(ty: &SemType) -> String {
+pub(crate) fn rust_owned_type_string(ty: &SemType) -> String {
     rust_type_string(ty, RustTypeRenderMode::Owned)
 }
 
@@ -12122,14 +11863,14 @@ fn type_specificity_score(ty: &SemType) -> usize {
     }
 }
 
-fn named_type(name: &str) -> SemType {
+pub(crate) fn named_type(name: &str) -> SemType {
     SemType::Path {
         path: vec![name.to_string()],
         args: Vec::new(),
     }
 }
 
-fn option_type(inner: SemType) -> SemType {
+pub(crate) fn option_type(inner: SemType) -> SemType {
     SemType::Path {
         path: vec!["Option".to_string()],
         args: vec![inner],

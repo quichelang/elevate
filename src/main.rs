@@ -953,7 +953,7 @@ fn usage() {
     eprintln!("  elevate init <crate-root> [cargo init flags]");
     eprintln!("experiment flags:");
     eprintln!("  --exp-move-mut-args");
-    eprintln!("  --exp-type-system (unified OCaml-style inference/type-system preview)");
+    eprintln!("  --strict (disable type-system; raw ownership-only mode)");
     eprintln!("  --warn-missing-types");
     eprintln!("  --fail-on-hot-clone");
     eprintln!("  --allow-hot-clone-place <place>");
@@ -1065,8 +1065,8 @@ fn apply_experiment_flag(flag: &str, experiments: &mut ExperimentFlags) -> bool 
             experiments.move_mut_args = true;
             true
         }
-        "--exp-type-system" => {
-            experiments.type_system = true;
+        "--strict" => {
+            experiments.type_system = false;
             true
         }
         _ => false,

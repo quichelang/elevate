@@ -1,7 +1,7 @@
 [package]
 name = "elevate"
-version = "0.8.5"
+version = "0.8.7"
 edition = "2024"
 
 [dependencies]
-rustdex = { git = "https://github.com/quichelang/rustdex.git", rev = "6bac9c653709849cb7aa833140ab866ced3d71e3" }
+rustdex = { git = "https://github.com/quichelang/rustdex.git", rev = "9e35693" }

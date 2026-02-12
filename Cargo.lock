@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "elevate"
-version = "0.8.5"
+version = "0.8.7"
 dependencies = [
  "rustdex",
 ]
@@ -51,7 +51,7 @@ dependencies = [
 [[package]]
 name = "rustdex"
 version = "0.1.0"
-source = "git+https://github.com/quichelang/rustdex.git?rev=6bac9c653709849cb7aa833140ab866ced3d71e3#6bac9c653709849cb7aa833140ab866ced3d71e3"
+source = "git+https://github.com/quichelang/rustdex.git?rev=9e35693#9e35693065a221f6c706ade7db006e8462854122"
 dependencies = [
  "bincode",
  "rustdoc-types",
