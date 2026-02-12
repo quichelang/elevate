@@ -1210,6 +1210,18 @@ impl OwnershipPlan {
         }
     }
 
+    fn from_stmts_with_parent(stmts: &[TypedStmt], parent: &OwnershipPlan) -> Self {
+        let mut uses = collect_place_uses_in_stmts(stmts);
+        for (place, &count) in &parent.remaining_place_uses {
+            if count > 0 {
+                *uses.entry(place.clone()).or_insert(0) += count;
+            }
+        }
+        Self {
+            remaining_place_uses: uses,
+        }
+    }
+
     fn remaining_for_place(&self, place: &OwnershipPlace) -> usize {
         self.remaining_place_uses.get(place).copied().unwrap_or(0)
     }
@@ -9402,7 +9414,10 @@ fn lower_expr_with_context(
             body,
         } => {
             let mut closure_context = LoweringContext {
-                ownership_plan: OwnershipPlan::from_stmts(body),
+                ownership_plan: OwnershipPlan::from_stmts_with_parent(
+                    body,
+                    &context.ownership_plan,
+                ),
                 scope_name: format!("{}::<closure>", context.scope_name),
                 loop_depth: context.loop_depth,
                 ..LoweringContext::default()
@@ -10688,7 +10703,11 @@ fn collect_place_uses_in_expr(expr: &TypedExpr, uses: &mut HashMap<OwnershipPlac
                 collect_place_uses_in_expr(tail, uses);
             }
         }
-        TypedExprKind::Closure { .. } => {}
+        TypedExprKind::Closure { body, .. } => {
+            for stmt in body {
+                collect_place_uses_in_stmt(stmt, uses);
+            }
+        }
         TypedExprKind::Range { start, end, .. } => {
             if let Some(start) = start {
                 collect_place_uses_in_expr(start, uses);
