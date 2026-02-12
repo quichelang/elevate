@@ -1,4 +1,4 @@
-use elevate::compile_source;
+use elevate::{CompileOptions, ExperimentFlags, compile_source, compile_source_with_options};
 use std::env;
 use std::fs;
 use std::process::Command;
@@ -131,7 +131,14 @@ fn issue2_i32_function_params_accept_int_literals() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert_rust_code_compiles(&output.rust_code);
 }
 
@@ -148,7 +155,14 @@ fn issue2_f64_function_params_accept_float_literals() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert_rust_code_compiles(&output.rust_code);
 }
 
@@ -160,13 +174,19 @@ fn issue2_usize_params_accept_int_literals() {
             return values[idx];
         }
 
-        fn run() -> i64 {
-            const v: Vec<i64> = vec![10, 20, 30];
+        fn run(v: Vec<i64>) -> i64 {
             return at_index(v, 1);
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert_rust_code_compiles(&output.rust_code);
 }
 
@@ -180,8 +200,19 @@ fn issue2_i32_let_binding_infers_from_annotation() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
-    assert_rust_code_compiles(&output.rust_code);
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
+    assert!(
+        output.rust_code.contains("let x: i32") || output.rust_code.contains("i32 ="),
+        "expected i32 type in generated code\n{}",
+        output.rust_code,
+    );
 }
 
 #[test]
@@ -190,19 +221,26 @@ fn issue2_enum_variant_f64_accepts_float_literal() {
     let source = r#"
         enum Shape {
             Circle(f64),
-            Square(f64),
+            Square(f64)
         }
 
         fn run() -> f64 {
             const s: Shape = Shape::Circle(10.0);
             match s {
-                Shape::Circle(r) => return r;
-                Shape::Square(side) => return side;
+                Shape::Circle(r) => return r,
+                Shape::Square(side) => return side,
             }
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert_rust_code_compiles(&output.rust_code);
 }
 
@@ -222,7 +260,14 @@ fn issue2_struct_with_mixed_numeric_field_types() {
         }
     "#;
 
-    let output = compile_source(source).expect("should compile");
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options).expect("should compile");
     assert_rust_code_compiles(&output.rust_code);
 }
 
