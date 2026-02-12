@@ -1356,6 +1356,7 @@ struct LoweringState {
     imported_rust_paths: HashMap<String, Vec<Vec<String>>>,
     known_functions: BTreeSet<String>,
     known_function_borrowed_args: HashMap<String, Vec<usize>>,
+    known_function_mut_args: HashMap<String, Vec<usize>>,
     ownership_notes: Vec<String>,
     ownership_note_keys: BTreeSet<String>,
     registry: InteropPolicyRegistry,
@@ -1375,6 +1376,7 @@ enum ExprPosition {
 pub(crate) enum CallArgMode {
     Owned,
     Borrowed,
+    MutBorrowed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1490,11 +1492,31 @@ impl LoweringState {
                 path[path.len() - 1]
             ));
         }
-        for key in candidates {
-            if let Some(indexes) = self.known_function_borrowed_args.get(&key) {
+        for key in &candidates {
+            if let Some(indexes) = self.known_function_borrowed_args.get(key) {
                 let mut modes = vec![CallArgMode::Owned; arg_count];
                 for index in indexes {
                     set_borrowed(&mut modes, *index);
+                }
+                // Overlay mut-borrowed modes on top
+                if let Some(mut_indexes) = self.known_function_mut_args.get(key) {
+                    for index in mut_indexes {
+                        if let Some(slot) = modes.get_mut(*index) {
+                            *slot = CallArgMode::MutBorrowed;
+                        }
+                    }
+                }
+                return Some(modes);
+            }
+        }
+        // Check for mut-only args (no explicit borrows)
+        for key in &candidates {
+            if let Some(mut_indexes) = self.known_function_mut_args.get(key) {
+                let mut modes = vec![CallArgMode::Owned; arg_count];
+                for index in mut_indexes {
+                    if let Some(slot) = modes.get_mut(*index) {
+                        *slot = CallArgMode::MutBorrowed;
+                    }
                 }
                 return Some(modes);
             }
@@ -1786,6 +1808,40 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         scope_name: def.name.clone(),
         ..LoweringContext::default()
     };
+    let lowered_body: Vec<RustStmt> = def
+        .body
+        .iter()
+        .map(|stmt| lower_stmt_with_context(stmt, &mut context, state))
+        .collect();
+
+    // Detect which params are mutated in the body — used by call sites to
+    // decide whether to pass &mut instead of cloning.
+    let mutated = crate::codegen::collect_mutated_paths_in_stmts(&lowered_body);
+    let params: Vec<RustParam> = def
+        .params
+        .iter()
+        .map(|param| RustParam {
+            name: param.name.clone(),
+            ty: param.ty.clone(),
+        })
+        .collect();
+    let mut_arg_indexes: Vec<usize> = params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if mutated.contains(&param.name) && !param.ty.trim_start().starts_with('&') {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !mut_arg_indexes.is_empty() {
+        state
+            .known_function_mut_args
+            .insert(def.name.clone(), mut_arg_indexes);
+    }
+
     RustFunction {
         is_public: def.is_public,
         name: def.name.clone(),
@@ -1797,20 +1853,9 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
                 bounds: param.bounds.clone(),
             })
             .collect(),
-        params: def
-            .params
-            .iter()
-            .map(|param| RustParam {
-                name: param.name.clone(),
-                ty: param.ty.clone(),
-            })
-            .collect(),
+        params,
         return_type: def.return_type.clone(),
-        body: def
-            .body
-            .iter()
-            .map(|stmt| lower_stmt_with_context(stmt, &mut context, state))
-            .collect(),
+        body: lowered_body,
     }
 }
 
@@ -8987,7 +9032,15 @@ fn lower_expr_with_context(
                     .iter()
                     .enumerate()
                     .map(|(index, arg)| {
-                        if arg_modes.get(index) == Some(&CallArgMode::Borrowed) {
+                        if arg_modes.get(index) == Some(&CallArgMode::MutBorrowed) {
+                            let lowered = lower_expr_with_context(
+                                arg,
+                                context,
+                                ExprPosition::CallArgBorrowed,
+                                state,
+                            );
+                            RustExpr::MutBorrow(Box::new(lowered))
+                        } else if arg_modes.get(index) == Some(&CallArgMode::Borrowed) {
                             let lowered = lower_expr_with_context(
                                 arg,
                                 context,

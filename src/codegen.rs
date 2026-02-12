@@ -265,6 +265,14 @@ fn emit_expr(expr: &RustExpr) -> String {
                 format!("&{inner_text}")
             }
         }
+        RustExpr::MutBorrow(inner) => {
+            let inner_text = emit_expr(inner);
+            if needs_parens_for_borrow(inner) {
+                format!("&mut ({inner_text})")
+            } else {
+                format!("&mut {inner_text}")
+            }
+        }
         RustExpr::Cast { expr, ty } => format!("({} as {})", emit_expr(expr), ty),
         RustExpr::Call { callee, args, .. } => {
             let args = args.iter().map(emit_expr).collect::<Vec<_>>().join(", ");
@@ -836,7 +844,9 @@ fn strip_outer_parens(text: &str) -> &str {
     text
 }
 
-fn collect_mutated_paths_in_stmts(stmts: &[RustStmt]) -> std::collections::HashSet<String> {
+pub(crate) fn collect_mutated_paths_in_stmts(
+    stmts: &[RustStmt],
+) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
     for stmt in stmts {
         collect_mutated_paths_in_stmt(stmt, &mut out);
@@ -991,9 +1001,10 @@ fn collect_mutated_paths_in_expr(expr: &RustExpr, out: &mut std::collections::Ha
                 collect_mutated_paths_in_expr(end, out);
             }
         }
-        RustExpr::Try(inner) | RustExpr::Borrow(inner) | RustExpr::Cast { expr: inner, .. } => {
-            collect_mutated_paths_in_expr(inner, out)
-        }
+        RustExpr::Try(inner)
+        | RustExpr::Borrow(inner)
+        | RustExpr::MutBorrow(inner)
+        | RustExpr::Cast { expr: inner, .. } => collect_mutated_paths_in_expr(inner, out),
         RustExpr::Int(_)
         | RustExpr::Float(_)
         | RustExpr::Bool(_)
