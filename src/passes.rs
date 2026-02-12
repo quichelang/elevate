@@ -1814,8 +1814,10 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         .map(|stmt| lower_stmt_with_context(stmt, &mut context, state))
         .collect();
 
-    // Detect which params are mutated in the body — used by call sites to
-    // decide whether to pass &mut instead of cloning.
+    // Detect which params are mutated in the body.
+    // NOTE: We register mut-arg indexes for call-site use but do NOT rewrite
+    // param types here.  Promoting T → &mut T requires a full ownership analysis
+    // to avoid breaking functions that return or consume the parameter.
     let mutated = crate::codegen::collect_mutated_paths_in_stmts(&lowered_body);
     let params: Vec<RustParam> = def
         .params
@@ -1829,6 +1831,13 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         .iter()
         .enumerate()
         .filter_map(|(index, param)| {
+            if param.name == "self" {
+                return None;
+            }
+            let (head, _) = split_type_head_and_args(param.ty.trim());
+            if is_copy_primitive_type(head) {
+                return None;
+            }
             if mutated.contains(&param.name) && !param.ty.trim_start().starts_with('&') {
                 Some(index)
             } else {
