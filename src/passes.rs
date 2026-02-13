@@ -778,7 +778,7 @@ fn expr_contains_return(expr: &TypedExpr) -> bool {
 /// Check whether a param is consumed (returned, used as tail, or passed as
 /// owned arg) in the lowered body.  If consumed, promoting to `&mut T` would
 /// break the generated Rust because you can't move out of a mutable reference.
-fn param_is_consumed_in_body(name: &str, stmts: &[RustStmt]) -> bool {
+pub(crate) fn param_is_consumed_in_body(name: &str, stmts: &[RustStmt]) -> bool {
     // Check the last statement for implicit tail return
     if let Some(last) = stmts.last() {
         if let RustStmt::Expr(expr) = last {
@@ -813,8 +813,13 @@ fn stmt_consumes_name(name: &str, stmt: &RustStmt) -> bool {
                     body.iter().any(|s| stmt_consumes_name(name, s))
                 })
         }
-        RustStmt::While { body, .. } | RustStmt::For { body, .. } | RustStmt::Loop { body } => {
+        RustStmt::While { body, .. } | RustStmt::Loop { body } => {
             body.iter().any(|s| stmt_consumes_name(name, s))
+        }
+        RustStmt::For { iter, body, .. } => {
+            // The iter expression consumes: `for n in nums` calls .into_iter() on nums.
+            expr_references_name_as_owned(name, iter)
+                || body.iter().any(|s| stmt_consumes_name(name, s))
         }
         RustStmt::Const(c) => expr_references_name_as_owned(name, &c.value),
         RustStmt::DestructureConst { value, .. } => expr_references_name_as_owned(name, value),
@@ -862,8 +867,10 @@ fn expr_references_name_as_owned(name: &str, expr: &RustExpr) -> bool {
                 || args.iter().any(|a| expr_references_name_as_owned(name, a))
         }
         RustExpr::Field { base, .. } => expr_references_name_as_owned(name, base),
-        RustExpr::Index { base, index } => {
-            expr_references_name_as_owned(name, base) || expr_references_name_as_owned(name, index)
+        RustExpr::Index { base: _, index } => {
+            // Index reads borrow the base via the Index/IndexMut trait — the
+            // base is NOT consumed.  Only the index subexpression might consume.
+            expr_references_name_as_owned(name, index)
         }
         RustExpr::Binary { left, right, .. } => {
             expr_references_name_as_owned(name, left) || expr_references_name_as_owned(name, right)
@@ -1389,10 +1396,12 @@ pub fn lower_to_rust_with_hints(
             }),
         );
     }
-    RustModule {
+    let mut module = RustModule {
         items,
         ownership_notes: state.ownership_notes.clone(),
-    }
+    };
+    crate::borrow_promotion::apply_borrow_promotions(&mut module);
+    module
 }
 
 #[derive(Debug, Default)]
@@ -10731,7 +10740,7 @@ fn is_known_clone_container(head: &str) -> bool {
     )
 }
 
-fn is_copy_primitive_type(head: &str) -> bool {
+pub(crate) fn is_copy_primitive_type(head: &str) -> bool {
     matches!(
         head,
         "bool"
@@ -10778,7 +10787,7 @@ fn is_probably_nominal_type(head: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn split_type_head_and_args(ty: &str) -> (&str, Vec<&str>) {
+pub(crate) fn split_type_head_and_args(ty: &str) -> (&str, Vec<&str>) {
     let ty = ty.trim();
     let Some(start) = ty.find('<') else {
         return (ty, Vec::new());
@@ -10859,7 +10868,7 @@ fn collect_place_uses_in_stmts(stmts: &[TypedStmt]) -> HashMap<OwnershipPlace, u
 }
 
 fn collect_place_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<OwnershipPlace, usize>) {
-    const LOOP_BODY_WEIGHT: usize = 3;
+    const LOOP_BODY_WEIGHT: usize = 1;
     match stmt {
         TypedStmt::Const(def) => collect_place_uses_in_expr(&def.value, uses),
         TypedStmt::DestructureConst { value, .. } => {

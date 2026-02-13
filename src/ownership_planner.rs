@@ -25,6 +25,15 @@ pub fn decide_clone(input: ClonePlannerInput<'_>) -> CloneDecision {
     if input.preserve_rebind_move {
         return CloneDecision::Move;
     }
+    // Inside a loop body, values consumed in owned position must be cloned
+    // because the loop may repeat and the value would be gone after the first
+    // iteration.  This replaces the previous LOOP_BODY_WEIGHT inflation
+    // approach, which caused false-positive clones on post-loop last-use sites.
+    if input.loop_depth > 0 && input.remaining_conflicting_uses > 0 {
+        return CloneDecision::Clone {
+            is_hot: should_flag_hot_clone(input.ty, input.loop_depth),
+        };
+    }
     if input.remaining_conflicting_uses <= 1 {
         return CloneDecision::Move;
     }

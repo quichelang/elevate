@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod borrow_promotion;
 pub mod codegen;
 pub mod crate_builder;
 pub mod data;
@@ -374,7 +375,7 @@ mod tests {
 
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("use std::num::ParseIntError;"));
-        assert!(output.rust_code.contains("parse_i64(input)?"));
+        assert!(output.rust_code.contains("parse_i64(&input)?"));
     }
 
     #[test]
@@ -476,7 +477,7 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("fn update(mut values: Vec<i64>) -> i64")
+                .contains("fn update(values: &mut Vec<i64>) -> i64")
         );
         assert!(output.rust_code.contains("values["));
         assert!(output.rust_code.contains("saturating_abs() as usize"));
@@ -515,7 +516,7 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("fn update(mut board: Vec<Vec<i64>>) -> i64")
+                .contains("fn update(board: &mut Vec<Vec<i64>>) -> i64")
         );
         assert!(output.rust_code.contains("board["));
         assert!(output.rust_code.contains("saturating_abs() as usize"));
@@ -536,7 +537,7 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("fn update(mut hyper: Vec<Vec<Vec<Vec<i64>>>>) -> i64")
+                .contains("fn update(hyper: &mut Vec<Vec<Vec<Vec<i64>>>>) -> i64")
         );
         assert!(output.rust_code.contains("hyper["));
         assert!(output.rust_code.contains("saturating_abs() as usize"));
