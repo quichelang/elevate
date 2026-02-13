@@ -7,7 +7,7 @@ pub enum CloneDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClonePlannerInput<'a> {
     pub ty: &'a str,
-    pub in_owned_position: bool,
+    pub is_consuming: bool,
     pub remaining_conflicting_uses: usize,
     pub forced_clone: bool,
     pub preserve_rebind_move: bool,
@@ -16,7 +16,7 @@ pub struct ClonePlannerInput<'a> {
 }
 
 pub fn decide_clone(input: ClonePlannerInput<'_>) -> CloneDecision {
-    if !input.in_owned_position || !input.clone_candidate {
+    if !input.is_consuming || !input.clone_candidate {
         return CloneDecision::Move;
     }
     if input.forced_clone {
@@ -201,7 +201,7 @@ mod tests {
     fn planner_preserves_move_for_rebind_chain() {
         let decision = decide_clone(ClonePlannerInput {
             ty: "Canvas",
-            in_owned_position: true,
+            is_consuming: true,
             remaining_conflicting_uses: 2,
             forced_clone: false,
             preserve_rebind_move: true,
@@ -215,7 +215,7 @@ mod tests {
     fn planner_marks_large_loop_clone_as_hot() {
         let decision = decide_clone(ClonePlannerInput {
             ty: "Vec<String>",
-            in_owned_position: true,
+            is_consuming: true,
             remaining_conflicting_uses: 2,
             forced_clone: false,
             preserve_rebind_move: false,

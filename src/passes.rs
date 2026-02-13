@@ -1356,7 +1356,7 @@ pub fn lower_to_rust_with_hints(
                 value: lower_expr_with_context(
                     &def.value,
                     &mut LoweringContext::default(),
-                    ExprPosition::Value,
+                    ExprPosition::Consuming,
                     &mut state,
                 ),
             }),
@@ -1367,7 +1367,7 @@ pub fn lower_to_rust_with_hints(
                 value: lower_expr_with_context(
                     &def.value,
                     &mut LoweringContext::default(),
-                    ExprPosition::Value,
+                    ExprPosition::Consuming,
                     &mut state,
                 ),
             }),
@@ -1537,11 +1537,8 @@ struct LoweringState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExprPosition {
-    Value,
-    CallArgOwned,
-    CallArgBorrowed,
-    OwnedOperand,
-    ProjectionBase,
+    Consuming,
+    NonConsuming,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8847,7 +8844,7 @@ fn lower_stmt_with_context(
             is_const: def.is_const,
             name: def.name.clone(),
             ty: inferred_local_const_rust_ty(&def.ty, &def.value),
-            value: lower_expr_with_context(&def.value, context, ExprPosition::Value, state),
+            value: lower_expr_with_context(&def.value, context, ExprPosition::Consuming, state),
         }),
         TypedStmt::DestructureConst {
             pattern,
@@ -8855,7 +8852,7 @@ fn lower_stmt_with_context(
             is_const,
         } => RustStmt::DestructureConst {
             pattern: lower_destructure_pattern(pattern),
-            value: lower_expr_with_context(value, context, ExprPosition::Value, state),
+            value: lower_expr_with_context(value, context, ExprPosition::Consuming, state),
             is_const: *is_const,
         },
         TypedStmt::Assign { target, op, value } => RustStmt::Assign {
@@ -8869,7 +8866,8 @@ fn lower_stmt_with_context(
                 if matches!(op, TypedAssignOp::Assign) {
                     context.rebind_place = assignment_rebind_place(target, value);
                 }
-                let lowered = lower_expr_with_context(value, context, ExprPosition::Value, state);
+                let lowered =
+                    lower_expr_with_context(value, context, ExprPosition::Consuming, state);
                 context.rebind_place = saved_rebind;
                 lowered
             },
@@ -8877,14 +8875,19 @@ fn lower_stmt_with_context(
         TypedStmt::Return(value) => RustStmt::Return(
             value
                 .as_ref()
-                .map(|expr| lower_expr_with_context(expr, context, ExprPosition::Value, state)),
+                .map(|expr| lower_expr_with_context(expr, context, ExprPosition::Consuming, state)),
         ),
         TypedStmt::If {
             condition,
             then_body,
             else_body,
         } => RustStmt::If {
-            condition: lower_expr_with_context(condition, context, ExprPosition::Value, state),
+            condition: lower_expr_with_context(
+                condition,
+                context,
+                ExprPosition::NonConsuming,
+                state,
+            ),
             then_body: then_body
                 .iter()
                 .map(|stmt| lower_stmt_with_context(stmt, context, state))
@@ -8897,7 +8900,12 @@ fn lower_stmt_with_context(
             }),
         },
         TypedStmt::While { condition, body } => RustStmt::While {
-            condition: lower_expr_with_context(condition, context, ExprPosition::Value, state),
+            condition: lower_expr_with_context(
+                condition,
+                context,
+                ExprPosition::NonConsuming,
+                state,
+            ),
             body: {
                 context.loop_depth += 1;
                 let lowered = body
@@ -8914,7 +8922,7 @@ fn lower_stmt_with_context(
             body,
         } => RustStmt::For {
             binding: lower_destructure_pattern(binding),
-            iter: lower_expr_with_context(iter, context, ExprPosition::OwnedOperand, state),
+            iter: lower_expr_with_context(iter, context, ExprPosition::Consuming, state),
             body: {
                 context.loop_depth += 1;
                 let lowered = body
@@ -8942,7 +8950,7 @@ fn lower_stmt_with_context(
         TypedStmt::Expr(expr) => RustStmt::Expr(lower_expr_with_context(
             expr,
             context,
-            ExprPosition::Value,
+            ExprPosition::NonConsuming,
             state,
         )),
     }
@@ -9166,7 +9174,7 @@ fn lower_expr_with_context(
                     args: args
                         .iter()
                         .map(|arg| {
-                            lower_expr_with_context(arg, context, ExprPosition::Value, state)
+                            lower_expr_with_context(arg, context, ExprPosition::NonConsuming, state)
                         })
                         .collect(),
                 };
@@ -9180,7 +9188,7 @@ fn lower_expr_with_context(
                     args: args
                         .iter()
                         .map(|arg| {
-                            lower_expr_with_context(arg, context, ExprPosition::Value, state)
+                            lower_expr_with_context(arg, context, ExprPosition::NonConsuming, state)
                         })
                         .collect(),
                 };
@@ -9193,7 +9201,7 @@ fn lower_expr_with_context(
                 return borrow_expr(lower_expr_with_context(
                     &args[0],
                     context,
-                    ExprPosition::Value,
+                    ExprPosition::NonConsuming,
                     state,
                 ));
             }
@@ -9215,7 +9223,7 @@ fn lower_expr_with_context(
                             let lowered = lower_expr_with_context(
                                 arg,
                                 context,
-                                ExprPosition::CallArgBorrowed,
+                                ExprPosition::NonConsuming,
                                 state,
                             );
                             if type_supports_borrow_trait(&arg.ty, "BorrowMut") {
@@ -9228,7 +9236,7 @@ fn lower_expr_with_context(
                             let lowered = lower_expr_with_context(
                                 arg,
                                 context,
-                                ExprPosition::CallArgBorrowed,
+                                ExprPosition::NonConsuming,
                                 state,
                             );
                             if is_boxed_trait_object_type(&arg.ty) {
@@ -9247,7 +9255,7 @@ fn lower_expr_with_context(
                                 borrow_expr(lowered)
                             }
                         } else {
-                            lower_expr_with_context(arg, context, ExprPosition::CallArgOwned, state)
+                            lower_expr_with_context(arg, context, ExprPosition::Consuming, state)
                         }
                     })
                     .collect(),
@@ -9269,17 +9277,12 @@ fn lower_expr_with_context(
             path: path.clone(),
             args: args
                 .iter()
-                .map(|arg| lower_expr_with_context(arg, context, ExprPosition::Value, state))
+                .map(|arg| lower_expr_with_context(arg, context, ExprPosition::NonConsuming, state))
                 .collect(),
         },
         TypedExprKind::Field { base, field } => {
-            let remaining_conflicting_before = if matches!(
-                position,
-                ExprPosition::ProjectionBase | ExprPosition::CallArgBorrowed
-            ) {
-                if position == ExprPosition::CallArgBorrowed {
-                    context.ownership_plan.consume_expr(expr);
-                }
+            let remaining_conflicting_before = if position == ExprPosition::NonConsuming {
+                context.ownership_plan.consume_expr(expr);
                 0
             } else {
                 let remaining = context.ownership_plan.remaining_conflicting_for_expr(expr);
@@ -9291,7 +9294,7 @@ fn lower_expr_with_context(
                 base: Box::new(lower_expr_with_context(
                     base,
                     context,
-                    ExprPosition::ProjectionBase,
+                    ExprPosition::NonConsuming,
                     state,
                 )),
                 field: field.clone(),
@@ -9319,13 +9322,8 @@ fn lower_expr_with_context(
             index,
             indexing,
         } => {
-            let remaining_conflicting_before = if matches!(
-                position,
-                ExprPosition::ProjectionBase | ExprPosition::CallArgBorrowed
-            ) {
-                if position == ExprPosition::CallArgBorrowed {
-                    context.ownership_plan.consume_expr(expr);
-                }
+            let remaining_conflicting_before = if position == ExprPosition::NonConsuming {
+                context.ownership_plan.consume_expr(expr);
                 0
             } else {
                 let remaining = context.ownership_plan.remaining_conflicting_for_expr(expr);
@@ -9340,11 +9338,11 @@ fn lower_expr_with_context(
                 _ => None,
             };
             let lowered_base =
-                lower_expr_with_context(base, context, ExprPosition::ProjectionBase, state);
+                lower_expr_with_context(base, context, ExprPosition::NonConsuming, state);
             let key_position = match indexing.key_passing {
-                TypedIndexKeyPassing::Borrowed => ExprPosition::CallArgBorrowed,
-                TypedIndexKeyPassing::Owned => ExprPosition::CallArgOwned,
-                TypedIndexKeyPassing::CloneIfNeeded => ExprPosition::CallArgOwned,
+                TypedIndexKeyPassing::Borrowed => ExprPosition::NonConsuming,
+                TypedIndexKeyPassing::Owned => ExprPosition::Consuming,
+                TypedIndexKeyPassing::CloneIfNeeded => ExprPosition::Consuming,
             };
             let clone_if_needed = indexing.key_passing == TypedIndexKeyPassing::CloneIfNeeded
                 && should_clone_for_reuse(index.ty.trim(), state)
@@ -9448,7 +9446,7 @@ fn lower_expr_with_context(
             let force_clone_subscript = !matches!(indexing.mode, TypedIndexMode::GetLikeOption)
                 && indexing.source != TypedIndexSource::CustomMethod
                 && !matches!(index.kind, TypedExprKind::Range { .. })
-                && position != ExprPosition::ProjectionBase
+                && position != ExprPosition::NonConsuming
                 && !option_value_prefers_copied(&expr.ty);
             match if force_clone_subscript {
                 CloneDecision::Clone { is_hot: false }
@@ -9468,7 +9466,7 @@ fn lower_expr_with_context(
             scrutinee: Box::new(lower_expr_with_context(
                 scrutinee,
                 context,
-                ExprPosition::Value,
+                ExprPosition::NonConsuming,
                 state,
             )),
             arms: arms
@@ -9482,18 +9480,23 @@ fn lower_expr_with_context(
                             Some(lower_expr_with_context(
                                 guard,
                                 context,
-                                ExprPosition::Value,
+                                ExprPosition::NonConsuming,
                                 state,
                             ))
                         }
                     }),
-                    value: lower_expr_with_context(&arm.value, context, ExprPosition::Value, state),
+                    value: lower_expr_with_context(
+                        &arm.value,
+                        context,
+                        ExprPosition::Consuming,
+                        state,
+                    ),
                 })
                 .collect(),
         },
         TypedExprKind::Unary { op, expr: inner } => {
             let mut lowered_expr =
-                lower_expr_with_context(inner, context, ExprPosition::OwnedOperand, state);
+                lower_expr_with_context(inner, context, ExprPosition::Consuming, state);
             match op {
                 TypedUnaryOp::Not => RustExpr::Unary {
                     op: RustUnaryOp::Not,
@@ -9517,7 +9520,7 @@ fn lower_expr_with_context(
             expr: Box::new(lower_expr_with_context(
                 inner,
                 context,
-                ExprPosition::Value,
+                ExprPosition::NonConsuming,
                 state,
             )),
             ty: target_type.clone(),
@@ -9531,9 +9534,9 @@ fn lower_expr_with_context(
                     | TypedBinaryOp::Div
                     | TypedBinaryOp::Rem
             ) {
-                ExprPosition::OwnedOperand
+                ExprPosition::Consuming
             } else {
-                ExprPosition::Value
+                ExprPosition::NonConsuming
             };
             let mut lowered_left = lower_expr_with_context(left, context, operand_position, state);
             let mut lowered_right =
@@ -9597,13 +9600,13 @@ fn lower_expr_with_context(
         TypedExprKind::Array(items) => RustExpr::Array(
             items
                 .iter()
-                .map(|item| lower_expr_with_context(item, context, ExprPosition::Value, state))
+                .map(|item| lower_expr_with_context(item, context, ExprPosition::Consuming, state))
                 .collect(),
         ),
         TypedExprKind::Tuple(items) => RustExpr::Tuple(
             items
                 .iter()
-                .map(|item| lower_expr_with_context(item, context, ExprPosition::Value, state))
+                .map(|item| lower_expr_with_context(item, context, ExprPosition::Consuming, state))
                 .collect(),
         ),
         TypedExprKind::StructLiteral { path, fields } => RustExpr::StructLiteral {
@@ -9615,7 +9618,7 @@ fn lower_expr_with_context(
                     value: lower_expr_with_context(
                         &field.value,
                         context,
-                        ExprPosition::Value,
+                        ExprPosition::Consuming,
                         state,
                     ),
                 })
@@ -9637,7 +9640,7 @@ fn lower_expr_with_context(
                     Box::new(lower_expr_with_context(
                         expr,
                         &mut block_context,
-                        ExprPosition::Value,
+                        ExprPosition::Consuming,
                         state,
                     ))
                 }),
@@ -9681,7 +9684,7 @@ fn lower_expr_with_context(
                 Box::new(lower_expr_with_context(
                     expr,
                     context,
-                    ExprPosition::Value,
+                    ExprPosition::NonConsuming,
                     state,
                 ))
             }),
@@ -9689,7 +9692,7 @@ fn lower_expr_with_context(
                 Box::new(lower_expr_with_context(
                     expr,
                     context,
-                    ExprPosition::Value,
+                    ExprPosition::NonConsuming,
                     state,
                 ))
             }),
@@ -9698,7 +9701,7 @@ fn lower_expr_with_context(
         TypedExprKind::Try(inner) => RustExpr::Try(Box::new(lower_expr_with_context(
             inner,
             context,
-            ExprPosition::Value,
+            ExprPosition::Consuming,
             state,
         ))),
     }
@@ -9733,7 +9736,7 @@ fn lower_map_from_vec_associated_from_call(
     if !takes_vec_tuple {
         return None;
     }
-    let lowered_arg = lower_expr_with_context(&args[0], context, ExprPosition::CallArgOwned, state);
+    let lowered_arg = lower_expr_with_context(&args[0], context, ExprPosition::Consuming, state);
     let iter_arg = RustExpr::Call {
         callee: Box::new(RustExpr::Field {
             base: Box::new(lowered_arg),
@@ -9761,10 +9764,7 @@ fn lower_path_expr(
     context: &mut LoweringContext,
     state: &mut LoweringState,
 ) -> RustExpr {
-    if position == ExprPosition::ProjectionBase {
-        return RustExpr::Path(path.to_vec());
-    }
-    if position == ExprPosition::CallArgBorrowed {
+    if position == ExprPosition::NonConsuming {
         if path.len() == 1 {
             context.ownership_plan.consume_expr(expr);
         }
@@ -9854,14 +9854,11 @@ fn clone_decision_for_expr(
     context: &LoweringContext,
     state: &LoweringState,
 ) -> (CloneDecision, bool) {
-    let in_owned_position = matches!(
-        position,
-        ExprPosition::CallArgOwned | ExprPosition::OwnedOperand
-    );
-    let forced_clone = in_owned_position && state.is_forced_clone_expr(expr);
+    let is_consuming = position == ExprPosition::Consuming;
+    let forced_clone = is_consuming && state.is_forced_clone_expr(expr);
     let decision = decide_clone(ClonePlannerInput {
         ty,
-        in_owned_position,
+        is_consuming,
         remaining_conflicting_uses,
         forced_clone,
         preserve_rebind_move: should_preserve_rebind_move(expr, context),
@@ -9975,34 +9972,34 @@ fn lower_call_callee(
     }
     if let Some(modes) = resolve_associated_call_modes(callee, args) {
         return (
-            lower_expr_with_context(callee, context, ExprPosition::Value, state),
+            lower_expr_with_context(callee, context, ExprPosition::NonConsuming, state),
             modes,
             false,
         );
     }
     if let Some(modes) = resolve_direct_borrow_arg_modes(callee, state, arg_count) {
         return (
-            lower_expr_with_context(callee, context, ExprPosition::Value, state),
+            lower_expr_with_context(callee, context, ExprPosition::NonConsuming, state),
             modes,
             false,
         );
     }
     if let Some(modes) = resolve_declared_borrow_arg_modes(callee, state, arg_count) {
         return (
-            lower_expr_with_context(callee, context, ExprPosition::Value, state),
+            lower_expr_with_context(callee, context, ExprPosition::NonConsuming, state),
             modes,
             false,
         );
     }
     if let Some(modes) = resolve_heuristic_path_call_arg_modes(callee, args, context, state) {
         return (
-            lower_expr_with_context(callee, context, ExprPosition::Value, state),
+            lower_expr_with_context(callee, context, ExprPosition::NonConsuming, state),
             modes,
             false,
         );
     }
     (
-        lower_expr_with_context(callee, context, ExprPosition::Value, state),
+        lower_expr_with_context(callee, context, ExprPosition::NonConsuming, state),
         vec![CallArgMode::Owned; arg_count],
         false,
     )
@@ -10276,12 +10273,12 @@ fn lower_method_callee(
     state: &mut LoweringState,
 ) -> RustExpr {
     let TypedExprKind::Field { base, field } = &callee.kind else {
-        return lower_expr_with_context(callee, context, ExprPosition::Value, state);
+        return lower_expr_with_context(callee, context, ExprPosition::NonConsuming, state);
     };
     let receiver_position = if receiver_mode == CallArgMode::Owned {
-        ExprPosition::CallArgOwned
+        ExprPosition::Consuming
     } else {
-        ExprPosition::Value
+        ExprPosition::NonConsuming
     };
     RustExpr::Field {
         base: Box::new(lower_expr_with_context(
@@ -10469,7 +10466,7 @@ fn lower_index_range_bound(
     context: &mut LoweringContext,
     state: &mut LoweringState,
 ) -> RustExpr {
-    let lowered = lower_expr_with_context(expr, context, ExprPosition::Value, state);
+    let lowered = lower_expr_with_context(expr, context, ExprPosition::NonConsuming, state);
     let expr_name = last_path_segment(expr.ty.trim());
     if cast_to_usize && is_integral_numeric_type_name(expr_name) && expr_name != "usize" {
         cast_integral_expr_for_coercion(lowered, expr_name, "usize")
@@ -10873,9 +10870,6 @@ fn collect_place_uses_in_stmt(stmt: &TypedStmt, uses: &mut HashMap<OwnershipPlac
         TypedStmt::Const(def) => collect_place_uses_in_expr(&def.value, uses),
         TypedStmt::DestructureConst { value, .. } => {
             collect_place_uses_in_expr(value, uses);
-            if let Some(place) = place_for_expr(value) {
-                *uses.entry(place).or_insert(0) += 1;
-            }
         }
         TypedStmt::Assign { target, value, .. } => {
             collect_place_uses_in_expr(value, uses);
@@ -12984,18 +12978,12 @@ fn lower_assign_target(
     match target {
         TypedAssignTarget::Path(name) => RustAssignTarget::Path(name.clone()),
         TypedAssignTarget::Field { base, field } => RustAssignTarget::Field {
-            base: lower_expr_with_context(base, context, ExprPosition::ProjectionBase, state),
+            base: lower_expr_with_context(base, context, ExprPosition::NonConsuming, state),
             field: field.clone(),
         },
         TypedAssignTarget::Index { base, index } => RustAssignTarget::Index {
-            base: lower_expr_with_context(base, context, ExprPosition::ProjectionBase, state),
-            index: lower_index_expr(
-                index,
-                &base.ty,
-                ExprPosition::ProjectionBase,
-                context,
-                state,
-            ),
+            base: lower_expr_with_context(base, context, ExprPosition::NonConsuming, state),
+            index: lower_index_expr(index, &base.ty, ExprPosition::NonConsuming, context, state),
         },
         TypedAssignTarget::Tuple(items) => RustAssignTarget::Tuple(
             items
