@@ -76,6 +76,8 @@ pub struct CompileOptions {
     pub allow_hot_clone_places: Vec<String>,
     pub warn_missing_types: bool,
     pub source_name: Option<String>,
+    /// Debug log destination: None = off, Some(None) = stderr, Some(Some(path)) = file.
+    pub debug_log: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,6 +93,7 @@ pub struct CompilerOutput {
     pub rust_code: String,
     pub ownership_notes: Vec<String>,
     pub warnings: Vec<Diagnostic>,
+    pub debug_log: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -207,10 +210,11 @@ pub fn compile_ast_with_options(
     .map_err(|diagnostics| {
         CompileError::from_diagnostics(diagnostics, options.source_name.clone(), None)
     })?;
-    let mut lowered = passes::lower_to_rust_with_hints(
+    let (mut lowered, debug_log) = passes::lower_to_rust_with_hints(
         &typed,
         &options.direct_borrow_hints,
         &options.forced_clone_places,
+        options,
     );
     for name in options.experiments.active_names() {
         lowered
@@ -229,6 +233,7 @@ pub fn compile_ast_with_options(
         rust_code,
         ownership_notes,
         warnings,
+        debug_log,
     })
 }
 

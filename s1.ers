@@ -1,0 +1,185 @@
+pub fn test_issue_1_vec_string_index() {
+    let values: Vec<String> = ["a", "b"];
+    let val: String = values[0];
+    println!("{:?}", val);
+}
+
+pub fn add_i32(x: i32, y: i32) -> i32 {
+    return x + y;
+}
+
+pub fn test_issue_2_integer_literal_inference() {
+    println!("{:?}", add_i32(1, 2));
+}
+
+pub fn push_item(nums: Vec<i64>, val: i64) {
+    nums.push(val);
+}
+
+pub fn pop_last(nums: Vec<i64>) {
+    nums.pop();
+}
+
+pub fn sum_vec(nums: Vec<i64>) -> i64 {
+    let result: i64 = 0;
+    for n in nums {
+        result = result + n;
+    }
+    return result;
+}
+
+pub fn extend_with(dst: Vec<i64>, src: Vec<i64>) {
+    for item in src {
+        dst.push(item);
+    }
+}
+
+pub fn clear_all(nums: Vec<i64>) {
+    nums.clear();
+}
+
+pub fn double_values(nums: Vec<i64>) {
+    let i: i64 = 0;
+    while i < nums.len() {
+        nums[i] = nums[i] * 2;
+        i = i + 1;
+    }
+}
+
+pub fn test_issue_10a_mutate_then_read() {
+    let numbers: Vec<i64> = [1, 2, 3];
+    push_item(numbers, 42);
+    assert_eq(numbers.len(), 4);
+    assert_eq(sum_vec(numbers), 48);
+}
+
+pub fn test_issue_10b_multi_mutate() {
+    let data: Vec<i64> = [10, 20, 30];
+    push_item(data, 40);
+    push_item(data, 50);
+    pop_last(data);
+    assert_eq(data.len(), 4);
+    assert_eq(sum_vec(data), 100);
+}
+
+pub fn test_issue_10c_interleaved() {
+    let items: Vec<i64> = [1, 2, 3];
+    push_item(items, 4);
+    let mid_sum: i64 = sum_vec(items);
+    assert_eq(mid_sum, 10);
+    push_item(items, 5);
+    assert_eq(items.len(), 5);
+    assert_eq(sum_vec(items), 15);
+}
+
+pub fn test_issue_10d_extend() {
+    let base: Vec<i64> = [1, 2];
+    let extra: Vec<i64> = [3, 4, 5];
+    extend_with(base, extra);
+    assert_eq(base.len(), 5);
+    assert_eq(sum_vec(base), 15);
+    assert_eq(extra.len(), 3);
+}
+
+pub fn test_issue_10e_loop_accumulate() {
+    let result: Vec<i64> = [];
+    let i: i64 = 0;
+    while i < 5 {
+        push_item(result, i * i);
+        i = i + 1;
+    }
+    assert_eq(result.len(), 5);
+    assert_eq(sum_vec(result), 30);
+}
+
+pub fn keep_even(nums: Vec<i64>) {
+    let temp: Vec<i64> = [];
+    for n in nums {
+        if n % 2 == 0 {
+            temp.push(n);
+        }
+    }
+    nums.clear();
+    extend_with(nums, temp);
+}
+
+pub fn test_issue_10f_inplace_transform() {
+    let vals: Vec<i64> = [1, 2, 3, 4];
+    double_values(vals);
+    assert_eq(sum_vec(vals), 20);
+    assert_eq(vals.len(), 4);
+}
+
+pub fn test_issue_10g_pipeline() {
+    let data: Vec<i64> = [1, 2, 3, 4, 5, 6];
+    double_values(data);
+    keep_even(data);
+    assert_eq(data.len(), 6);
+    assert_eq(sum_vec(data), 42);
+    push_item(data, 100);
+    assert_eq(data.len(), 7);
+    assert_eq(sum_vec(data), 142);
+}
+
+pub fn add_front(nums: Vec<i64>, val: i64) {
+    nums.push(val);
+}
+
+pub fn test_issue_10h_two_writers() {
+    let shared: Vec<i64> = [0];
+    push_item(shared, 1);
+    add_front(shared, 2);
+    push_item(shared, 3);
+    assert_eq(shared.len(), 4);
+    let total: i64 = sum_vec(shared);
+    assert_eq(total, 6);
+}
+
+pub fn test_issue_10i_clear_rebuild() {
+    let data: Vec<i64> = [1, 2, 3];
+    clear_all(data);
+    assert_eq(data.len(), 0);
+    push_item(data, 10);
+    push_item(data, 20);
+    assert_eq(data.len(), 2);
+    assert_eq(sum_vec(data), 30);
+}
+
+pub fn check_eq<T: PartialEq>(a: T, b: T) -> bool {
+    return a == b;
+}
+
+pub fn test_issue_16_generic_bounds() {
+    println!("{:?}", check_eq(1, 1));
+}
+
+pub fn main() {
+    println!("{}", "=== Elevate Issue Regression Tests ===");
+    println!("{}", "");
+    println!("{}", "Issue 1: Vec String Indexing");
+    test_issue_1_vec_string_index();
+    println!("{}", "Issue 2: Integer Literal Inference");
+    test_issue_2_integer_literal_inference();
+    println!("{}", "Issue 10a: Basic mutate then read");
+    test_issue_10a_mutate_then_read();
+    println!("{}", "Issue 10b: Multiple mutating functions");
+    test_issue_10b_multi_mutate();
+    println!("{}", "Issue 10c: Interleaved mutate/read");
+    test_issue_10c_interleaved();
+    println!("{}", "Issue 10d: Extend one vec from another");
+    test_issue_10d_extend();
+    println!("{}", "Issue 10e: Loop accumulate");
+    test_issue_10e_loop_accumulate();
+    println!("{}", "Issue 10f: In-place index assignment transform");
+    test_issue_10f_inplace_transform();
+    println!("{}", "Issue 10g: Pipeline (mutate, filter, mutate)");
+    test_issue_10g_pipeline();
+    println!("{}", "Issue 10h: Two writers, one reader");
+    test_issue_10h_two_writers();
+    println!("{}", "Issue 10i: Clear then rebuild");
+    test_issue_10i_clear_rebuild();
+    println!("{}", "Issue 16: Generic Trait Bounds");
+    test_issue_16_generic_bounds();
+    println!("{}", "");
+    println!("{}", "=== Done ===");
+}

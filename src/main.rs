@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process;
@@ -267,6 +268,7 @@ fn compile_script_to_rust(script_path: &Path, options: &CompileOptions) -> Resul
             )
         );
     }
+    flush_debug_log(&output.debug_log, &compile_options);
     Ok(output.rust_code)
 }
 
@@ -468,6 +470,7 @@ fn run_compile(args: &[String]) {
             }
         }
     }
+    flush_debug_log(&output.debug_log, &options);
 }
 
 fn run_bench(args: &[String]) {
@@ -937,6 +940,36 @@ fn benchmark_cases() -> Vec<BenchCase> {
     ]
 }
 
+fn flush_debug_log(log: &[String], options: &CompileOptions) {
+    if log.is_empty() {
+        return;
+    }
+    match &options.debug_log {
+        None => {} // debug not enabled
+        Some(None) => {
+            // Output to stderr
+            let stderr = std::io::stderr();
+            let mut handle = stderr.lock();
+            for line in log {
+                let _ = writeln!(handle, "{line}");
+            }
+        }
+        Some(Some(path)) => {
+            // Output to file
+            match std::fs::File::create(path) {
+                Ok(mut file) => {
+                    for line in log {
+                        let _ = writeln!(file, "{line}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to open debug log {path}: {e}");
+                }
+            }
+        }
+    }
+}
+
 fn usage() {
     eprintln!("usage:");
     eprintln!("  elevate <input-file.ers> [--emit-rust [output-file]] [experiment flags]");
@@ -958,6 +991,7 @@ fn usage() {
     eprintln!("  --strict (disable type-system; raw ownership-only mode)");
     eprintln!("  --warn-missing-types");
     eprintln!("  --fail-on-hot-clone");
+    eprintln!("  --debug [file]          log borrow-engine decisions (default: stderr)");
     eprintln!("  --allow-hot-clone-place <place>");
     eprintln!("  --force-clone-place <place>");
 }
@@ -1114,6 +1148,17 @@ fn parse_compile_options(args: &[String]) -> Result<CompileOptions, String> {
                 }
                 options.forced_clone_places.push(args[index + 1].clone());
                 index += 2;
+            }
+            "--debug" => {
+                // --debug with optional filename. If the next arg is missing
+                // or starts with `--`, log to stderr (None).
+                if index + 1 < args.len() && !args[index + 1].starts_with("--") {
+                    options.debug_log = Some(Some(args[index + 1].clone()));
+                    index += 2;
+                } else {
+                    options.debug_log = Some(None);
+                    index += 1;
+                }
             }
             _ => return Err(format!("unknown argument '{arg}'")),
         }

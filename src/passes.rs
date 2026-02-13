@@ -26,6 +26,7 @@ use crate::ir::typed::{
     TypedStatic, TypedStmt, TypedStruct, TypedStructLiteralField, TypedTrait, TypedTraitMethod,
     TypedTypeParam, TypedUnaryOp, TypedUseTree, TypedVariant, TypedVariantFields,
 };
+use crate::liveness::BorrowEngine;
 use crate::ownership_planner::{CloneDecision, ClonePlannerInput, decide_clone};
 use crate::rustdex_backend;
 
@@ -1222,15 +1223,20 @@ fn merge_effect_rows(target: &mut EffectRow, source: &EffectRow) {
 }
 
 pub fn lower_to_rust(module: &TypedModule) -> RustModule {
-    lower_to_rust_with_hints(module, &[], &[])
+    let (module, _debug_log) =
+        lower_to_rust_with_hints(module, &[], &[], &crate::CompileOptions::default());
+    module
 }
 
 pub fn lower_to_rust_with_hints(
     module: &TypedModule,
     hints: &[DirectBorrowHint],
     forced_clone_places: &[String],
-) -> RustModule {
+    options: &crate::CompileOptions,
+) -> (RustModule, Vec<String>) {
     let mut state = LoweringState::from_module(module);
+    state.experiment_flags = options.experiments.clone();
+    state.debug_enabled = options.debug_log.is_some();
     for hint in hints {
         state
             .registry
@@ -1401,15 +1407,28 @@ pub fn lower_to_rust_with_hints(
         ownership_notes: state.ownership_notes.clone(),
     };
     crate::borrow_promotion::apply_borrow_promotions(&mut module);
-    module
+    let debug_log = state.debug_log;
+    (module, debug_log)
 }
 
-#[derive(Debug, Default)]
 struct LoweringContext {
     ownership_plan: OwnershipPlan,
+    borrow_engine: Option<Box<dyn BorrowEngine>>,
     scope_name: String,
     loop_depth: usize,
     rebind_place: Option<OwnershipPlace>,
+}
+
+impl Default for LoweringContext {
+    fn default() -> Self {
+        Self {
+            ownership_plan: OwnershipPlan::default(),
+            borrow_engine: None,
+            scope_name: String::new(),
+            loop_depth: 0,
+            rebind_place: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1533,6 +1552,9 @@ struct LoweringState {
     registry: InteropPolicyRegistry,
     forced_clone_places: BTreeSet<String>,
     needs_borrow_trait_import: bool,
+    experiment_flags: crate::ExperimentFlags,
+    debug_enabled: bool,
+    debug_log: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1972,8 +1994,20 @@ impl InteropPolicyRegistry {
 }
 
 fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunction {
+    let borrow_engine: Option<Box<dyn BorrowEngine>> = if state.experiment_flags.polonius {
+        Some(Box::new(crate::polonius::PoloniusEngine::from_stmts(
+            &def.body,
+        )))
+    } else if state.experiment_flags.optimistic_move {
+        Some(Box::new(crate::liveness::BranchAwarePlan::from_stmts(
+            &def.body,
+        )))
+    } else {
+        None
+    };
     let mut context = LoweringContext {
         ownership_plan: OwnershipPlan::from_stmts(&def.body),
+        borrow_engine,
         scope_name: def.name.clone(),
         ..LoweringContext::default()
     };
@@ -9775,12 +9809,33 @@ fn lower_path_expr(
     }
 
     let name = path[0].clone();
-    let remaining_conflicting = context.ownership_plan.remaining_conflicting_for_expr(expr);
+    let remaining_conflicting = if let Some(engine) = &mut context.borrow_engine {
+        let rc = engine.remaining_conflicting(&name);
+        if state.debug_enabled {
+            state.debug_log.push(format!(
+                "[borrow-engine] scope={} place={name:?} remaining_conflicting={rc}",
+                context.scope_name,
+            ));
+        }
+        rc
+    } else {
+        context.ownership_plan.remaining_conflicting_for_expr(expr)
+    };
+    if let Some(engine) = &mut context.borrow_engine {
+        engine.consume(&name);
+    }
     context.ownership_plan.consume_expr(expr);
 
     let path_expr = RustExpr::Path(path.to_vec());
     let (decision, forced_clone) =
         clone_decision_for_expr(expr, ty, position, remaining_conflicting, context, state);
+    if state.debug_enabled {
+        state.debug_log.push(format!(
+            "[borrow-engine] scope={} place={name:?} ty={ty:?} decision={decision:?} rc={remaining_conflicting}",
+            context.scope_name,
+        ));
+    }
+
     if let CloneDecision::Clone { is_hot } = decision {
         if !forced_clone {
             push_auto_clone_notes(state, context, &name, ty.trim(), is_hot);

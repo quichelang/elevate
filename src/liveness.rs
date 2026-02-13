@@ -107,11 +107,17 @@ impl BorrowEngine for BranchAwarePlan {
         if consumed >= uses.len() {
             return 0;
         }
+        // Match OwnershipPlan semantics: return the count of uses from `consumed`
+        // onwards (including the current use) that can co-execute with each other.
+        // This means the current use counts as 1, plus any future uses on
+        // compatible (co-executing) branches.
         let current_branch = &uses[consumed].branch_path;
-        uses[consumed + 1..]
+        let future_conflicting = uses[consumed + 1..]
             .iter()
             .filter(|u| branches_can_coexecute(current_branch, &u.branch_path))
-            .count()
+            .count();
+        // Include the current use in the count (1 + future_conflicting)
+        1 + future_conflicting
     }
 
     fn consume(&mut self, place: &str) {
@@ -328,7 +334,7 @@ mod tests {
                 branch_path: else_path,
             });
 
-        assert_eq!(plan.remaining_conflicting("x"), 0);
+        assert_eq!(plan.remaining_conflicting("x"), 1);
     }
 
     #[test]
@@ -345,7 +351,7 @@ mod tests {
                 });
         }
 
-        assert_eq!(plan.remaining_conflicting("x"), 1);
+        assert_eq!(plan.remaining_conflicting("x"), 2);
     }
 
     #[test]
@@ -368,7 +374,7 @@ mod tests {
                 branch_path: inner_arm,
             });
 
-        assert_eq!(plan.remaining_conflicting("x"), 1);
+        assert_eq!(plan.remaining_conflicting("x"), 2);
     }
 
     #[test]
@@ -385,11 +391,11 @@ mod tests {
                 });
         }
 
+        assert_eq!(plan.remaining_conflicting("x"), 3);
+        plan.consume("x");
         assert_eq!(plan.remaining_conflicting("x"), 2);
         plan.consume("x");
         assert_eq!(plan.remaining_conflicting("x"), 1);
-        plan.consume("x");
-        assert_eq!(plan.remaining_conflicting("x"), 0);
     }
 
     #[test]
@@ -423,7 +429,6 @@ mod tests {
                 });
         }
 
-        // At arm 0, arms 1 and 2 are in different branches — 0 conflicts.
-        assert_eq!(plan.remaining_conflicting("x"), 0);
+        assert_eq!(plan.remaining_conflicting("x"), 1);
     }
 }

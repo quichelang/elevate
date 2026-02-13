@@ -1,4 +1,4 @@
-use elevate::{CompileOptions, compile_source, compile_source_with_options};
+use elevate::{CompileOptions, compile_source_with_options};
 
 fn compile_with_bidi(source: &str) -> Result<elevate::CompilerOutput, elevate::CompileError> {
     let mut options = CompileOptions::default();
@@ -12,6 +12,12 @@ fn compile_with_fallback(source: &str) -> Result<elevate::CompilerOutput, elevat
     compile_source_with_options(source, &options)
 }
 
+fn compile_strict(source: &str) -> Result<elevate::CompilerOutput, elevate::CompileError> {
+    let mut options = CompileOptions::default();
+    options.experiments.type_system = false;
+    compile_source_with_options(source, &options)
+}
+
 #[test]
 fn strict_mode_rejects_array_none_some_without_annotation() {
     let source = r#"
@@ -19,7 +25,7 @@ fn strict_mode_rejects_array_none_some_without_annotation() {
             return [None, Some(1)];
         }
     "#;
-    let error = compile_source(source).expect_err("strict mode should reject");
+    let error = compile_strict(source).expect_err("strict mode should reject");
     assert!(
         error
             .to_string()
@@ -219,7 +225,7 @@ fn strict_mode_rejects_implicit_assignment_binding() {
             return;
         }
     "#;
-    let error = compile_source(source).expect_err("strict mode should reject undeclared target");
+    let error = compile_strict(source).expect_err("strict mode should reject undeclared target");
     assert!(error.to_string().contains("Unknown assignment target `x`"));
 }
 
@@ -250,7 +256,7 @@ fn strict_mode_rejects_placeholder_param_in_arithmetic() {
             return add(3, 4);
         }
     "#;
-    let error = compile_source(source).expect_err("strict mode should reject unresolved param");
+    let error = compile_strict(source).expect_err("strict mode should reject unresolved param");
     assert!(
         error
             .to_string()
@@ -337,7 +343,7 @@ fn strict_mode_rejects_missing_add_types_without_bidi() {
         }
     "#;
     let error =
-        compile_source(source).expect_err("strict mode should reject unresolved add signature");
+        compile_strict(source).expect_err("strict mode should reject unresolved add signature");
     assert!(
         error
             .to_string()

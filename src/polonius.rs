@@ -37,7 +37,9 @@ impl BorrowEngine for PoloniusEngine {
     fn remaining_conflicting(&self, place: &str) -> usize {
         let total = self.place_use_counts.get(place).copied().unwrap_or(0);
         let consumed = self.consumed.get(place).copied().unwrap_or(0);
-        total.saturating_sub(consumed + 1)
+        // Match OwnershipPlan semantics: return total remaining uses
+        // including the current unconsumed one.
+        total.saturating_sub(consumed)
     }
 
     fn consume(&mut self, place: &str) {
@@ -199,11 +201,11 @@ mod tests {
         let mut engine = PoloniusEngine::default();
         engine.place_use_counts.insert("x".to_string(), 3);
 
+        assert_eq!(engine.remaining_conflicting("x"), 3);
+        engine.consume("x");
         assert_eq!(engine.remaining_conflicting("x"), 2);
         engine.consume("x");
         assert_eq!(engine.remaining_conflicting("x"), 1);
-        engine.consume("x");
-        assert_eq!(engine.remaining_conflicting("x"), 0);
     }
 
     #[test]
