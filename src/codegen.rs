@@ -255,7 +255,7 @@ fn emit_expr(expr: &RustExpr) -> String {
         RustExpr::Float(value) => value.clone(),
         RustExpr::Bool(value) => value.to_string(),
         RustExpr::Char(value) => emit_char_literal(*value),
-        RustExpr::String(value) => format!("::std::string::String::from({value:?})"),
+        RustExpr::String(value) => format!("{value:?}"),
         RustExpr::Path(path) => path.join("::"),
         RustExpr::Borrow(inner) => {
             let inner_text = emit_expr(inner);

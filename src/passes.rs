@@ -1417,6 +1417,7 @@ struct LoweringContext {
     scope_name: String,
     loop_depth: usize,
     rebind_place: Option<OwnershipPlace>,
+    return_type: Option<String>,
 }
 
 impl Default for LoweringContext {
@@ -1427,6 +1428,7 @@ impl Default for LoweringContext {
             scope_name: String::new(),
             loop_depth: 0,
             rebind_place: None,
+            return_type: None,
         }
     }
 }
@@ -2009,6 +2011,7 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         ownership_plan: OwnershipPlan::from_stmts(&def.body),
         borrow_engine,
         scope_name: def.name.clone(),
+        return_type: Some(def.return_type.clone()),
         ..LoweringContext::default()
     };
     let lowered_body: Vec<RustStmt> = def
@@ -4317,9 +4320,9 @@ fn infer_expr(
         Expr::String(value) => (
             TypedExpr {
                 kind: TypedExprKind::String(value.clone()),
-                ty: "String".to_string(),
+                ty: "str".to_string(),
             },
-            named_type("String"),
+            named_type("str"),
         ),
         Expr::Path(path) => {
             let ty = if path.len() == 1 {
@@ -8140,7 +8143,7 @@ fn refine_expr_type_hint(
 fn is_exact_string_type(ty: &SemType) -> bool {
     matches!(
         ty,
-        SemType::Path { path, args } if path.len() == 1 && path[0] == "String" && args.is_empty()
+        SemType::Path { path, args } if path.len() == 1 && (path[0] == "String" || path[0] == "str") && args.is_empty()
     )
 }
 
@@ -8916,6 +8919,25 @@ fn infer_for_item_type(iter_expr: &TypedExpr, iter_ty: &SemType) -> SemType {
     SemType::Unknown
 }
 
+/// Wrap an expression with `.to_string()` if the expression type is `str`/`&str`
+/// and the target type expects `String`.
+fn maybe_coerce_str_to_string(expr: RustExpr, expr_type: &str, target_type: &str) -> RustExpr {
+    let is_str_expr = expr_type == "str" || expr_type == "&str";
+    let target_wants_string = target_type.contains("String");
+    if is_str_expr && target_wants_string {
+        RustExpr::Call {
+            callee: Box::new(RustExpr::Field {
+                base: Box::new(expr),
+                field: "to_string".into(),
+            }),
+            args: vec![],
+            mutates_receiver: false,
+        }
+    } else {
+        expr
+    }
+}
+
 fn lower_stmt_with_context(
     stmt: &TypedStmt,
     context: &mut LoweringContext,
@@ -8955,11 +8977,18 @@ fn lower_stmt_with_context(
                 lowered
             },
         },
-        TypedStmt::Return(value) => RustStmt::Return(
-            value
-                .as_ref()
-                .map(|expr| lower_expr_with_context(expr, context, ExprPosition::Consuming, state)),
-        ),
+        TypedStmt::Return(value) => {
+            let lowered = value.as_ref().map(|expr| {
+                let lowered_expr =
+                    lower_expr_with_context(expr, context, ExprPosition::Consuming, state);
+                maybe_coerce_str_to_string(
+                    lowered_expr,
+                    &expr.ty,
+                    context.return_type.as_deref().unwrap_or(""),
+                )
+            });
+            RustStmt::Return(lowered)
+        }
         TypedStmt::If {
             condition,
             then_body,
@@ -9338,7 +9367,18 @@ fn lower_expr_with_context(
                                 borrow_expr(lowered)
                             }
                         } else {
-                            lower_expr_with_context(arg, context, ExprPosition::Consuming, state)
+                            let lowered = lower_expr_with_context(
+                                arg,
+                                context,
+                                ExprPosition::Consuming,
+                                state,
+                            );
+                            // Coerce str → String when passing a str literal to a consuming position
+                            if arg.ty == "str" || arg.ty == "&str" {
+                                maybe_coerce_str_to_string(lowered, &arg.ty, "String")
+                            } else {
+                                lowered
+                            }
                         }
                     })
                     .collect(),
@@ -9432,7 +9472,15 @@ fn lower_expr_with_context(
                 && context.ownership_plan.remaining_conflicting_for_expr(index) > 0;
             let lowered_key = lower_index_expr(index, &base_ty, key_position, context, state);
             let lowered_key_arg = match indexing.key_passing {
-                TypedIndexKeyPassing::Borrowed => borrow_expr(lowered_key),
+                TypedIndexKeyPassing::Borrowed => {
+                    // str/&str is already a reference — don't double-borrow to &&str.
+                    let key_ty = index.ty.trim();
+                    if key_ty.starts_with('&') || key_ty == "str" {
+                        lowered_key
+                    } else {
+                        borrow_expr(lowered_key)
+                    }
+                }
                 TypedIndexKeyPassing::Owned => lowered_key,
                 TypedIndexKeyPassing::CloneIfNeeded => {
                     if clone_if_needed {
@@ -11550,6 +11598,11 @@ enum RustTypeRenderMode {
     TraitBound,
 }
 
+/// Returns true if the SemType is a standalone `str` path (no generic args).
+fn is_bare_str(ty: &SemType) -> bool {
+    matches!(ty, SemType::Path { path, args } if path.len() == 1 && path[0] == "str" && args.is_empty())
+}
+
 fn rust_type_string(ty: &SemType, mode: RustTypeRenderMode) -> String {
     match ty {
         SemType::Unit => "()".to_string(),
@@ -11582,12 +11635,25 @@ fn rust_type_string(ty: &SemType, mode: RustTypeRenderMode) -> String {
         }
         SemType::Path { path, args } => {
             let head = path.join("::");
+            // Elevate `str` maps to Rust `&str` when used as a standalone type.
+            if head == "str" && args.is_empty() {
+                return "&str".to_string();
+            }
             if args.is_empty() {
                 head
             } else {
+                // str stays as str inside Box/Rc/Arc/Cow (owned wrappers),
+                // but becomes &str inside any other generic.
+                let keeps_str_unsized = matches!(head.as_str(), "Box" | "Rc" | "Arc" | "Cow");
                 let args = args
                     .iter()
-                    .map(|arg| rust_type_string(arg, RustTypeRenderMode::Owned))
+                    .map(|arg| {
+                        if !keeps_str_unsized && is_bare_str(arg) {
+                            "&str".to_string()
+                        } else {
+                            rust_type_string(arg, RustTypeRenderMode::Owned)
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{head}<{args}>")
@@ -12188,6 +12254,18 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
                 && can_implicitly_coerce_integral_name(actual_name, expected_name)
             {
                 return true;
+            }
+            // &str ↔ String coercion: string literals (&str) are compatible with String.
+            {
+                let actual_joined = actual_path.join("::");
+                let expected_joined = expected_path.join("::");
+                let a = last_path_segment(&actual_joined);
+                let e = last_path_segment(&expected_joined);
+                if (a == "&str" || a == "str") && (e == "String" || e == "&str" || e == "str")
+                    || (a == "String") && (e == "&str" || e == "str")
+                {
+                    return true;
+                }
             }
             if actual_path != expected_path || actual_args.len() != expected_args.len() {
                 return false;
@@ -13362,7 +13440,37 @@ fn infer_return_type(
             return SemType::Unknown;
         }
     }
-    current
+    // When inferring return types, promote `str` to `String` because `&str`
+    // requires a lifetime annotation that may not be available (no reference inputs).
+    promote_str_to_string_in_type(current)
+}
+
+/// Promote `str` to `String` recursively in a type, since inferred `&str`
+/// return types lack a lifetime source in functions without reference params.
+fn promote_str_to_string_in_type(ty: SemType) -> SemType {
+    match ty {
+        SemType::Path { path, args } => {
+            let is_str = path.len() == 1 && path[0] == "str";
+            if is_str && args.is_empty() {
+                named_type("String")
+            } else {
+                SemType::Path {
+                    path,
+                    args: args
+                        .into_iter()
+                        .map(promote_str_to_string_in_type)
+                        .collect(),
+                }
+            }
+        }
+        SemType::Tuple(items) => SemType::Tuple(
+            items
+                .into_iter()
+                .map(promote_str_to_string_in_type)
+                .collect(),
+        ),
+        other => other,
+    }
 }
 
 fn lower_block_with_types(

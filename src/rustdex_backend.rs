@@ -298,6 +298,14 @@ pub fn lookup_trait_method_sig(
     trait_name: &str,
     method_name: &str,
 ) -> Option<(rustdex::MethodSig, String)> {
+    // Respect backend preference — if CLI is explicitly selected, skip the
+    // direct index so the caller falls through to the CLI trait_method_signature path.
+    if std::env::var("ELEVATE_RUSTDEX_BACKEND")
+        .map(|v| v.trim().eq_ignore_ascii_case("cli"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
     let index = direct_index().ok()?;
     for imp in &index.impls {
         if !imp.trait_name.is_empty()

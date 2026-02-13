@@ -1,5 +1,5 @@
-use elevate::{CompileOptions, compile_source, compile_source_with_options};
 use elevate::rustdex_backend;
+use elevate::{CompileOptions, compile_source, compile_source_with_options};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -74,7 +74,7 @@ fn integration_rustdex_is_operational_and_drives_signature_detection() {
         use std::cmp::PartialEq;
 
         pub struct Token {
-            value: i64;
+            value: i64,
         }
 
         impl PartialEq for Token {

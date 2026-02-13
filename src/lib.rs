@@ -1832,7 +1832,7 @@ mod tests {
                 if flag {
                     return Result::Ok(1);
                 }
-                return Result::Err("bad");
+                return Result::Err("bad".to_string());
             }
         "#;
 
@@ -1876,7 +1876,7 @@ mod tests {
                 if flag {
                     return Some(Result::Ok(1));
                 }
-                return Some(Result::Err("bad"));
+                return Some(Result::Err("bad".to_string()));
             }
         "#;
 
@@ -2105,8 +2105,8 @@ mod tests {
         let error = compile_source(source).expect_err("expected generic mismatch");
         let rendered = error.to_string();
         assert!(
-            rendered.contains("Arg 2 for `same`: expected `T`, got `String`")
-                || rendered.contains("Arg 2 for `same`: expected `i64`, got `String`")
+            rendered.contains("Arg 2 for `same`: expected `T`, got `str`")
+                || rendered.contains("Arg 2 for `same`: expected `i64`, got `str`")
         );
     }
 
@@ -2216,8 +2216,8 @@ mod tests {
             struct Label { text: String, }
 
             impl Label {
-                fn draw_label(self: Self, prefix: String) -> String {
-                    return prefix + self.text;
+                fn draw_label(self: Self, prefix: str) -> String {
+                    return prefix.to_string() + self.text;
                 }
             }
 
@@ -3836,7 +3836,7 @@ mod tests {
             }
 
             impl Lookup {
-                pub fn get(self, key: String) -> Option<i64> {
+                pub fn get(self, key: str) -> Option<i64> {
                     std::mem::drop(key);
                     return Some(self.value);
                 }
@@ -4317,7 +4317,7 @@ world"#;
         let source = r#"
             pub fn frame() -> String {
                 const head = "\x1b[H\n";
-                head
+                head.to_string()
             }
         "#;
 
