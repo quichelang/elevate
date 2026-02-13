@@ -7,9 +7,11 @@ pub mod diag;
 pub mod emit_elevate;
 pub mod ir;
 pub mod lexer;
+pub mod liveness;
 pub mod ownership_planner;
 pub mod parser;
 pub mod passes;
+pub mod polonius;
 mod rustdex_adapter;
 pub mod rustdex_backend;
 pub mod source;
@@ -27,6 +29,8 @@ use ir::typed::TypedModule;
 pub struct ExperimentFlags {
     pub move_mut_args: bool,
     pub type_system: bool,
+    pub optimistic_move: bool,
+    pub polonius: bool,
 }
 
 impl Default for ExperimentFlags {
@@ -34,6 +38,8 @@ impl Default for ExperimentFlags {
         Self {
             move_mut_args: false,
             type_system: true, // on by default; --strict disables
+            optimistic_move: false,
+            polonius: false,
         }
     }
 }
@@ -50,6 +56,12 @@ impl ExperimentFlags {
         }
         if self.type_system_enabled() {
             out.push("exp_type_system");
+        }
+        if self.optimistic_move {
+            out.push("exp_optimistic_move");
+        }
+        if self.polonius {
+            out.push("exp_polonius");
         }
         out
     }

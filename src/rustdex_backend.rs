@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
-use rustdex::{IndexBuilder, StdIndex};
+use rustdex::{CrateIndex, IndexBuilder, StdIndex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitMethodSignature {
@@ -55,10 +55,43 @@ impl BackendPreference {
 }
 
 static DIRECT_INDEX: OnceLock<Result<StdIndex, RustdexError>> = OnceLock::new();
+static CRATE_INDICES: OnceLock<Mutex<std::collections::HashMap<String, CrateIndex>>> =
+    OnceLock::new();
 static TYPE_TRAIT_CACHE: OnceLock<Mutex<std::collections::HashMap<(String, String), bool>>> =
     OnceLock::new();
+
+/// Load a custom CrateIndex from a file and register it under a crate name.
+pub fn load_crate_index(crate_name: &str, path: &PathBuf) -> Result<(), RustdexError> {
+    let index = CrateIndex::load(path).map_err(|e| RustdexError::IndexUnavailable {
+        backend: "custom",
+        detail: e,
+    })?;
+    let indices = CRATE_INDICES.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    indices
+        .lock()
+        .unwrap()
+        .insert(crate_name.to_string(), index);
+    Ok(())
+}
+
+/// Look up a top-level function signature from a registered crate index.
+pub fn lookup_function_signature(
+    crate_name: &str,
+    function_path: &str,
+) -> Option<rustdex::MethodSig> {
+    if let Some(indices) = CRATE_INDICES.get() {
+        if let Ok(map) = indices.lock() {
+            if let Some(index) = map.get(crate_name) {
+                return index.lookup_function(function_path).cloned();
+            }
+        }
+    }
+    None
+}
 static TYPE_METHOD_CACHE: OnceLock<Mutex<std::collections::HashMap<(String, String), bool>>> =
     OnceLock::new();
+
+/// Load a custom CrateIndex from a file and register it under a crate name.
 
 pub fn preflight_required() -> Result<RustdexSession, RustdexError> {
     let backend = backend_preference()?;

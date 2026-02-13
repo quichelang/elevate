@@ -147,8 +147,15 @@ pub fn transpile_ers_crate_with_options(
         copied_files: 0,
     };
 
-    // Scan Rust host modules for fn signatures so we know which args to borrow.
-    let host_hints = scan_rust_source_borrow_hints(&source_src);
+    // Extract host module borrow hints: prefer Rustdex (cargo rustdoc JSON),
+    // fall back to regex source scanning if cargo rustdoc is unavailable.
+    let host_hints = match rustdex_borrow_hints(&summary.source_root) {
+        Ok(hints) => hints,
+        Err(_reason) => {
+            // Fallback: regex-based source scanning
+            scan_rust_source_borrow_hints(&source_src)
+        }
+    };
     let mut enriched_options = options.clone();
     for hint in host_hints {
         if !enriched_options
@@ -520,7 +527,115 @@ fn infer_clone_places_from_suggestion(original_line: &str, suggested_line: &str)
 }
 
 // ---------------------------------------------------------------------------
-// Host module signature scanning pass
+// Rustdex-based host module signature extraction (preferred)
+// ---------------------------------------------------------------------------
+
+/// Run `cargo rustdoc` on the source crate to produce a rustdoc JSON file,
+/// then use Rustdex to extract `DirectBorrowHint`s for all public functions.
+///
+/// Returns `Ok(hints)` on success, or `Err(reason)` if `cargo rustdoc` fails
+/// (so the caller can fall back to the regex scanner).
+fn rustdex_borrow_hints(source_root: &Path) -> Result<Vec<crate::DirectBorrowHint>, String> {
+    let json_path = generate_host_rustdoc_json(source_root)?;
+    rustdex_borrow_hints_from_json(&json_path)
+}
+
+/// Run `cargo rustdoc -Z unstable-options --output-format json` on the source
+/// crate root and return the path to the generated JSON file.
+fn generate_host_rustdoc_json(source_root: &Path) -> Result<PathBuf, String> {
+    let crate_name = crate_name_from_manifest(&source_root.join("Cargo.toml"))?;
+
+    let output = Command::new("cargo")
+        .arg("rustdoc")
+        .arg("--lib")
+        .arg("-Z")
+        .arg("unstable-options")
+        .arg("--output-format")
+        .arg("json")
+        .current_dir(source_root)
+        .output()
+        .map_err(|e| format!("failed to run cargo rustdoc: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "cargo rustdoc failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    // The JSON output is at target/doc/<crate_name>.json
+    // The crate name in the filename uses underscores instead of hyphens.
+    let json_name = format!("{}.json", crate_name.replace('-', "_"));
+    let json_path = source_root.join("target").join("doc").join(&json_name);
+    if json_path.exists() {
+        return Ok(json_path);
+    }
+
+    // Fallback: scan target/doc/ for any .json file
+    if let Ok(entries) = fs::read_dir(source_root.join("target").join("doc")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension() == Some(OsStr::new("json")) {
+                return Ok(path);
+            }
+        }
+    }
+
+    Err(format!(
+        "cargo rustdoc ran but no JSON found at {}",
+        json_path.display()
+    ))
+}
+
+/// Extract `DirectBorrowHint`s from a rustdoc JSON file using Rustdex.
+fn rustdex_borrow_hints_from_json(
+    json_path: &Path,
+) -> Result<Vec<crate::DirectBorrowHint>, String> {
+    let index = rustdex::IndexBuilder::from_path(json_path).build()?;
+    let mut hints = Vec::new();
+
+    for func in &index.functions {
+        let borrowed_indexes: Vec<usize> = func
+            .sig
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_ref)
+            .map(|(i, _)| i)
+            .collect();
+
+        if !borrowed_indexes.is_empty() {
+            hints.push(crate::DirectBorrowHint {
+                path: func.path.clone(),
+                borrowed_arg_indexes: borrowed_indexes,
+            });
+        }
+    }
+
+    Ok(hints)
+}
+
+/// Extract the crate name from a Cargo.toml file.
+fn crate_name_from_manifest(manifest_path: &Path) -> Result<String, String> {
+    let contents =
+        fs::read_to_string(manifest_path).map_err(|e| format!("read Cargo.toml: {e}"))?;
+    // Simple TOML parsing — look for `name = "..."` under [package]
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("name") {
+            if let Some(value) = trimmed.split('=').nth(1) {
+                let name = value.trim().trim_matches('"').trim_matches('\'');
+                if !name.is_empty() {
+                    return Ok(name.to_string());
+                }
+            }
+        }
+    }
+    Err("could not find package name in Cargo.toml".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Host module signature scanning pass (regex fallback)
 // ---------------------------------------------------------------------------
 
 /// Scan `.rs` files under `src_dir` for `pub fn` signatures and extract

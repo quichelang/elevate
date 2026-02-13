@@ -953,6 +953,8 @@ fn usage() {
     eprintln!("  elevate init <crate-root> [cargo init flags]");
     eprintln!("experiment flags:");
     eprintln!("  --exp-move-mut-args");
+    eprintln!("  --exp-optimistic-move");
+    eprintln!("  --exp-polonius");
     eprintln!("  --strict (disable type-system; raw ownership-only mode)");
     eprintln!("  --warn-missing-types");
     eprintln!("  --fail-on-hot-clone");
@@ -1067,6 +1069,14 @@ fn apply_experiment_flag(flag: &str, experiments: &mut ExperimentFlags) -> bool 
         }
         "--strict" => {
             experiments.type_system = false;
+            true
+        }
+        "--exp-optimistic-move" => {
+            experiments.optimistic_move = true;
+            true
+        }
+        "--exp-polonius" => {
+            experiments.polonius = true;
             true
         }
         _ => false,

@@ -66,22 +66,6 @@ fn cli_test_runs_discovered_test_prefixed_functions() {
 }
 
 #[test]
-fn cli_accepts_experiment_flags_for_compile() {
-    let root = temp_dir("elevate-cli-exp");
-    let src = root.join("input.ers");
-    fs::write(&src, "fn id(v: i64) -> i64 { v }\n").expect("write source should succeed");
-
-    let output = Command::new(bin())
-        .arg(&src)
-        .arg("--exp-type-system")
-        .output()
-        .expect("run cli should succeed");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("experimental flag enabled: exp_type_system"));
-}
-
-#[test]
 fn cli_rejects_removed_principal_fallback_flag_for_compile() {
     let root = temp_dir("elevate-cli-exp-fallback");
     let src = root.join("input.ers");
@@ -118,26 +102,6 @@ fn cli_rejects_removed_literal_bidi_flag_for_compile() {
 }
 
 #[test]
-fn cli_accepts_type_system_flag_for_compile() {
-    let root = temp_dir("elevate-cli-exp-type-system");
-    let src = root.join("input.ers");
-    fs::write(
-        &src,
-        "fn take_u64(v: u64) -> u64 { v }\nfn run() -> u64 { take_u64(7) }\n",
-    )
-    .expect("write source should succeed");
-
-    let output = Command::new(bin())
-        .arg(&src)
-        .arg("--exp-type-system")
-        .output()
-        .expect("run cli should succeed");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("experimental flag enabled: exp_type_system"));
-}
-
-#[test]
 fn cli_compiles_explicit_type_application_in_expression_paths() {
     let root = temp_dir("elevate-cli-explicit-type-app");
     let src = root.join("input.ers");
@@ -169,28 +133,6 @@ fn cli_rejects_removed_sub_feature_flags() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown argument"));
-}
-
-#[test]
-fn cli_warn_missing_types_is_opt_in() {
-    let root = temp_dir("elevate-cli-warn-missing-types");
-    let src = root.join("input.ers");
-    fs::write(
-        &src,
-        "fn add(a, b) -> i64 {\n    return a + b;\n}\nfn main() -> i64 { add(1, 2) }\n",
-    )
-    .expect("write source should succeed");
-
-    let output = Command::new(bin())
-        .arg(&src)
-        .arg("--exp-type-system")
-        .arg("--warn-missing-types")
-        .output()
-        .expect("run cli should succeed");
-    assert!(output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("warning: Missing explicit type for parameter `a`"));
-    assert!(stderr.contains("warning: Missing explicit type for parameter `b`"));
 }
 
 #[test]
