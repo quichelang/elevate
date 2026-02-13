@@ -8314,6 +8314,29 @@ fn method_arg_type_compatible(expr: Option<&Expr>, actual: &SemType, expected: &
     if is_compatible(actual, expected) {
         return true;
     }
+    // Closures have unique typing that Elevate cannot fully validate — accept
+    // them for any method argument and let the Rust compiler enforce FnOnce /
+    // FnMut / Fn trait bounds.
+    if matches!(actual, SemType::Fn { .. }) {
+        return true;
+    }
+    // IntoIterator coercion: Vec<T> and Iter(T) are accepted where T is
+    // expected, because Vec/Iter implement IntoIterator. This handles
+    // methods like `extend`, `chain`, etc.
+    let item_ty_of_actual = match actual {
+        SemType::Iter(item) => Some(item.as_ref()),
+        SemType::Path { path, args }
+            if path.last().is_some_and(|s| s == "Vec") && !args.is_empty() =>
+        {
+            Some(&args[0])
+        }
+        _ => None,
+    };
+    if let Some(item) = item_ty_of_actual {
+        if is_compatible(item, expected) {
+            return true;
+        }
+    }
     if literal_bidi_adjusted_numeric_arg_type(expr, actual, expected).is_some() {
         return true;
     }
@@ -8487,6 +8510,11 @@ fn can_implicitly_coerce_integral_name(actual: &str, expected: &str) -> bool {
     if actual == expected {
         return true;
     }
+    // usize ↔ integer coercion is always allowed — usize is the return type of
+    // .len(), .count(), etc. and users almost always treat it as i64 in Elevate.
+    if is_usize_integral_coercion(actual, expected) {
+        return true;
+    }
     let Some(actual_spec) = integral_type_spec(actual) else {
         return false;
     };
@@ -8502,6 +8530,18 @@ fn can_implicitly_coerce_integral_name(actual: &str, expected: &str) -> bool {
         // wrapping before cast, so width parity is acceptable.
         (true, false) => expected_spec.bits >= actual_spec.bits,
     }
+}
+
+/// usize ↔ integer coercion is always enabled (not gated by --exp-type-system).
+/// This is because usize is pervasive in Rust's stdlib (.len(), .count(), indexing)
+/// and Elevate users should not need explicit casts for these common patterns.
+fn is_usize_integral_coercion(actual: &str, expected: &str) -> bool {
+    let involves_usize = actual == "usize" || expected == "usize";
+    if !involves_usize {
+        return false;
+    }
+    let other = if actual == "usize" { expected } else { actual };
+    is_integral_numeric_type_name(other)
 }
 
 fn integral_coercion_hint(actual: &SemType, expected: &SemType) -> Option<String> {
@@ -8693,7 +8733,16 @@ fn maybe_insert_implicit_integral_cast(
     actual: &SemType,
     expected: &SemType,
 ) -> TypedExpr {
-    if !numeric_coercion_enabled() {
+    // usize coercion is always on; other numeric coercion requires --exp-type-system.
+    let usize_path = if let (Some(an), Some(en)) = (
+        canonical_numeric_name(actual),
+        canonical_numeric_name(expected),
+    ) {
+        is_usize_integral_coercion(an, en)
+    } else {
+        false
+    };
+    if !usize_path && !numeric_coercion_enabled() {
         return typed_expr;
     }
     let (Some(actual_name), Some(expected_name)) = (
@@ -12120,6 +12169,15 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
                 args: expected_args,
             },
         ) => {
+            // usize ↔ integer coercion is always allowed, independent of --exp-type-system.
+            if let (Some(actual_name), Some(expected_name)) = (
+                canonical_numeric_name(actual),
+                canonical_numeric_name(expected),
+            ) {
+                if is_usize_integral_coercion(actual_name, expected_name) {
+                    return true;
+                }
+            }
             if numeric_coercion_enabled()
                 && let (Some(actual_name), Some(expected_name)) = (
                     canonical_numeric_name(actual),

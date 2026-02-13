@@ -874,13 +874,18 @@ impl Parser {
             };
             let is_block_arm = matches!(value, Expr::Block(_));
             if !is_block_arm {
-                self.expect(
-                    TokenKind::Semicolon,
-                    "Expected ';' after match arm expression",
-                )?;
+                // Accept both `;` and `,` as match arm delimiters (Rust uses `,`).
+                if !self.match_kind(TokenKind::Comma) {
+                    self.expect(
+                        TokenKind::Semicolon,
+                        "Expected ';' or ',' after match arm expression",
+                    )?;
+                }
             } else {
-                // Optional: consume trailing `;` if present
-                self.match_kind(TokenKind::Semicolon);
+                // Optional: consume trailing `;` or `,` if present after block arm
+                if !self.match_kind(TokenKind::Comma) {
+                    self.match_kind(TokenKind::Semicolon);
+                }
             }
             arms.push(MatchArm {
                 pattern,
@@ -1105,15 +1110,25 @@ impl Parser {
                     self.error_current("Macro invocation requires a path before '!'");
                     return None;
                 };
-                self.expect(TokenKind::LParen, "Expected '(' after macro '!'")?;
+                // Macros accept (), [], or {} delimiters
+                let (close_kind, close_msg) = if self.match_kind(TokenKind::LParen) {
+                    (TokenKind::RParen, "Expected ')' after macro arguments")
+                } else if self.match_kind(TokenKind::LBracket) {
+                    (TokenKind::RBracket, "Expected ']' after macro arguments")
+                } else if self.match_kind(TokenKind::LBrace) {
+                    (TokenKind::RBrace, "Expected '}' after macro arguments")
+                } else {
+                    self.error_current("Expected '(', '[', or '{' after macro '!'");
+                    return None;
+                };
                 let mut args = Vec::new();
-                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                while !self.at(close_kind.clone()) && !self.at(TokenKind::Eof) {
                     args.push(self.parse_expr()?);
                     if !self.match_kind(TokenKind::Comma) {
                         break;
                     }
                 }
-                self.expect(TokenKind::RParen, "Expected ')' after macro arguments")?;
+                self.expect(close_kind, close_msg)?;
                 expr = Expr::MacroCall {
                     path: path.clone(),
                     args,
@@ -1352,11 +1367,11 @@ impl Parser {
         let mut params = Vec::new();
         while !self.at(TokenKind::Pipe) && !self.at(TokenKind::Eof) {
             let name = self.expect_ident("Expected closure parameter name")?;
-            self.expect(
-                TokenKind::Colon,
-                "Expected ':' after closure parameter name",
-            )?;
-            let ty = self.parse_type()?;
+            let ty = if self.match_kind(TokenKind::Colon) {
+                self.parse_type()?
+            } else {
+                inferred_placeholder_type()
+            };
             params.push(Param { name, ty });
             if !self.match_kind(TokenKind::Comma) {
                 break;

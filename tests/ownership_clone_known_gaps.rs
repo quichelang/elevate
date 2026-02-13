@@ -5,7 +5,6 @@ use elevate::compile_source;
 // CI stays green while we track compiler hardening work.
 
 #[test]
-#[ignore = "known gap: closure capture + repeated owned consumption"]
 fn gap_closure_capture_reuse_should_clone_captured_vec() {
     let source = r#"
         fn consume_words(words: Vec<String>) -> i64 {
@@ -29,7 +28,7 @@ fn gap_closure_capture_reuse_should_clone_captured_vec() {
 }
 
 #[test]
-#[ignore = "known gap: nested match + consuming calls should preserve post-match reuse"]
+#[ignore = "parser: true/false as match arm patterns parsed in expression context; clone planning needs arm-aware analysis"]
 fn gap_match_arms_then_post_match_reuse_should_clone_once() {
     let source = r#"
         fn consume_text(text: String) -> i64 {
@@ -56,11 +55,11 @@ fn gap_match_arms_then_post_match_reuse_should_clone_once() {
 }
 
 #[test]
-#[ignore = "known gap: for-loop over nested projection in helper closure"]
+#[ignore = "clone planning: nested field projection (outer.inner.values) not tracked for clone insertion"]
 fn gap_loop_projection_capture_should_clone_projection_root() {
     let source = r#"
-        pub struct Inner { values: Vec<String>; }
-        pub struct Outer { inner: Inner; }
+        pub struct Inner { values: Vec<String>, }
+        pub struct Outer { inner: Inner, }
 
         fn consume_words(words: Vec<String>) -> i64 {
             std::mem::drop(words);
@@ -94,10 +93,9 @@ fn gap_loop_projection_capture_should_clone_projection_root() {
 }
 
 #[test]
-#[ignore = "known gap: nested container through helper return path"]
 fn gap_nested_container_return_chain_should_clone_at_call_site() {
     let source = r#"
-        pub struct Deck { words: Vec<Vec<String>>; }
+        pub struct Deck { words: Vec<Vec<String>>, }
 
         fn consume_deck(words: Vec<Vec<String>>) -> i64 {
             std::mem::drop(words);
@@ -122,7 +120,6 @@ fn gap_nested_container_return_chain_should_clone_at_call_site() {
 }
 
 #[test]
-#[ignore = "known gap: tuple-destructure binding reused with post-destructure ownership move"]
 fn gap_tuple_destructure_then_reuse_should_insert_clone() {
     let source = r#"
         fn consume_pair(pair: (String, String)) -> i64 {
@@ -149,7 +146,6 @@ fn gap_tuple_destructure_then_reuse_should_insert_clone() {
 }
 
 #[test]
-#[ignore = "known gap: map iteration via keys with later owned consumption"]
 fn gap_map_keys_iteration_then_owned_call_should_clone_map() {
     let source = r#"
         use std::collections::HashMap;

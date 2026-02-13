@@ -12,7 +12,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "feedback #1: Vec<String> subscript emits move instead of clone"]
 fn issue1_vec_string_subscript_should_clone() {
     let source = r#"
         fn run(values: Vec<String>) -> String {
@@ -30,7 +29,6 @@ fn issue1_vec_string_subscript_should_clone() {
 }
 
 #[test]
-#[ignore = "feedback #1: Vec<Vec<i64>> subscript should clone inner vec"]
 fn issue1_vec_of_vec_subscript_should_clone() {
     let source = r#"
         fn run(rows: Vec<Vec<i64>>) -> Vec<i64> {
@@ -48,7 +46,6 @@ fn issue1_vec_of_vec_subscript_should_clone() {
 }
 
 #[test]
-#[ignore = "feedback #1: struct field Vec<String> subscript should clone"]
 fn issue1_struct_field_vec_string_subscript_should_clone() {
     let source = r#"
         pub struct Names { items: Vec<String>, }
@@ -69,7 +66,6 @@ fn issue1_struct_field_vec_string_subscript_should_clone() {
 }
 
 #[test]
-#[ignore = "feedback #1: nested struct Vec subscript should clone"]
 fn issue1_nested_struct_vec_subscript_should_clone() {
     let source = r#"
         pub struct Inner { labels: Vec<String>, }
@@ -119,7 +115,6 @@ fn issue1_vec_i64_subscript_should_not_clone() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "feedback #2: i32 function params should accept integer literals"]
 fn issue2_i32_function_params_accept_int_literals() {
     let source = r#"
         fn add(x: i32, y: i32) -> i32 {
@@ -143,7 +138,6 @@ fn issue2_i32_function_params_accept_int_literals() {
 }
 
 #[test]
-#[ignore = "feedback #2: f64 function params should accept float literals"]
 fn issue2_f64_function_params_accept_float_literals() {
     let source = r#"
         fn scale(factor: f64, value: f64) -> f64 {
@@ -167,7 +161,6 @@ fn issue2_f64_function_params_accept_float_literals() {
 }
 
 #[test]
-#[ignore = "feedback #2: usize function params should accept integer literals"]
 fn issue2_usize_params_accept_int_literals() {
     let source = r#"
         fn at_index(values: Vec<i64>, idx: usize) -> i64 {
@@ -191,7 +184,6 @@ fn issue2_usize_params_accept_int_literals() {
 }
 
 #[test]
-#[ignore = "feedback #2: i32 let binding should infer from type annotation"]
 fn issue2_i32_let_binding_infers_from_annotation() {
     let source = r#"
         fn run() -> i32 {
@@ -216,7 +208,6 @@ fn issue2_i32_let_binding_infers_from_annotation() {
 }
 
 #[test]
-#[ignore = "feedback #2: f64 enum variant payload should accept float literal"]
 fn issue2_enum_variant_f64_accepts_float_literal() {
     let source = r#"
         enum Shape {
@@ -227,8 +218,8 @@ fn issue2_enum_variant_f64_accepts_float_literal() {
         fn run() -> f64 {
             const s: Shape = Shape::Circle(10.0);
             match s {
-                Shape::Circle(r) => return r,
-                Shape::Square(side) => return side,
+                Shape::Circle(r) => r,
+                Shape::Square(side) => side,
             }
         }
     "#;
@@ -245,7 +236,6 @@ fn issue2_enum_variant_f64_accepts_float_literal() {
 }
 
 #[test]
-#[ignore = "feedback #2: mixed numeric types in struct fields"]
 fn issue2_struct_with_mixed_numeric_field_types() {
     let source = r#"
         pub struct Measurement {
@@ -279,7 +269,6 @@ fn issue2_struct_with_mixed_numeric_field_types() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "feedback #3: Vec.pop() should resolve"]
 fn issue3_vec_pop_i64() {
     let source = r#"
         fn run() -> Option<i64> {
@@ -294,7 +283,6 @@ fn issue3_vec_pop_i64() {
 }
 
 #[test]
-#[ignore = "feedback #3: Vec.pop() on Vec<String> should resolve"]
 fn issue3_vec_pop_string() {
     let source = r#"
         fn run() -> Option<String> {
@@ -309,7 +297,6 @@ fn issue3_vec_pop_string() {
 }
 
 #[test]
-#[ignore = "feedback #3: Vec.clear() should resolve"]
 fn issue3_vec_clear() {
     let source = r#"
         fn run() {
@@ -325,7 +312,6 @@ fn issue3_vec_clear() {
 }
 
 #[test]
-#[ignore = "feedback #3: Vec.remove() should resolve"]
 fn issue3_vec_remove() {
     let source = r#"
         fn run() -> String {
@@ -340,7 +326,7 @@ fn issue3_vec_remove() {
 }
 
 #[test]
-#[ignore = "feedback #3: Vec.sort() should resolve"]
+#[ignore = "&mut promotion: Vec::sort() requires `let mut v` — mutability detection not yet applied to local bindings"]
 fn issue3_vec_sort() {
     let source = r#"
         fn run() -> Vec<i64> {
@@ -356,7 +342,6 @@ fn issue3_vec_sort() {
 }
 
 #[test]
-#[ignore = "feedback #3: Vec.reverse() should resolve"]
 fn issue3_vec_reverse() {
     let source = r#"
         fn run() -> Vec<i64> {
@@ -372,7 +357,6 @@ fn issue3_vec_reverse() {
 }
 
 #[test]
-#[ignore = "feedback #3: Vec.extend() should resolve"]
 fn issue3_vec_extend() {
     let source = r#"
         fn run() -> Vec<i64> {
@@ -388,7 +372,6 @@ fn issue3_vec_extend() {
 }
 
 #[test]
-#[ignore = "feedback #3: Vec.truncate() should resolve"]
 fn issue3_vec_truncate() {
     let source = r#"
         fn run() -> Vec<i64> {
@@ -404,7 +387,6 @@ fn issue3_vec_truncate() {
 }
 
 #[test]
-#[ignore = "feedback #3: Vec of structs — pop should resolve"]
 fn issue3_vec_of_structs_pop() {
     let source = r#"
         pub struct Task { name: String, priority: i64, }
@@ -493,7 +475,6 @@ fn issue4_match_block_arms_return_values() {
 }
 
 #[test]
-#[ignore = "feedback #4-5: enum match block arms — needs enum comma syntax support"]
 fn issue4_match_enum_block_arms() {
     // Enum with block arms — also needs correct Elevate enum syntax
     let source = r#"
@@ -543,7 +524,6 @@ fn issue4_match_returning_struct() {
 }
 
 #[test]
-#[ignore = "feedback #4-5: match returning Vec from block arms — needs vec macro support"]
 fn issue4_match_returning_vec() {
     // Match returning Vec — requires vec![] macro support
     let source = r#"
@@ -574,7 +554,6 @@ fn issue4_match_returning_vec() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "feedback #7: Option<i64>.unwrap() should resolve"]
 fn issue7_option_unwrap_i64() {
     let source = r#"
         fn run() -> i64 {
@@ -589,7 +568,6 @@ fn issue7_option_unwrap_i64() {
 }
 
 #[test]
-#[ignore = "feedback #7: Option<String>.unwrap() should resolve"]
 fn issue7_option_unwrap_string() {
     let source = r#"
         fn run() -> String {
@@ -604,7 +582,6 @@ fn issue7_option_unwrap_string() {
 }
 
 #[test]
-#[ignore = "feedback #7: Option.map() should resolve"]
 fn issue7_option_map() {
     let source = r#"
         fn run() -> Option<i64> {
@@ -619,7 +596,6 @@ fn issue7_option_map() {
 }
 
 #[test]
-#[ignore = "feedback #7: Option.and_then() should resolve"]
 fn issue7_option_and_then() {
     let source = r#"
         fn safe_div(a: i64, b: i64) -> Option<i64> {
@@ -641,7 +617,6 @@ fn issue7_option_and_then() {
 }
 
 #[test]
-#[ignore = "feedback #7: Option<Vec<i64>>.unwrap() should resolve"]
 fn issue7_option_unwrap_vec() {
     let source = r#"
         fn run() -> Vec<i64> {
@@ -656,7 +631,6 @@ fn issue7_option_unwrap_vec() {
 }
 
 #[test]
-#[ignore = "feedback #7: Option on struct should resolve unwrap"]
 fn issue7_option_unwrap_struct() {
     let source = r#"
         pub struct Config { verbose: bool, }
@@ -679,7 +653,6 @@ fn issue7_option_unwrap_struct() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "feedback #8: HashMap.insert(String, i64) should resolve"]
 fn issue8_hashmap_insert_string_i64() {
     let source = r#"
         use std::collections::HashMap;
@@ -697,7 +670,6 @@ fn issue8_hashmap_insert_string_i64() {
 }
 
 #[test]
-#[ignore = "feedback #8: HashMap.remove(String) should resolve"]
 fn issue8_hashmap_remove() {
     let source = r#"
         use std::collections::HashMap;
@@ -716,7 +688,6 @@ fn issue8_hashmap_remove() {
 }
 
 #[test]
-#[ignore = "feedback #8: HashMap<i64, String>.insert() should resolve"]
 fn issue8_hashmap_insert_i64_string() {
     let source = r#"
         use std::collections::HashMap;
@@ -734,7 +705,6 @@ fn issue8_hashmap_insert_i64_string() {
 }
 
 #[test]
-#[ignore = "feedback #8: HashMap<String, Vec<i64>>.insert() should resolve"]
 fn issue8_hashmap_insert_nested_value() {
     let source = r#"
         use std::collections::HashMap;
@@ -752,7 +722,6 @@ fn issue8_hashmap_insert_nested_value() {
 }
 
 #[test]
-#[ignore = "feedback #8: HashMap with struct values — insert should resolve"]
 fn issue8_hashmap_insert_struct_value() {
     let source = r#"
         use std::collections::HashMap;
@@ -779,7 +748,6 @@ fn issue8_hashmap_insert_struct_value() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "feedback #9: String.to_uppercase() should resolve"]
 fn issue9_string_to_uppercase() {
     let source = r#"
         fn run() -> String {
@@ -794,7 +762,6 @@ fn issue9_string_to_uppercase() {
 }
 
 #[test]
-#[ignore = "feedback #9: String.to_lowercase() should resolve"]
 fn issue9_string_to_lowercase() {
     let source = r#"
         fn run() -> String {
@@ -809,7 +776,6 @@ fn issue9_string_to_lowercase() {
 }
 
 #[test]
-#[ignore = "feedback #9: String.trim() should resolve"]
 fn issue9_string_trim() {
     let source = r#"
         fn run() -> String {
@@ -824,7 +790,7 @@ fn issue9_string_trim() {
 }
 
 #[test]
-#[ignore = "feedback #9: String.replace() should resolve"]
+#[ignore = "String does not implement Pattern trait — codegen emits String::from() where &str is needed"]
 fn issue9_string_replace() {
     let source = r#"
         fn run() -> String {
@@ -839,12 +805,12 @@ fn issue9_string_replace() {
 }
 
 #[test]
-#[ignore = "feedback #9: String.split() should resolve"]
+#[ignore = "String does not implement Pattern trait — codegen emits String::from() where &str is needed"]
 fn issue9_string_split() {
     let source = r#"
         fn run() -> Vec<String> {
             const s: String = String::from("a,b,c");
-            return s.split(String::from(",")).map(|x| -> String { return x.to_string(), }).collect();
+            return s.split(String::from(",")).map(|x| -> String { return x.to_string(); }).collect();
         }
     "#;
 
@@ -854,7 +820,6 @@ fn issue9_string_split() {
 }
 
 #[test]
-#[ignore = "feedback #9: struct field String method should resolve"]
 fn issue9_struct_field_string_method() {
     let source = r#"
         pub struct User { name: String, }
@@ -878,7 +843,6 @@ fn issue9_struct_field_string_method() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "feedback #10: function that mutates Vec arg should get &mut"]
 fn issue10_mutating_vec_arg_should_pass_mut_ref() {
     let source = r#"
         fn add_item(items: Vec<i64>) {
@@ -905,7 +869,6 @@ fn issue10_mutating_vec_arg_should_pass_mut_ref() {
 }
 
 #[test]
-#[ignore = "feedback #10: function that mutates Vec<String> arg"]
 fn issue10_mutating_vec_string_arg() {
     let source = r#"
         fn append(items: Vec<String>) {
@@ -930,7 +893,7 @@ fn issue10_mutating_vec_string_arg() {
 }
 
 #[test]
-#[ignore = "feedback #10: function mutates struct field arg"]
+#[ignore = "&mut promotion: function arg should be promoted to &mut T when struct field is mutated, currently clones instead"]
 fn issue10_mutating_struct_field_arg() {
     let source = r#"
         pub struct Counter { value: i64, }
@@ -957,7 +920,6 @@ fn issue10_mutating_struct_field_arg() {
 }
 
 #[test]
-#[ignore = "feedback #10: function mutates HashMap arg via insert"]
 fn issue10_mutating_hashmap_arg() {
     let source = r#"
         use std::collections::HashMap;
@@ -984,7 +946,7 @@ fn issue10_mutating_hashmap_arg() {
 }
 
 #[test]
-#[ignore = "feedback #10: nested struct mutation through function arg"]
+#[ignore = "&mut promotion: nested struct field mutation should produce &mut T arg, currently clones"]
 fn issue10_nested_struct_mutation() {
     let source = r#"
         pub struct Inner { count: i64, }
@@ -1018,7 +980,6 @@ fn issue10_nested_struct_mutation() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "feedback #16: generic == should infer PartialEq bound"]
 fn issue16_generic_eq_infers_partial_eq() {
     let source = r#"
         fn check_eq<T>(a: T, b: T) -> bool {
@@ -1043,7 +1004,6 @@ fn issue16_generic_eq_infers_partial_eq() {
 }
 
 #[test]
-#[ignore = "feedback #16: generic < should infer PartialOrd bound"]
 fn issue16_generic_lt_infers_partial_ord() {
     let source = r#"
         fn is_less<T>(a: T, b: T) -> bool {
@@ -1068,7 +1028,6 @@ fn issue16_generic_lt_infers_partial_ord() {
 }
 
 #[test]
-#[ignore = "feedback #16: generic + should infer Add bound"]
 fn issue16_generic_add_infers_add() {
     let source = r#"
         fn sum<T>(a: T, b: T) -> T {
@@ -1093,7 +1052,6 @@ fn issue16_generic_add_infers_add() {
 }
 
 #[test]
-#[ignore = "feedback #16: generic function with multiple operators"]
 fn issue16_generic_multiple_ops() {
     let source = r#"
         fn clamp<T>(value: T, min: T, max: T) -> T {
@@ -1124,7 +1082,6 @@ fn issue16_generic_multiple_ops() {
 }
 
 #[test]
-#[ignore = "feedback #16: generic Debug formatting should infer Debug bound"]
 fn issue16_generic_debug_infers_debug() {
     let source = r#"
         fn show<T>(value: T) {
@@ -1155,7 +1112,6 @@ fn issue16_generic_debug_infers_debug() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "cross-cutting: match arm + Vec subscript clone + struct member"]
 fn cross_match_arm_vec_subscript_struct() {
     let source = r#"
         pub struct Bag { words: Vec<String>, }
@@ -1163,11 +1119,11 @@ fn cross_match_arm_vec_subscript_struct() {
         fn run(bag: Bag, idx: i64) -> String {
             match idx {
                 0 => {
-                    return bag.words[0];
-                }
+                    bag.words[0]
+                },
                 _ => {
-                    return bag.words[1];
-                }
+                    bag.words[1]
+                },
             }
         }
     "#;
@@ -1182,7 +1138,7 @@ fn cross_match_arm_vec_subscript_struct() {
 }
 
 #[test]
-#[ignore = "cross-cutting: closure capture + Vec method + reuse"]
+#[ignore = "&mut promotion: closure capturing mutable Vec needs `let mut` — mutability detection not applied to closures"]
 fn cross_closure_vec_pop_reuse() {
     let source = r#"
         fn run() -> i64 {
@@ -1200,7 +1156,6 @@ fn cross_closure_vec_pop_reuse() {
 }
 
 #[test]
-#[ignore = "cross-cutting: HashMap insert + Vec subscript + struct field"]
 fn cross_hashmap_insert_vec_subscript_struct() {
     let source = r#"
         use std::collections::HashMap;
@@ -1227,7 +1182,6 @@ fn cross_hashmap_insert_vec_subscript_struct() {
 }
 
 #[test]
-#[ignore = "cross-cutting: nested Vec<Vec<String>> subscript + reuse"]
 fn cross_nested_vec_subscript_reuse() {
     let source = r#"
         fn consume(rows: Vec<Vec<String>>) -> i64 {
@@ -1254,7 +1208,6 @@ fn cross_nested_vec_subscript_reuse() {
 }
 
 #[test]
-#[ignore = "cross-cutting: tuple destructure + struct field + Vec method"]
 fn cross_destructure_struct_vec_method() {
     let source = r#"
         pub struct Pair { left: Vec<i64>, right: Vec<i64>, }
