@@ -1,0 +1,264 @@
+use fuzzy_finder::host;
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+struct State {
+    query: String,
+    cursor: i64,
+    scroll: i64,
+    results: Vec<String>,
+    matches: i64,
+    files: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Fuzzy matching
+// ---------------------------------------------------------------------------
+
+fn fuzzy_match(name: String, query: String) -> bool {
+    if host::string_len(query) == 0 {
+        return true;
+    }
+    return str::contains(name, query);
+}
+
+fn filter_files(files: Vec<String>, query: String) -> Vec<String> {
+    let results: Vec<String> = [];
+    for file in files {
+        if fuzzy_match(file, query) {
+            results.push(file);
+        }
+    }
+    return results;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+fn render(state: State, height: i64) -> String {
+    let frame = String::from("\x1b[2J\x1b[H");
+    frame = frame + "\x1b[1m> " + state.query + "\x1b[0m\x1b[K\n";
+    frame = frame + "  " + format!("{}", state.matches) + " matches\x1b[K\n";
+    frame = frame + "\x1b[K\n";
+
+    let visible_count = height - 4;
+    let i: i64 = 0;
+    while i < visible_count {
+        let idx = state.scroll + i;
+        if idx < host::vec_len(state.results) {
+            const name = state.results[idx];
+            if idx == state.cursor {
+                frame = frame + "\x1b[7m  " + name + "\x1b[0m\x1b[K\n";
+            } else {
+                frame = frame + "  " + name + "\x1b[K\n";
+            }
+        } else {
+            frame = frame + "\x1b[K\n";
+        }
+        i = i + 1;
+    }
+
+    return frame;
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot (shared variable format for parity comparison)
+// ---------------------------------------------------------------------------
+
+fn snapshot(event: String, state: State) -> String {
+    let selected = String::from("");
+    if state.cursor < host::vec_len(state.results) {
+        selected = format!("{}", state.results[state.cursor]);
+    }
+    return "EVENT=" + event
+        + " | query=" + state.query
+        + " | cursor=" + format!("{}", state.cursor)
+        + " | matches=" + format!("{}", state.matches)
+        + " | scroll=" + format!("{}", state.scroll)
+        + " | selected=" + selected;
+}
+
+// ---------------------------------------------------------------------------
+// Event processing
+// ---------------------------------------------------------------------------
+
+fn process_event(event: String, state: State, height: i64) -> State {
+    let query = state.query;
+    let cursor = state.cursor;
+    let scroll = state.scroll;
+    let files = state.files;
+
+    // Handle character input
+    const char_payload = host::extract_char_payload(event);
+    if host::string_len(char_payload) > 0 {
+        query = query + char_payload;
+    }
+    if event == "backspace" {
+        query = host::string_drop_last(query);
+    }
+
+    // Re-filter
+    let results = filter_files(files, query);
+    let matches: i64 = host::vec_len(results);
+
+    // Arrow keys
+    if event == "up" {
+        cursor = cursor - 1;
+    }
+    if event == "down" {
+        cursor = cursor + 1;
+    }
+
+    // Clamp cursor
+    if cursor < 0 {
+        cursor = 0;
+    }
+    if matches > 0 and cursor >= matches {
+        cursor = matches - 1;
+    }
+    if matches == 0 {
+        cursor = 0;
+    }
+
+    // Scroll
+    let visible_count = height - 4;
+    if cursor < scroll {
+        scroll = cursor;
+    }
+    if cursor >= scroll + visible_count {
+        scroll = cursor - visible_count + 1;
+    }
+    if scroll < 0 {
+        scroll = 0;
+    }
+
+    State {
+        query: query,
+        cursor: cursor,
+        scroll: scroll,
+        results: results,
+        matches: matches,
+        files: files,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Script mode
+// ---------------------------------------------------------------------------
+
+fn run_script(events_path: String, root: String) {
+    let files = host::scan_dir(root);
+    let height: i64 = 24;
+    let initial_count: i64 = host::vec_len(files);
+    let initial_files = host::clone_vec(files);
+    let initial_results = filter_files(files, String::from(""));
+
+    let state = State {
+        query: String::from(""),
+        cursor: 0,
+        scroll: 0,
+        results: initial_results,
+        matches: initial_count,
+        files: initial_files,
+    };
+
+    let events = host::read_script_events(events_path);
+    for raw_event in events {
+        // Normalize "type:x" to "char:x"
+        let event_label = format!("{}", raw_event);
+        let event = format!("{}", raw_event);
+        const type_payload = host::extract_type_payload(raw_event);
+        if host::string_len(type_payload) > 0 {
+            event = "char:" + type_payload;
+        }
+
+        let event_for_check = format!("{}", event);
+        state = process_event(event, state, height);
+
+        host::println(snapshot(event_label, state));
+
+        if event_for_check == "enter" or event_for_check == "escape" {
+            return;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interactive mode
+// ---------------------------------------------------------------------------
+
+fn run_interactive(root: String) {
+    let files = host::scan_dir(root);
+    let height = host::term_height();
+    let initial_count: i64 = host::vec_len(files);
+    let initial_files = host::clone_vec(files);
+    let initial_results = filter_files(files, String::from(""));
+
+    let state = State {
+        query: String::from(""),
+        cursor: 0,
+        scroll: 0,
+        results: initial_results,
+        matches: initial_count,
+        files: initial_files,
+    };
+
+    let saved = host::term_init();
+    host::term_draw(render(state, height));
+
+    let running = true;
+    while running {
+        const key = host::term_read_key();
+        if key == "" {
+            continue;
+        }
+
+        if key == "escape" {
+            running = false;
+            continue;
+        }
+
+        if key == "enter" {
+            if state.cursor < host::vec_len(state.results) {
+                const selected = state.results[state.cursor];
+                host::term_cleanup(saved);
+                host::println(selected);
+                return;
+            }
+            running = false;
+            continue;
+        }
+
+        state = process_event(key, state, height);
+        host::term_draw(render(state, height));
+    }
+
+    host::term_cleanup(saved);
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+fn main() {
+    let args = host::get_args();
+    const argc = host::vec_len(args);
+
+    if argc >= 2 and args[0] == "--script" {
+        const events_path = args[1];
+        let root = String::from(".");
+        if argc >= 3 {
+            root = format!("{}", args[2]);
+        }
+        run_script(events_path, root);
+    } else {
+        let root = String::from(".");
+        if argc >= 1 {
+            root = format!("{}", args[0]);
+        }
+        run_interactive(root);
+    }
+}

@@ -1,0 +1,2 @@
+# Allowed Rust imports for fuzzy finder Elevate sources.
+allow fuzzy_finder::host

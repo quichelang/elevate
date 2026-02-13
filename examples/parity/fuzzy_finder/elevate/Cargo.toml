@@ -1,0 +1,12 @@
+[package]
+name = "fuzzy-finder"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "fuzzy_finder"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fuzzy-finder"
+path = "src/main.rs"

@@ -147,6 +147,19 @@ pub fn transpile_ers_crate_with_options(
         copied_files: 0,
     };
 
+    // Scan Rust host modules for fn signatures so we know which args to borrow.
+    let host_hints = scan_rust_source_borrow_hints(&source_src);
+    let mut enriched_options = options.clone();
+    for hint in host_hints {
+        if !enriched_options
+            .direct_borrow_hints
+            .iter()
+            .any(|h| h.path == hint.path)
+        {
+            enriched_options.direct_borrow_hints.push(hint);
+        }
+    }
+
     let mut transpiled_ers = Vec::new();
     process_src_dir(
         &source_src,
@@ -154,7 +167,7 @@ pub fn transpile_ers_crate_with_options(
         &generated_root.join("src"),
         &mut summary,
         &interop_contract,
-        options,
+        &enriched_options,
         &mut transpiled_ers,
     )?;
     inject_generated_module_declarations(&generated_root.join("src"), &transpiled_ers)?;
@@ -504,6 +517,206 @@ fn infer_clone_places_from_suggestion(original_line: &str, suggested_line: &str)
     places.sort();
     places.dedup();
     places
+}
+
+// ---------------------------------------------------------------------------
+// Host module signature scanning pass
+// ---------------------------------------------------------------------------
+
+/// Scan `.rs` files under `src_dir` for `pub fn` signatures and extract
+/// `DirectBorrowHint` entries for parameters whose types start with `&`.
+///
+/// For a file named `host.rs` containing `pub fn scan_dir(root: &str)`,
+/// this produces `DirectBorrowHint { path: "host::scan_dir", borrowed_arg_indexes: [0] }`.
+fn scan_rust_source_borrow_hints(src_dir: &Path) -> Vec<crate::DirectBorrowHint> {
+    let mut hints = Vec::new();
+    collect_rust_source_hints(src_dir, src_dir, &mut hints);
+    hints
+}
+
+fn collect_rust_source_hints(
+    root: &Path,
+    current: &Path,
+    hints: &mut Vec<crate::DirectBorrowHint>,
+) {
+    let Ok(entries) = fs::read_dir(current) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_source_hints(root, &path, hints);
+            continue;
+        }
+        if path.extension() != Some(OsStr::new("rs")) {
+            continue;
+        }
+        // Skip lib.rs / main.rs — they aren't importable modules from .ers code.
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if matches!(stem, "lib" | "main") {
+            continue;
+        }
+        // Build the module path prefix from the relative path.
+        // e.g.  src/host.rs      → "host"
+        //       src/util/io.rs   → "util::io"
+        let module_path = match module_path_for_rs_file(root, &path) {
+            Some(p) => p,
+            None => continue,
+        };
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for (fn_name, borrowed_indexes) in extract_pub_fn_borrow_info(&source) {
+            if borrowed_indexes.is_empty() {
+                continue;
+            }
+            hints.push(crate::DirectBorrowHint {
+                path: format!("{module_path}::{fn_name}"),
+                borrowed_arg_indexes: borrowed_indexes,
+            });
+        }
+    }
+}
+
+/// Derive a `::` module path from a `.rs` file relative to the src root.
+/// `src/host.rs` → `"host"`, `src/util/io.rs` → `"util::io"`.
+fn module_path_for_rs_file(root: &Path, file: &Path) -> Option<String> {
+    let rel = file.strip_prefix(root).ok()?;
+    let mut rel_no_ext = rel.to_path_buf();
+    rel_no_ext.set_extension("");
+    let parts: Vec<String> = rel_no_ext
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("::"))
+}
+
+/// Extract `(fn_name, borrowed_arg_indexes)` pairs from a Rust source file.
+///
+/// Handles multi-line signatures by joining continuation lines. Only considers
+/// `pub fn` (not methods inside `impl` blocks or private functions).
+fn extract_pub_fn_borrow_info(source: &str) -> Vec<(String, Vec<usize>)> {
+    let mut results = Vec::new();
+    let lines: Vec<&str> = source.lines().collect();
+    let mut i = 0;
+    let mut brace_depth: i32 = 0;
+
+    while i < lines.len() {
+        let line = lines[i].trim();
+
+        // Track brace depth to skip functions inside impl blocks.
+        for ch in line.chars() {
+            match ch {
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                _ => {}
+            }
+        }
+
+        // Only consider top-level pub fn (brace_depth == 0 before this line,
+        // but since we already counted braces on this line, a pub fn opening
+        // its body will have depth 1 after this line).
+        if !line.starts_with("pub fn ") {
+            i += 1;
+            continue;
+        }
+
+        // Collect the full signature (may span multiple lines until `)` or `{`)
+        let mut sig = line.to_string();
+        let mut j = i + 1;
+        while !sig.contains(')') && j < lines.len() {
+            sig.push(' ');
+            sig.push_str(lines[j].trim());
+            j += 1;
+        }
+
+        if let Some((name, borrowed)) = parse_pub_fn_signature(&sig) {
+            results.push((name, borrowed));
+        }
+        i = j;
+    }
+    results
+}
+
+/// Parse a single `pub fn name(params...) -> ...` signature line.
+/// Returns `(fn_name, borrowed_param_indexes)`.
+fn parse_pub_fn_signature(sig: &str) -> Option<(String, Vec<usize>)> {
+    let after_pub_fn = sig.strip_prefix("pub fn ")?.trim_start();
+    // Extract function name (up to first `(` or `<`)
+    let name_end = after_pub_fn.find(|c: char| c == '(' || c == '<')?;
+    let name = after_pub_fn[..name_end].trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    // Extract the parameter list between the first `(` and the matching `)`
+    let params_start = after_pub_fn.find('(')? + 1;
+    let params_text = find_matching_paren(&after_pub_fn[params_start..])?;
+
+    let params = split_params(params_text);
+    let mut borrowed = Vec::new();
+    for (index, param) in params.iter().enumerate() {
+        let param = param.trim();
+        if param.is_empty() || param == "self" || param == "&self" || param == "&mut self" {
+            continue;
+        }
+        // Extract the type part after the first `:`
+        if let Some(colon_pos) = param.find(':') {
+            let ty = param[colon_pos + 1..].trim();
+            if ty.starts_with('&') {
+                borrowed.push(index);
+            }
+        }
+    }
+    Some((name, borrowed))
+}
+
+/// Find the text up to the matching `)` accounting for nested parens.
+fn find_matching_paren(s: &str) -> Option<&str> {
+    let mut depth = 1i32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a parameter list by `,` respecting nested `<>`, `()`, `[]`.
+fn split_params(params: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+    for ch in params.chars() {
+        match ch {
+            '<' | '(' | '[' => {
+                depth += 1;
+                current.push(ch);
+            }
+            '>' | ')' | ']' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                result.push(std::mem::take(&mut current));
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        result.push(current);
+    }
+    result
 }
 
 fn extract_clone_tokens(line: &str) -> Vec<String> {
