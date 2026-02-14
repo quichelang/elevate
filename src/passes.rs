@@ -7718,14 +7718,6 @@ fn resolve_method_capability(
             expected_args: vec![SemType::Unknown; actual_arity],
             return_ty: named_type("bool"),
         }
-    } else if method_name_suggests_mutating(method) {
-        // FIX: was incorrectly using Borrowed — these methods take &mut self
-        MethodCapability {
-            receiver_mode: CapabilityReceiverMode::MutBorrowed,
-            arg_modes: vec![CallArgMode::Owned; actual_arity],
-            expected_args: vec![SemType::Unknown; actual_arity],
-            return_ty: SemType::Unit,
-        }
     } else {
         return None;
     };
@@ -10429,7 +10421,7 @@ fn method_receiver_should_borrow_heuristic(base_ty: &str, method: &str) -> bool 
     if method_name_suggests_consuming(method) {
         return false;
     }
-    if call_name_suggests_read_only(method) || method_name_suggests_mutating(method) {
+    if call_name_suggests_read_only(method) {
         return true;
     }
     !is_copy_primitive_type(last_path_segment(base_ty))
@@ -10675,27 +10667,6 @@ fn method_name_suggests_consuming(name: &str) -> bool {
             | "build"
             | "collect"
     ) || name.starts_with("into_")
-}
-
-// Heuristic: rustdex does not index inherent methods on primitive slice `[T]`
-// (e.g. sort, sort_by, retain). Vec<T> derefs to [T] for these, so we need
-// this fallback until rustdex gains slice method coverage.
-fn method_name_suggests_mutating(name: &str) -> bool {
-    matches!(
-        name,
-        "push"
-            | "push_str"
-            | "insert"
-            | "append"
-            | "extend"
-            | "clear"
-            | "sort"
-            | "sort_by"
-            | "retain"
-            | "truncate"
-            | "reserve"
-    ) || name.starts_with("set_")
-        || name.starts_with("update_")
 }
 
 fn lower_interop_shim(shim: &InteropShimDef) -> RustFunction {
