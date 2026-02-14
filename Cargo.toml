@@ -4,4 +4,4 @@ version = "0.9.1"
 edition = "2024"
 
 [dependencies]
-rustdex = { path = "../rustdex" }
+rustdex = { git = "https://github.com/quichelang/rustdex.git", rev = "ecb87f2" }

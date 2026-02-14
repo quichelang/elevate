@@ -1,6 +1,6 @@
 pub fn test_issue_1_vec_string_index() {
-    let values: Vec<String> = ["a", "b"];
-    let val: String = values[0];
+    let values: Vec<str> = ["a", "b"];
+    let val: str = values[0];
     println!("{:?}", val);
 }
 

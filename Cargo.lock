@@ -19,6 +19,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elevate-types"
+version = "0.1.0"
+source = "git+https://github.com/quichelang/elevate-types.git?rev=f54ad3e#f54ad3ed734fbe50a9998513d716f8310b7c00bd"
+dependencies = [
+ "bincode",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -51,8 +61,10 @@ dependencies = [
 [[package]]
 name = "rustdex"
 version = "0.1.0"
+source = "git+https://github.com/quichelang/rustdex.git?rev=ecb87f2#ecb87f205c8aaa2225d36945d2d42186dc56e172"
 dependencies = [
  "bincode",
+ "elevate-types",
  "rustdoc-types",
  "serde",
  "serde_json",
