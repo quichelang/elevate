@@ -5420,7 +5420,7 @@ fn diagnose_const_mutations_in_expr(
     match &expr.kind {
         TypedExprKind::Call { callee, args } => {
             if let TypedExprKind::Field { base, field } = &callee.kind
-                && typed_method_mutates_receiver(field)
+                && rustdex_method_mutates_receiver(&base.ty, field)
                 && let Some(root) = typed_root_path_name(base)
                 && immutable_locals.contains(root)
             {
@@ -5598,8 +5598,13 @@ fn diagnose_const_mutations_in_assign_target(
     }
 }
 
-fn typed_method_mutates_receiver(field: &str) -> bool {
-    matches!(field, "push" | "push_str")
+/// Check whether a method takes `&mut self` by consulting rustdex.
+fn rustdex_method_mutates_receiver(base_ty: &str, method: &str) -> bool {
+    let type_name = last_path_segment(base_ty.trim());
+    matches!(
+        crate::rustdex_backend::lookup_method_signature(type_name, method),
+        Some(sig) if sig.receiver == rustdex::ReceiverMode::RefMut
+    )
 }
 
 fn typed_root_path_name(expr: &TypedExpr) -> Option<&str> {
@@ -7536,10 +7541,14 @@ fn rustdex_type_name_candidates(type_name: &str) -> Vec<String> {
         "String" => {
             candidates.push("std::string::String".to_string());
             candidates.push("alloc::string::String".to_string());
+            // Deref target: String → str
+            candidates.push("str".to_string());
         }
         "Vec" => {
             candidates.push("std::vec::Vec".to_string());
             candidates.push("alloc::vec::Vec".to_string());
+            // Deref target: Vec<T> → [T]
+            candidates.push("[T]".to_string());
         }
         "Option" => {
             candidates.push("std::option::Option".to_string());
@@ -7675,12 +7684,9 @@ fn resolve_method_capability(
         });
     }
 
-    if rustdex_has_method_strict(type_name, method, diagnostics).is_err() {
-        return None;
-    }
-
     // ── Dynamic resolution via rustdex ──────────────────────────────────
-    // Look up method signature from rustdoc JSON index.
+    // Try signature lookup first — it handles Deref coercion (Vec→[T], String→str)
+    // which the strict existence check does not.
     if let Some(sig) = crate::rustdex_backend::lookup_method_signature(type_name, method) {
         let mut capability =
             crate::rustdex_adapter::method_sig_to_capability(&sig, type_name, generic_args);
@@ -7699,6 +7705,11 @@ fn resolve_method_capability(
         return Some(capability);
     }
 
+    // Strict existence check — only fires when lookup (including deref) found nothing.
+    if rustdex_has_method_strict(type_name, method, diagnostics).is_err() {
+        return None;
+    }
+
     // ── Heuristic fallback for methods not in rustdex ──────────────────
     let capability = if method.starts_with("is_") || method.starts_with("has_") {
         MethodCapability {
@@ -7708,8 +7719,9 @@ fn resolve_method_capability(
             return_ty: named_type("bool"),
         }
     } else if method_name_suggests_mutating(method) {
+        // FIX: was incorrectly using Borrowed — these methods take &mut self
         MethodCapability {
-            receiver_mode: CapabilityReceiverMode::Borrowed,
+            receiver_mode: CapabilityReceiverMode::MutBorrowed,
             arg_modes: vec![CallArgMode::Owned; actual_arity],
             expected_args: vec![SemType::Unknown; actual_arity],
             return_ty: SemType::Unit,
@@ -8919,25 +8931,6 @@ fn infer_for_item_type(iter_expr: &TypedExpr, iter_ty: &SemType) -> SemType {
     SemType::Unknown
 }
 
-/// Wrap an expression with `.to_string()` if the expression type is `str`/`&str`
-/// and the target type expects `String`.
-fn maybe_coerce_str_to_string(expr: RustExpr, expr_type: &str, target_type: &str) -> RustExpr {
-    let is_str_expr = expr_type == "str" || expr_type == "&str";
-    let target_wants_string = target_type.contains("String");
-    if is_str_expr && target_wants_string {
-        RustExpr::Call {
-            callee: Box::new(RustExpr::Field {
-                base: Box::new(expr),
-                field: "to_string".into(),
-            }),
-            args: vec![],
-            mutates_receiver: false,
-        }
-    } else {
-        expr
-    }
-}
-
 fn lower_stmt_with_context(
     stmt: &TypedStmt,
     context: &mut LoweringContext,
@@ -8978,15 +8971,9 @@ fn lower_stmt_with_context(
             },
         },
         TypedStmt::Return(value) => {
-            let lowered = value.as_ref().map(|expr| {
-                let lowered_expr =
-                    lower_expr_with_context(expr, context, ExprPosition::Consuming, state);
-                maybe_coerce_str_to_string(
-                    lowered_expr,
-                    &expr.ty,
-                    context.return_type.as_deref().unwrap_or(""),
-                )
-            });
+            let lowered = value
+                .as_ref()
+                .map(|expr| lower_expr_with_context(expr, context, ExprPosition::Consuming, state));
             RustStmt::Return(lowered)
         }
         TypedStmt::If {
@@ -9373,12 +9360,7 @@ fn lower_expr_with_context(
                                 ExprPosition::Consuming,
                                 state,
                             );
-                            // Coerce str → String when passing a str literal to a consuming position
-                            if arg.ty == "str" || arg.ty == "&str" {
-                                maybe_coerce_str_to_string(lowered, &arg.ty, "String")
-                            } else {
-                                lowered
-                            }
+                            lowered
                         }
                     })
                     .collect(),
@@ -10695,6 +10677,9 @@ fn method_name_suggests_consuming(name: &str) -> bool {
     ) || name.starts_with("into_")
 }
 
+// Heuristic: rustdex does not index inherent methods on primitive slice `[T]`
+// (e.g. sort, sort_by, retain). Vec<T> derefs to [T] for these, so we need
+// this fallback until rustdex gains slice method coverage.
 fn method_name_suggests_mutating(name: &str) -> bool {
     matches!(
         name,

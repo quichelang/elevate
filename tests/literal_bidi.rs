@@ -9,8 +9,7 @@ fn compile_with_literal_bidi(
 }
 
 #[test]
-#[ignore = "type_system defaults to true in CompileOptions — test premise outdated (i64→u64 coercion is now always-on)"]
-fn strict_mode_rejects_u64_function_arg_from_default_int_literal() {
+fn strict_mode_accepts_u64_with_always_on_integer_coercion() {
     let source = r#"
         fn takes_u64(v: u64) -> u64 {
             return v;
@@ -21,9 +20,8 @@ fn strict_mode_rejects_u64_function_arg_from_default_int_literal() {
         }
     "#;
 
-    let error =
-        compile_source(source).expect_err("strict mode should reject i64 literal for u64 arg");
-    assert!(error.to_string().contains("expected `u64`, got `i64`"));
+    let _ = compile_source(source)
+        .expect("always-on integer coercion should accept i64 literal for u64 arg");
 }
 
 #[test]

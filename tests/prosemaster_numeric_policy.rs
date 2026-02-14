@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static TEST_TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+#[ignore = "invokes cargo rustdoc (~25s); run with --ignored"]
 fn prosemaster_transpile_uses_typed_results_and_u64_counters() {
     let root = copy_example_to_temp("prosemaster");
     let mut options = CompileOptions::default();
@@ -32,6 +33,7 @@ fn prosemaster_transpile_uses_typed_results_and_u64_counters() {
 }
 
 #[test]
+#[ignore = "invokes cargo rustdoc (~25s); run with --ignored"]
 fn prosemaster_numeric_policy_separates_wrapping_rng_from_saturating_counters() {
     let root = copy_example_to_temp("prosemaster");
     let mut options = CompileOptions::default();

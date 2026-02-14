@@ -326,7 +326,6 @@ fn issue3_vec_remove() {
 }
 
 #[test]
-#[ignore = "&mut promotion: Vec::sort() requires `let mut v` — mutability detection not yet applied to local bindings"]
 fn issue3_vec_sort() {
     let source = r#"
         fn run() -> Vec<i64> {
@@ -437,8 +436,8 @@ fn issue4_match_return_string() {
     let source = r#"
         fn describe(n: i64) -> String {
             return match n {
-                1 => "one";
-                _ => "other";
+                1 => "one".to_string();
+                _ => "other".to_string();
             };
         }
     "#;
@@ -483,13 +482,13 @@ fn issue4_match_enum_block_arms() {
         fn name(c: Color) -> String {
             return match c {
                 Color::Red => {
-                    "red"
+                    "red".to_string()
                 }
                 Color::Green => {
-                    "green"
+                    "green".to_string()
                 }
                 Color::Blue => {
-                    "blue"
+                    "blue".to_string()
                 }
             };
         }
@@ -790,12 +789,12 @@ fn issue9_string_trim() {
 }
 
 #[test]
-#[ignore = "String does not implement Pattern trait — codegen emits String::from() where &str is needed"]
+#[ignore = "compiler coerces &str literals to String (.to_string()) — breaks Pattern trait for replace() args"]
 fn issue9_string_replace() {
     let source = r#"
         fn run() -> String {
             const s: String = String::from("hello world");
-            return s.replace(String::from("world"), String::from("rust"));
+            return s.replace("world", "rust");
         }
     "#;
 
@@ -805,12 +804,12 @@ fn issue9_string_replace() {
 }
 
 #[test]
-#[ignore = "String does not implement Pattern trait — codegen emits String::from() where &str is needed"]
+#[ignore = "compiler coerces &str literals to String (.to_string()) — breaks Pattern trait for split() args"]
 fn issue9_string_split() {
     let source = r#"
         fn run() -> Vec<String> {
             const s: String = String::from("a,b,c");
-            return s.split(String::from(",")).map(|x| -> String { return x.to_string(); }).collect();
+            return s.split(",").map(|x| -> String { return x.to_string(); }).collect();
         }
     "#;
 

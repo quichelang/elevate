@@ -2071,7 +2071,7 @@ mod tests {
 
             impl<T> Named for Wrapper<T> {
                 fn name(self) -> String {
-                    "wrapped"
+                    "wrapped".to_string()
                 }
             }
 
@@ -4301,7 +4301,7 @@ mod tests {
                 const msg = r#"hello
 "elevate"
 world"#;
-                return msg;
+                return msg.to_string();
             }
         "##;
 

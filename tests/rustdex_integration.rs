@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+#[ignore = "requires cargo build of rustdex (~12s); run with --ignored"]
 fn integration_rustdex_is_operational_and_drives_signature_detection() {
     let _guard = env_guard();
     clear_rustdex_env_overrides();

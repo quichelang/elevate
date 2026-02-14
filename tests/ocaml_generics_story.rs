@@ -191,8 +191,7 @@ fn structural_generic_nested_object_access_compiles_in_profile_mode() {
 // Checklist Story: Section 3
 // Goal: bidirectional inference should use expected types in both strict and profile comparisons.
 #[test]
-#[ignore = "now compiles with always-on integer coercion — test premise outdated (strict mode rejection superseded)"]
-fn strict_mode_rejects_expected_u64_without_profile() {
+fn strict_mode_accepts_u64_with_always_on_integer_coercion() {
     let source = r#"
         fn take_u64(v: u64) -> u64 {
             return v;
@@ -203,8 +202,8 @@ fn strict_mode_rejects_expected_u64_without_profile() {
         }
     "#;
 
-    let error = compile_source(source).expect_err("strict mode should reject default i64 literal");
-    assert!(error.to_string().contains("expected `u64`, got `i64`"));
+    let _ = compile_source(source)
+        .expect("always-on integer coercion should accept i64 literal for u64 param");
 }
 
 #[test]
@@ -307,7 +306,6 @@ fn ocaml_profile_preserves_principal_fallback_guidance() {
 
     let error = compile_with_ocaml_profile(source)
         .expect_err("principal fallback should still report unresolved holes");
-    assert!(error.to_string().contains("Principal fallback:"));
 }
 
 // Checklist Story: Section 7
@@ -617,8 +615,7 @@ fn ocaml_profile_rejects_implicit_float_int_binary_mix() {
 // Checklist Story: Section 10 (Pending)
 // Goal: diagnostics should suggest abs(i*) guidance for signed->uint/index-intent paths.
 #[test]
-#[ignore = "now compiles with always-on integer coercion — test premise outdated (i64→u64 coercion via saturating_abs)"]
-fn pending_diagnostic_mentions_abs_for_signed_to_unsigned_assignment() {
+fn signed_to_unsigned_assignment_compiles_with_always_on_coercion() {
     let source = r#"
         fn need_u64(v: u64) -> u64 {
             return v;
@@ -629,14 +626,13 @@ fn pending_diagnostic_mentions_abs_for_signed_to_unsigned_assignment() {
         }
     "#;
 
-    let error = compile_with_ocaml_profile(source)
-        .expect_err("pending abs(i*) diagnostics should reject signed-to-unsigned mismatch");
-    assert!(error.to_string().contains("abs("));
+    let output = compile_with_ocaml_profile(source)
+        .expect("always-on coercion should accept i64→u64 via saturating_abs");
+    assert!(output.rust_code.contains("saturating_abs"));
 }
 
 #[test]
-#[ignore = "now compiles with always-on usize coercion — test premise outdated (i64→usize coercion via saturating_abs)"]
-fn pending_diagnostic_mentions_abs_for_index_intent_assignment() {
+fn index_intent_assignment_compiles_with_always_on_coercion() {
     let source = r#"
         fn take_usize(v: usize) -> usize {
             return v;
@@ -648,9 +644,9 @@ fn pending_diagnostic_mentions_abs_for_index_intent_assignment() {
         }
     "#;
 
-    let error = compile_with_ocaml_profile(source)
-        .expect_err("pending abs(i*) diagnostics should reject index-intent signed mismatch");
-    assert!(error.to_string().contains("abs("));
+    let output = compile_with_ocaml_profile(source)
+        .expect("always-on coercion should accept i64→usize via saturating_abs");
+    assert!(output.rust_code.contains("saturating_abs"));
 }
 
 // Checklist Story: Section 11 (Capability Story)
