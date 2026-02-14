@@ -350,3 +350,45 @@ fn strict_mode_rejects_missing_add_types_without_bidi() {
             .contains("Cannot infer type for `a` in strict mode")
     );
 }
+
+#[test]
+fn bidi_infers_param_from_callsite_arg_type() {
+    let source = r#"
+        fn show(v) {
+            return;
+        }
+
+        fn main() {
+            show(42);
+            return;
+        }
+    "#;
+    let output = compile_with_bidi(source).expect("should infer param from call site");
+    assert!(
+        output.rust_code.contains("fn show(v: i64)"),
+        "expected `fn show(v: i64)` but got: {}",
+        output.rust_code
+    );
+}
+
+#[test]
+fn bidi_infers_param_with_opaque_rust_body() {
+    let source = r#"
+        fn display(v) {
+            rust { println!("{}", v); }
+            return;
+        }
+
+        fn main() {
+            display(42);
+            return;
+        }
+    "#;
+    let output =
+        compile_with_bidi(source).expect("should infer param from call site with opaque body");
+    assert!(
+        output.rust_code.contains("fn display(v: i64)"),
+        "expected `fn display(v: i64)` but got: {}",
+        output.rust_code
+    );
+}

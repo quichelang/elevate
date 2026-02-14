@@ -209,6 +209,7 @@ thread_local! {
     static CURRENT_DIAG_SPAN: Cell<Option<Span>> = Cell::new(None);
     static CURRENT_TYPE_PARAMS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static INFERRED_GENERIC_BOUNDS: RefCell<HashMap<String, HashSet<String>>> = RefCell::new(HashMap::new());
+    static CALLSITE_PARAM_INFERENCES: RefCell<Vec<(String, usize, SemType)>> = RefCell::new(Vec::new());
 }
 
 fn is_current_type_param(ty: &SemType) -> Option<String> {
@@ -235,6 +236,17 @@ fn record_generic_bound(type_param: &str, bound: &str) {
 
 fn take_inferred_generic_bounds() -> HashMap<String, HashSet<String>> {
     INFERRED_GENERIC_BOUNDS.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
+}
+
+fn record_callsite_param_inference(fn_name: &str, param_index: usize, ty: SemType) {
+    CALLSITE_PARAM_INFERENCES.with(|cell| {
+        cell.borrow_mut()
+            .push((fn_name.to_string(), param_index, ty));
+    });
+}
+
+fn take_callsite_param_inferences() -> Vec<(String, usize, SemType)> {
+    CALLSITE_PARAM_INFERENCES.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
 }
 
 fn with_type_params_scope<T>(type_params: &[crate::ast::GenericParam], f: impl FnOnce() -> T) -> T {
@@ -409,6 +421,14 @@ pub fn lower_to_typed_with_options(
             .filter_map(|item| lower_item(item, &mut context, &mut diagnostics))
             .collect::<Vec<_>>();
         let mut items = items;
+
+        // Apply call-site param inferences: when a caller passes a concrete type
+        // to a callee whose param was Unknown, fix up the emitted signature.
+        let callsite_inferences = take_callsite_param_inferences();
+        if !callsite_inferences.is_empty() {
+            apply_callsite_param_inferences(&callsite_inferences, &mut items, &mut context);
+        }
+
         materialize_structural_specializations(module, &mut items, &mut context, &mut diagnostics);
 
         if diagnostics.is_empty() {
@@ -423,6 +443,51 @@ pub fn lower_to_typed_with_options(
             Err(diagnostics)
         }
     })
+}
+
+/// Apply call-site param inferences: for each function that still has `Unknown`
+/// parameter types, substitute the concrete types inferred from call-site arguments.
+fn apply_callsite_param_inferences(
+    inferences: &[(String, usize, SemType)],
+    items: &mut [TypedItem],
+    context: &mut Context,
+) {
+    // Build a map: fn_name -> { param_index -> first concrete type }
+    let mut resolved: HashMap<String, HashMap<usize, SemType>> = HashMap::new();
+    for (fn_name, param_index, ty) in inferences {
+        resolved
+            .entry(fn_name.clone())
+            .or_default()
+            .entry(*param_index)
+            .or_insert_with(|| ty.clone());
+    }
+
+    for item in items.iter_mut() {
+        if let TypedItem::Function(func) = item {
+            if let Some(param_map) = resolved.get(&func.name) {
+                for (index, param) in func.params.iter_mut().enumerate() {
+                    if param.ty == "_" || param.ty == "&_" {
+                        if let Some(inferred_ty) = param_map.get(&index) {
+                            param.ty = rust_param_type_string(inferred_ty);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Also update context.functions so downstream passes see the resolved types
+    for (fn_name, param_map) in &resolved {
+        if let Some(sig) = context.functions.get_mut(fn_name) {
+            for (index, ty) in param_map {
+                if let Some(param) = sig.params.get_mut(*index) {
+                    if *param == SemType::Unknown {
+                        *param = ty.clone();
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -6559,6 +6624,14 @@ fn resolve_named_function_call(
         let actual_expr = arg_exprs.and_then(|exprs| exprs.get(index));
         let expected_with_known =
             substitute_bound_generic_type(expected, &type_param_set, &generic_bindings);
+        // Call-site inference: when callee param is Unknown but arg is concrete,
+        // record the inference so we can fix up the callee's signature later.
+        if expected_with_known == SemType::Unknown
+            && *actual != SemType::Unknown
+            && infer_local_bidi_enabled()
+        {
+            record_callsite_param_inference(name, index, actual.clone());
+        }
         let adjusted_actual =
             literal_bidi_adjusted_numeric_arg_type(actual_expr, actual, &expected_with_known)
                 .unwrap_or_else(|| actual.clone());
