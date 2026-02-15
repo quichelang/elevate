@@ -1,90 +1,129 @@
-Here is a significantly improved, highly structured version of your prompt. I have rewritten it to act as a comprehensive **System Design Prompt** that you can feed to an AI assistant or use as an architectural brief for an engineering team.
+# Diagnostics 2.0 (Unified Translation + ICE Boundary)
 
-It explicitly integrates the terminology and architecture from the Elevate documentation you provided (like the 3-layer IR, `AstEnvelope`, and Ownership Planner).
+This document defines the Diagnostics 2.0 architecture and maps directly to the implementation in:
 
-Following the rewritten prompt, I have included a section of **Additional Thoughts & Architectural Pointers** that provides concrete implementation strategies based on your codebase's current state.
+- `src/source_map.rs`
+- `src/crate_builder.rs`
+- `src/backend_diagnostics.rs`
+- `src/diagnostics_catalog.rs`
 
----
+## 1) Source-Mapping Architecture
 
-### 📋 The Rewritten Prompt (Ready to Copy/Paste)
+### Source of truth
 
-**Role & Objective:**
-Act as a Principal Compiler Engineer specializing in language design, diagnostics, and developer experience (DX). I need you to architect a **Unified Diagnostics and Error Translation System** for the **Elevate** compiler infrastructure.
+- Frontend-authored spans remain the source of truth (`Span { start, end }` semantics).
+- Frontend identity remains attached via compile options and envelope metadata (`source_path`, `source_map_id`).
+- Diagnostic rendering remains centralized in `src/source_map.rs` for file/line/column rendering.
 
-The primary goal is to create a "one-stop shop" diagnostics engine that guarantees users only ever see errors in the context of the programming language they actually wrote—whether that is Elevate (`.ers`) or a higher-level frontend language like **Quiche** (`.q`).
+### Mapping chain (implemented foundation)
 
-**Background Context:**
+1. Frontend (Elevate or external) emits AST spans in source-language coordinates.
+2. Elevate type/capability diagnostics preserve those spans and render with source identity.
+3. During crate transpilation (`src/crate_builder.rs`), each generated `.rs` file now records a `GeneratedSourceLink`:
+   - `generated_path` (in `target/elevate-gen/src/...`)
+   - `source_path` (original `.ers` input)
+4. Backend (`cargo`/`rustc`) diagnostics are translated via this generated-to-source link table.
 
-* **Elevate:** A language and transpiler with a 3-layer IR pipeline (AST  Typed IR  Lowered Rust IR) that generates Rust code and compiles it via `cargo build`.
-* **Quiche:** An external frontend that compiles down to Elevate's Layer 1 AST and passes it to Elevate via a serialized, versioned `AstEnvelope`.
+### Mapping chain (next phase)
 
-**Core System Requirements:**
+- For precise non-line-preserving transforms, add sidecar span segments:
+  - `(generated_line/col range) -> (frontend span)`
+- `source_map_id` from `FrontendMeta` can index those sidecars per module/file.
+- Resolution order for backend diagnostics:
+  1. exact sidecar segment,
+  2. generated-file to source-file fallback,
+  3. location unavailable.
 
-1. **Language-Native Error Context (The Source of Truth)**
-* Error messages must strictly use the user's source language as the reference point.
-* If a user authored Quiche, the file names, line numbers, variable names, problem descriptions, and *suggested solutions* must be expressed in Quiche semantics. If they wrote Elevate, it must use Elevate semantics.
-* We need a robust Source Map architecture that threads span data bidirectionally from the generated Rust back up to the Elevate IR, and finally back to the frontend AST.
+## 2) Interceptor Pipeline + ICE Logic
 
+## Pipeline boundaries
 
-2. **`rustc` Interception & Translation**
-* All `rustc` and `cargo` warnings/errors generated during the final backend build step must be automatically intercepted.
-* Raw `rustc` output should be suppressed by default and made available only via an opt-in verbose flag.
-* The system must translate these Rust-level borrow, type, or syntax errors back into the conceptual framework of the user's frontend language.
+- Frontend/type/capability phase completes in Elevate passes.
+- Rust lowering/codegen emits generated crate.
+- `cargo build` runs on generated crate.
+- Backend diagnostics are intercepted and translated in `src/backend_diagnostics.rs`.
 
+### Interception behavior
 
-3. **Compiler Bug Isolation (ICE Detection Heuristic)**
-* We need a deterministic heuristic to classify errors and prevent blaming the user for compiler flaws.
-* **The Rule:** If the user's source code has no "smells"—meaning it successfully passes the frontend's syntactic checks and Elevate's internal type/capability checks—but `rustc` subsequently fails to compile the generated Rust, **this must be explicitly flagged as an Elevate Compiler Bug** (e.g., an Internal Compiler Error / ICE, invalid lowering, or a missing feature).
-* The system should gracefully catch this, apologize to the user, and dump an ICE crash report rather than displaying a confusing Rust error.
+- Raw `rustc` output is suppressed by default.
+- New flag: `--verbose-backend-diagnostics` to include raw backend output in the final message.
+- Translation maps common rustc error codes to Elevate catalog entries and renders:
+  - source-language location,
+  - expected vs actual,
+  - explanation,
+  - direct fix hint,
+  - backend detail.
 
+### ICE heuristic
 
-4. **Structured Error Catalogs**
-* We need a comprehensive, structured registry of error messages segregated by language (Elevate will have its own catalog; Quiche will have its own).
-* *For this task, we will focus solely on architecting the catalog schema and defining the initial error catalog for **Elevate**.*
+`cargo` failure is classified as ICE (`E9001`) when all error diagnostics that have locations point to generated files that map back to transpiled frontend source.
 
+Interpretation:
 
+- Frontend + Elevate internal checks succeeded.
+- Generated Rust then failed rustc checks.
+- Failure is therefore treated as backend contract break (lowering/planner/codegen issue), not user blame.
 
-**Your Task:**
-Based on these requirements, please provide:
+If mapping is missing/ambiguous, fallback to `E9002` (translation gap) and suggest verbose mode/reporting.
 
-1. **The Source Mapping Architecture:** Detail how we thread spans from `rustc` diagnostics back through the 3-layer IR to the frontend AST using Elevate's existing `AstEnvelope`, `FrontendMeta`, and `src/source_map.rs`.
-2. **The Interceptor & ICE Logic:** Define the exact pipeline boundaries and heuristics needed to confidently parse `cargo` errors, translate them, and classify a failure as an ICE versus a user error.
-3. **Error Catalog Schema:** Propose a data structure (e.g., Rust `enum` or JSON schema) for defining language-specific errors that adheres to Elevate's diagnostic contract: *Source Location, Expected vs. Actual, Explanation of failed decision, and a Direct Fix Hint.*
-4. **Draft Elevate Errors:** Provide a foundational list of 5–10 structured Elevate error codes covering Syntax, Type/Capability mismatches, Ownership limits, and ICEs.
+## 3) Error Catalog Schema
 
----
+The catalog is implemented in `src/diagnostics_catalog.rs`.
 
-### 💡 Additional Thoughts & Architectural Pointers
+```rust
+pub struct ErrorCatalogEntry {
+    pub language: &'static str,
+    pub code: ElevateErrorCode,
+    pub severity: DiagnosticSeverity,
+    pub title: &'static str,
+    pub explanation: &'static str,
+    pub expected: &'static str,
+    pub actual: &'static str,
+    pub direct_fix_hint: &'static str,
+}
+```
 
-Based on the extensive Elevate documentation you provided, you actually have a massive head start on building this. Here are specific technical pointers to guide your implementation:
+This satisfies the diagnostics contract:
 
-#### 1. You already have the infrastructure to intercept `rustc`
+- Source Location: resolved by translator/rendering layer
+- Expected vs Actual: first-class fields
+- Failed decision explanation: `explanation`
+- Direct fix hint: `direct_fix_hint`
 
-Your documentation states: *"Crate build loop now includes adaptive borrow/clone feedback from Rust diagnostics (retrying transpile/build with inferred interop borrow hints...)"*.
+Language segregation is by catalog namespace (`language` + language-specific code enum / builder).
 
-* **The Implementation Strategy:** Because Elevate is *already* parsing `rustc` diagnostics to dynamically insert `.clone()` or `&` during the build loop, you simply need to hook into this exact same flow *after* the adaptive loop exhausts its retries. Ensure you are invoking `cargo build --message-format=json` to get highly structured JSON containing the exact Rust file paths, lines, columns, and error codes (like `E0382`).
+## 4) Initial Elevate Error Set
 
-#### 2. The ICE Boundary is mathematically crisp
+### Syntax
 
-In a transpiled language like Elevate, detecting an Internal Compiler Error (ICE) doesn't require complex guesswork. Elevate has strict pipeline contracts:
+- `E1001`: Unexpected token
+- `E1002`: Missing declaration
 
-* **Layer 1 & 2:** If the user writes bad Quiche or Elevate code, it should be caught and failed in Elevate's `passes.rs` (Type & Capability System).
-* **Layer 3:** If the code reaches the Rust lowering and emission phase, Elevate's internal checks have essentially signed a "Contract of Correctness."
-* **The Heuristic:** If `rustc` subsequently throws a type error or borrow checker error, **Elevate's ownership planner broke its contract**. For example, if `rustc` throws a lifetime error or complains about a missing trait, the user did nothing wrong. You can confidently swallow the `rustc` error and output: `[ICE-E9001]: Elevate Ownership Planner failed to safely lower this expression. Valid source resulted in invalid Rust code.`
+### Type / Capability
 
-#### 3. Threading the Source Map mechanically
+- `E2001`: Type mismatch
+- `E2002`: Capability mismatch
 
-To achieve the "Language-Native Reference Point," you need a strict chain of custody for `Span` data:
+### Ownership
 
-* **Frontend Duty:** As mentioned in your docs, Quiche **must** populate the `AstEnvelope` with accurate byte-span ranges and the `FrontendMeta` (`source_map_id` and `source_path`).
-* **Compiler Duty:** As Elevate transforms Layer 1  Layer 2  Layer 3, every IR node must retain a reference to its original AST span.
-* **Emission Duty:** When `codegen.rs` writes the final `.rs` file, it must maintain a sidecar interval tree (or inject hidden comments) that maps `generated_rust_file.rs:Line:Col` to the original `AST_Span`.
-* **The Resolution:** When `rustc` JSON reports an error on Line 45, your engine looks up Line 45 in the sidecar map, finds the Quiche AST Span, checks `FrontendMeta.language`, and queries the Quiche Error Catalog for that specific AST node type.
+- `E3001`: Value moved and then reused
+- `E3002`: Conflicting borrows (mutable vs shared)
+- `E3003`: Multiple mutable borrows
+- `E3004`: Mutating read-only value
 
-#### 4. Formatting Elevate Errors (Hiding Rust-isms)
+### ICE / Translation
 
-Because Elevate has strict language constraints (e.g., no explicit `dyn`, no `&` or `&mut` exposed to the user, `let` vs `const` inferred mutability), your Elevate error catalog **must aggressively sanitize Rust terminology**.
+- `E9001`: Invalid backend lowering (ICE)
+- `E9002`: Backend translation gap
 
-* *Bad Error:* "Cannot borrow `x` as mutable because it is behind a shared reference." (The Elevate/Quiche user doesn't know what a Rust reference is).
-* *Good Elevate Error:* "Cannot mutate `x` here. `x` was passed as a read-only view (`view(...)`). Consider passing it by value."
-* Look into standard Rust diagnostic rendering crates like [`miette`](https://www.google.com/search?q=%5Bhttps://docs.rs/miette/latest/miette/%5D(https://docs.rs/miette/latest/miette/)) or [`ariadne`](https://www.google.com/search?q=%5Bhttps://docs.rs/ariadne/latest/ariadne/%5D(https://docs.rs/ariadne/latest/ariadne/)). They handle the heavy lifting of drawing beautiful terminal output with code snippets and underlines based on the spans you feed them.
+## Notes for External Frontends (Quiche)
+
+- Continue emitting accurate AST spans in frontend source space.
+- Populate envelope metadata (`language`, `source_path`, `source_map_id`).
+- Prefer stable source IDs so sidecar span maps can be resolved consistently.
+
+## CLI Surface
+
+- `--verbose-backend-diagnostics`:
+  - Off (default): translated user-language diagnostics only.
+  - On: include raw `cargo`/`rustc` output footer for debugging and bug reports.

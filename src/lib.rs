@@ -1,9 +1,11 @@
 pub mod ast;
+mod backend_diagnostics;
 pub mod borrow_promotion;
 pub mod codegen;
 pub mod crate_builder;
 pub mod data;
 pub mod diag;
+pub mod diagnostics_catalog;
 pub mod emit_elevate;
 pub mod ir;
 pub mod lexer;
@@ -77,6 +79,7 @@ pub struct CompileOptions {
     pub allow_hot_clone_places: Vec<String>,
     pub warn_missing_types: bool,
     pub source_name: Option<String>,
+    pub verbose_backend_diagnostics: bool,
     /// Debug log destination: None = off, Some(None) = stderr, Some(Some(path)) = file.
     pub debug_log: Option<Option<String>>,
 }

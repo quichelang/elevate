@@ -994,6 +994,7 @@ fn usage() {
     eprintln!("  --debug [file]          log borrow-engine decisions (default: stderr)");
     eprintln!("  --allow-hot-clone-place <place>");
     eprintln!("  --force-clone-place <place>");
+    eprintln!("  --verbose-backend-diagnostics");
 }
 
 fn parse_init_root(args: &[String]) -> Option<PathBuf> {
@@ -1159,6 +1160,10 @@ fn parse_compile_options(args: &[String]) -> Result<CompileOptions, String> {
                     options.debug_log = Some(None);
                     index += 1;
                 }
+            }
+            "--verbose-backend-diagnostics" => {
+                options.verbose_backend_diagnostics = true;
+                index += 1;
             }
             _ => return Err(format!("unknown argument '{arg}'")),
         }

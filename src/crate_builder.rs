@@ -13,6 +13,13 @@ pub struct BuildSummary {
     pub generated_root: PathBuf,
     pub transpiled_files: usize,
     pub copied_files: usize,
+    pub generated_source_links: Vec<GeneratedSourceLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedSourceLink {
+    pub generated_path: PathBuf,
+    pub source_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -83,11 +90,17 @@ pub fn build_ers_crate_with_options(
                 );
                 let added_clone = merge_forced_clone_places(&mut adaptive_options, inferred_clones);
                 if (added_borrow + added_clone) == 0 || retries_left == 0 {
+                    let translated = crate::backend_diagnostics::render_backend_build_failure(
+                        &error.stderr,
+                        &summary.generated_root,
+                        &summary.generated_source_links,
+                        options.verbose_backend_diagnostics,
+                    );
                     return Err(format!(
                         "cargo build failed for generated crate {} (status: {})\n{}",
                         error.manifest.display(),
                         error.status,
-                        error.stderr.trim()
+                        translated
                     ));
                 }
                 retries_left -= 1;
@@ -151,7 +164,9 @@ pub fn transpile_ers_crate_with_options(
         generated_root: generated_root.clone(),
         transpiled_files: 0,
         copied_files: 0,
+        generated_source_links: Vec::new(),
     };
+    let mut generated_source_links = Vec::new();
 
     // Extract host module function hints: prefer Rustdex (cargo rustdoc JSON),
     // fall back to regex source scanning if cargo rustdoc is unavailable.
@@ -183,7 +198,9 @@ pub fn transpile_ers_crate_with_options(
         &interop_contract,
         &enriched_options,
         &mut transpiled_ers,
+        &mut generated_source_links,
     )?;
+    summary.generated_source_links = generated_source_links;
     inject_generated_module_declarations(&generated_root.join("src"), &transpiled_ers)?;
     emit_interop_adapter_module(&generated_root.join("src"), &interop_contract)?;
     Ok(summary)
@@ -1084,6 +1101,7 @@ fn process_src_dir(
     interop_contract: &InteropContract,
     options: &CompileOptions,
     transpiled_ers: &mut Vec<PathBuf>,
+    generated_source_links: &mut Vec<GeneratedSourceLink>,
 ) -> Result<(), String> {
     let entries = fs::read_dir(current)
         .map_err(|error| format!("failed to read directory {}: {error}", current.display()))?;
@@ -1116,6 +1134,7 @@ fn process_src_dir(
                 interop_contract,
                 options,
                 transpiled_ers,
+                generated_source_links,
             )?;
             continue;
         }
@@ -1124,8 +1143,10 @@ fn process_src_dir(
             let source = fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
             validate_interop_contract_for_source(&source, &path, interop_contract)?;
+            let mut per_file_options = options.clone();
+            per_file_options.source_name = Some(path.display().to_string());
             let output =
-                compile_source_with_interop_contract(&source, interop_contract, options)
+                compile_source_with_interop_contract(&source, interop_contract, &per_file_options)
                     .map_err(|error| format_compile_error_with_context(&path, &source, &error))?;
             let mut out_path = target.clone();
             out_path.set_extension("rs");
@@ -1143,6 +1164,10 @@ fn process_src_dir(
             })?;
             summary.transpiled_files += 1;
             transpiled_ers.push(rel.to_path_buf());
+            generated_source_links.push(GeneratedSourceLink {
+                generated_path: out_path,
+                source_path: path,
+            });
             continue;
         }
 
