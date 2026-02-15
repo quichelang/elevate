@@ -1,7 +1,7 @@
 case,iterations,warmup,median_ms,p95_ms,min_ms,max_ms,clone_calls,auto_clone_notes,hot_clone_notes,rust_bytes
-strings: read-only borrow,20,3,0.114,0.129,0.110,0.131,0,0,0,451
-strings: mixed move chain,20,3,0.111,0.123,0.108,0.158,0,0,0,329
-vec: loop ownership,20,3,0.095,0.098,0.094,0.099,2,1,1,506
-interop: runtime_draw_scene,20,3,0.171,0.233,0.158,0.251,0,0,0,545
-nominal: by-value associated,20,3,0.084,0.089,0.083,0.089,0,0,0,481
-contrived: nested containers,20,3,0.124,0.155,0.119,0.156,2,1,0,434
+strings: read-only borrow,20,3,0.124,0.142,0.117,0.150,0,0,0,514
+strings: mixed move chain,20,3,0.125,0.129,0.121,0.136,0,0,0,392
+vec: loop ownership,20,3,0.098,0.105,0.093,0.105,2,1,1,568
+interop: runtime_draw_scene,20,3,0.176,0.185,0.170,0.237,0,0,0,695
+nominal: by-value associated,20,3,0.091,0.098,0.088,0.101,0,0,0,544
+contrived: nested containers,20,3,0.126,0.132,0.123,0.132,2,1,0,496

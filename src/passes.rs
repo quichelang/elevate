@@ -2035,10 +2035,13 @@ impl InteropPolicyRegistry {
             return args.iter().all(|arg| self.is_clone_candidate_or_copy(arg));
         }
 
-        // Imported nominal types are treated as optimistic clone candidates so
-        // lowering can preserve source ergonomics for repeated by-value use.
+        // Nominal types (starting with uppercase) are treated as optimistic
+        // clone candidates so lowering can preserve source ergonomics for
+        // repeated by-value use.  Previously this was gated on import
+        // visibility, but type aliases from foreign frontends (e.g. Quiche's
+        // `Str`) were missed, causing use-after-move in generated Rust.
         let head_last = last_path_segment(head);
-        if is_probably_nominal_type(head_last) && self.import_looks_like_type(head_last) {
+        if is_probably_nominal_type(head_last) {
             return args.iter().all(|arg| self.is_clone_candidate_or_copy(arg));
         }
 

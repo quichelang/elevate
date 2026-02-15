@@ -182,6 +182,33 @@ fn integration_clone_regressions_cover_nested_and_convoluted_ownership_paths() {
             ],
             forbidden_snippets: &[],
         },
+        CloneCase {
+            name: "loop variable moved into call then reused in conditional",
+            source: r#"
+                fn build_test_path(f: String) -> String {
+                    return f;
+                }
+
+                fn run_test(path: String) -> (String, i64) {
+                    return (path, 0);
+                }
+
+                fn run(test_files: Vec<String>) -> i64 {
+                    for f in test_files {
+                        const path = build_test_path(f);
+                        const (output, code) = run_test(path);
+                        if code == 0 {
+                            println!("{}", f);
+                        } else {
+                            println!("{}", output);
+                        }
+                    }
+                    return 0;
+                }
+            "#,
+            required_snippets: &["build_test_path(f.clone())"],
+            forbidden_snippets: &[],
+        },
     ];
 
     for case in cases {
