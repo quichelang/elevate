@@ -1162,6 +1162,19 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_string_concat_with_literal_left_operand() {
+        let source = r#"
+            fn label(event: String) -> String {
+                return "EVENT=" + event;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("\"EVENT=\".to_string() + &event"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_does_not_auto_borrow_known_by_value_associated_calls() {
         let source = r#"
             struct Catalog {}

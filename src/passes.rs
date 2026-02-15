@@ -9771,10 +9771,25 @@ fn lower_expr_with_context(
                 && type_is_string_like(&expr.ty)
                 && type_is_string_like(&left.ty)
                 && type_is_string_like(&right.ty)
-                && !matches!(lowered_right, RustExpr::Borrow(_))
             {
+                // Rust `String +` requires an owned `String` on the left.
+                // Promote `&str`/literal-like left operands to owned string.
+                let left_name = last_path_segment(left.ty.trim());
+                if left_name != "String" || matches!(lowered_left, RustExpr::String(_)) {
+                    lowered_left = RustExpr::Call {
+                        callee: Box::new(RustExpr::Field {
+                            base: Box::new(lowered_left),
+                            field: "to_string".to_string(),
+                        }),
+                        args: Vec::new(),
+                        mutates_receiver: false,
+                    };
+                }
+
                 // Rust `String +` expects a borrowed RHS (`&str`-compatible).
-                lowered_right = borrow_expr(lowered_right);
+                if !matches!(lowered_right, RustExpr::Borrow(_)) {
+                    lowered_right = borrow_expr(lowered_right);
+                }
             } else if matches!(
                 op,
                 TypedBinaryOp::Eq
