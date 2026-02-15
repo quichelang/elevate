@@ -1,0 +1,212 @@
+{
+    "cases": [
+        {
+            "name": "basic_navigation",
+            "description": "type, move selection once, select",
+            "files": [
+                "alpha.txt",
+                "beta.txt",
+                "gamma.md",
+                "notes/alpha-notes.txt",
+                "notes/beta-notes.txt"
+            ],
+            "events": [
+                "type:a",
+                "down",
+                "enter"
+            ]
+        },
+        {
+            "name": "backspace_and_refilter",
+            "description": "typing, correcting input, then selecting",
+            "files": [
+                "src/app.rs",
+                "src/api.rs",
+                "src/runner.rs",
+                "docs/architecture.md",
+                "docs/runtime.md",
+                "tests/app_test.rs"
+            ],
+            "events": [
+                "type:r",
+                "type:u",
+                "backspace",
+                "type:s",
+                "down",
+                "enter"
+            ]
+        },
+        {
+            "name": "scrolling_selection",
+            "description": "move beyond initial visible region and select",
+            "files": [
+                "items/item-00.txt",
+                "items/item-01.txt",
+                "items/item-02.txt",
+                "items/item-03.txt",
+                "items/item-04.txt",
+                "items/item-05.txt",
+                "items/item-06.txt",
+                "items/item-07.txt",
+                "items/item-08.txt",
+                "items/item-09.txt",
+                "items/item-10.txt",
+                "items/item-11.txt",
+                "items/item-12.txt",
+                "items/item-13.txt",
+                "items/item-14.txt",
+                "items/item-15.txt",
+                "items/item-16.txt",
+                "items/item-17.txt",
+                "items/item-18.txt",
+                "items/item-19.txt"
+            ],
+            "events": [
+                "type:item",
+                "down",
+                "down",
+                "down",
+                "down",
+                "down",
+                "down",
+                "down",
+                "down",
+                "down",
+                "down",
+                "down",
+                "enter"
+            ]
+        },
+        {
+            "name": "deep_nested_large_tree",
+            "description": "large nested corpus with focused query and deep cursor movement",
+            "files": [
+                "apps/mobile/android/build.gradle",
+                "apps/mobile/android/src/main/AndroidManifest.xml",
+                "apps/mobile/ios/AppDelegate.swift",
+                "apps/mobile/ios/SceneDelegate.swift",
+                "apps/web/public/favicon.ico",
+                "apps/web/src/app/home/page.tsx",
+                "apps/web/src/app/search/page.tsx",
+                "apps/web/src/components/FuzzyList.tsx",
+                "apps/web/src/components/ResultItem.tsx",
+                "apps/web/src/lib/api/client.ts",
+                "apps/web/src/lib/api/search.ts",
+                "apps/web/src/lib/state/store.ts",
+                "assets/fonts/inter/Inter-Regular.ttf",
+                "assets/icons/arrow-down.svg",
+                "assets/icons/arrow-up.svg",
+                "build/cache/index.bin",
+                "configs/dev/app.yaml",
+                "configs/prod/app.yaml",
+                "crates/core/src/lib.rs",
+                "crates/core/src/search/index.rs",
+                "crates/core/src/search/query.rs",
+                "crates/core/src/search/ranker.rs",
+                "crates/core/tests/search_ranker.rs",
+                "crates/runtime/src/console/input.rs",
+                "crates/runtime/src/console/render.rs",
+                "docs/architecture/finder.md",
+                "docs/architecture/runtime.md",
+                "docs/changelog/2026-01-15.md",
+                "docs/changelog/2026-02-01.md",
+                "examples/finder/basic/main.rs",
+                "examples/finder/interactive/main.rs",
+                "scripts/bench/compare.py",
+                "scripts/bench/run.ps1",
+                "scripts/release/publish.ps1",
+                "tooling/lint/.eslintrc.cjs",
+                "tooling/lint/prettier.config.cjs",
+                "workspace/codeowners",
+                "workspace/pipelines/build.yml",
+                "workspace/pipelines/test.yml",
+                "workspace/readme.md"
+            ],
+            "events": [
+                "type:src",
+                "type:/",
+                "type:s",
+                "type:e",
+                "type:a",
+                "type:r",
+                "type:c",
+                "type:h",
+                "down",
+                "down",
+                "down",
+                "down",
+                "down",
+                "enter"
+            ]
+        },
+        {
+            "name": "noise_and_ignored_paths",
+            "description": "ensure hidden/node_modules/target trees do not destabilize parity",
+            "files": [
+                ".git/config",
+                ".hidden/secret.txt",
+                "node_modules/react/index.js",
+                "node_modules/react/package.json",
+                "target/debug/app.exe",
+                "target/release/app.exe",
+                "src/main.py",
+                "src/main.rs",
+                "src/search/engine.py",
+                "src/search/engine.rs",
+                "src/search/matcher.py",
+                "src/search/matcher.rs",
+                "src/ui/console.py",
+                "src/ui/console.rs",
+                "tests/test_engine.py",
+                "tests/test_engine.rs",
+                "README.md",
+                "docs/usage.md"
+            ],
+            "events": [
+                "type:s",
+                "type:r",
+                "type:c",
+                "type:/",
+                "type:s",
+                "type:e",
+                "down",
+                "down",
+                "enter"
+            ]
+        },
+        {
+            "name": "no_match_recover_and_select",
+            "description": "query to zero matches, recover via backspace, then navigate and select",
+            "files": [
+                "pkg/alpha/core.txt",
+                "pkg/alpha/readme.md",
+                "pkg/beta/core.txt",
+                "pkg/beta/readme.md",
+                "pkg/gamma/core.txt",
+                "pkg/gamma/readme.md",
+                "service/api/handler.go",
+                "service/api/router.go",
+                "service/api/schema.graphql",
+                "service/ui/index.html",
+                "service/ui/main.js",
+                "service/ui/styles.css"
+            ],
+            "events": [
+                "type:z",
+                "type:z",
+                "type:z",
+                "backspace",
+                "backspace",
+                "backspace",
+                "type:r",
+                "type:e",
+                "type:a",
+                "type:d",
+                "type:m",
+                "type:e",
+                "down",
+                "enter"
+            ]
+        }
+    ]
+}
