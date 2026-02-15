@@ -1,16 +1,36 @@
 use std::io::{self, Read, Write};
+#[cfg(not(windows))]
 use std::process::Command;
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+#[cfg(windows)]
+use windows_sys::Win32::System::Console::{
+    CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle,
+    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
+};
 
 /// Enter raw mode: disable echo/canonical, switch to alternate screen, hide cursor.
 pub fn term_init() -> String {
-    let saved = run_stty(&["-f", "/dev/tty", "-g"]).unwrap_or_default();
-    let _ = run_stty(&[
-        "-f", "/dev/tty", "-echo", "-icanon", "min", "1", "time", "0",
-    ]);
-    let mut out = io::stdout();
-    let _ = write!(out, "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l");
-    let _ = out.flush();
-    saved.trim().to_string()
+    #[cfg(windows)]
+    {
+        let saved = save_windows_console_modes().unwrap_or_default();
+        let mut out = io::stdout();
+        let _ = write!(out, "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l");
+        let _ = out.flush();
+        return saved;
+    }
+
+    #[cfg(not(windows))]
+    {
+        let saved = run_stty(&["-g"]).unwrap_or_default();
+        let _ = run_stty(&["-echo", "-icanon", "min", "1", "time", "0"]);
+        let mut out = io::stdout();
+        let _ = write!(out, "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l");
+        let _ = out.flush();
+        return saved.trim().to_string();
+    }
 }
 
 /// Restore terminal state.
@@ -18,7 +38,19 @@ pub fn term_cleanup(saved: &str) {
     let mut out = io::stdout();
     let _ = write!(out, "\x1b[?25h\x1b[?1049l");
     let _ = out.flush();
-    let _ = run_stty(&["-f", "/dev/tty", saved]);
+
+    #[cfg(windows)]
+    {
+        let _ = restore_windows_console_modes(saved);
+        return;
+    }
+
+    #[cfg(not(windows))]
+    {
+        if !saved.trim().is_empty() {
+            let _ = run_stty(&[saved]);
+        }
+    }
 }
 
 /// Read a single key event. Returns a tag string:
@@ -34,6 +66,23 @@ pub fn term_read_key() -> String {
     }
 
     let ch = byte[0];
+
+    #[cfg(windows)]
+    {
+        if ch == 0x00 || ch == 0xE0 {
+            let mut ext = [0u8; 1];
+            if lock.read(&mut ext).unwrap_or(0) == 1 {
+                return match ext[0] {
+                    b'H' => "up".to_string(),
+                    b'P' => "down".to_string(),
+                    b'M' => "right".to_string(),
+                    b'K' => "left".to_string(),
+                    _ => String::new(),
+                };
+            }
+            return String::new();
+        }
+    }
 
     // Escape sequence
     if ch == 0x1b {
@@ -182,26 +231,110 @@ pub fn println(s: &str) {
     println!("{s}");
 }
 
+#[cfg(not(windows))]
 fn run_stty(args: &[&str]) -> io::Result<String> {
-    let output = Command::new("stty").args(args).output()?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        Err(io::Error::other(format!(
-            "stty failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))
+    let mut prefixed_args = vec!["-f", "/dev/tty"];
+    prefixed_args.extend_from_slice(args);
+
+    for candidate in [prefixed_args.as_slice(), args] {
+        let output = Command::new("stty").args(candidate).output();
+        let Ok(output) = output else {
+            continue;
+        };
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
     }
+
+    Err(io::Error::other("stty failed"))
 }
 
 fn term_size() -> Option<(u16, u16)> {
-    let output = Command::new("stty")
-        .args(["-f", "/dev/tty", "size"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut parts = text.trim().split_whitespace();
-    let rows: u16 = parts.next()?.parse().ok()?;
-    let cols: u16 = parts.next()?.parse().ok()?;
-    Some((cols, rows))
+    #[cfg(windows)]
+    {
+        unsafe {
+            let out = GetStdHandle(STD_OUTPUT_HANDLE);
+            if out.is_null() || (out as isize) == (INVALID_HANDLE_VALUE as isize) {
+                return None;
+            }
+            let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+            if GetConsoleScreenBufferInfo(out, &mut info) == 0 {
+                return None;
+            }
+            let cols = (info.srWindow.Right - info.srWindow.Left + 1) as u16;
+            let rows = (info.srWindow.Bottom - info.srWindow.Top + 1) as u16;
+            return Some((cols, rows));
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("stty")
+            .args(["-f", "/dev/tty", "size"])
+            .output()
+            .ok()
+            .or_else(|| Command::new("stty").arg("size").output().ok())?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut parts = text.trim().split_whitespace();
+        let rows: u16 = parts.next()?.parse().ok()?;
+        let cols: u16 = parts.next()?.parse().ok()?;
+        return Some((cols, rows));
+    }
+}
+
+#[cfg(windows)]
+fn save_windows_console_modes() -> Option<String> {
+    unsafe {
+        let input = GetStdHandle(STD_INPUT_HANDLE);
+        let output = GetStdHandle(STD_OUTPUT_HANDLE);
+        if input.is_null()
+            || output.is_null()
+            || (input as isize) == (INVALID_HANDLE_VALUE as isize)
+            || (output as isize) == (INVALID_HANDLE_VALUE as isize)
+        {
+            return None;
+        }
+
+        let mut in_mode = 0u32;
+        let mut out_mode = 0u32;
+        if GetConsoleMode(input, &mut in_mode) == 0 || GetConsoleMode(output, &mut out_mode) == 0 {
+            return None;
+        }
+
+        let new_in_mode = (in_mode | ENABLE_PROCESSED_INPUT) & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+        let new_out_mode = out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+        let _ = SetConsoleMode(input, new_in_mode);
+        let _ = SetConsoleMode(output, new_out_mode);
+
+        Some(format!("{in_mode}:{out_mode}"))
+    }
+}
+
+#[cfg(windows)]
+fn restore_windows_console_modes(saved: &str) -> io::Result<()> {
+    let (in_raw, out_raw) = saved
+        .split_once(':')
+        .ok_or_else(|| io::Error::other("invalid saved console modes"))?;
+    let in_mode = in_raw
+        .parse::<u32>()
+        .map_err(|_| io::Error::other("invalid saved input mode"))?;
+    let out_mode = out_raw
+        .parse::<u32>()
+        .map_err(|_| io::Error::other("invalid saved output mode"))?;
+
+    unsafe {
+        let input = GetStdHandle(STD_INPUT_HANDLE);
+        let output = GetStdHandle(STD_OUTPUT_HANDLE);
+        if input.is_null()
+            || output.is_null()
+            || (input as isize) == (INVALID_HANDLE_VALUE as isize)
+            || (output as isize) == (INVALID_HANDLE_VALUE as isize)
+        {
+            return Err(io::Error::other("invalid console handle"));
+        }
+        let _ = SetConsoleMode(input, in_mode);
+        let _ = SetConsoleMode(output, out_mode);
+    }
+
+    Ok(())
 }

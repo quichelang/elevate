@@ -42,9 +42,10 @@ fn render(state: State, height: i64) -> String {
     let frame = String::from("\x1b[2J\x1b[H");
     frame = frame + "\x1b[1m> " + state.query + "\x1b[0m\x1b[K\n";
     frame = frame + "  " + format!("{}", state.matches) + " matches\x1b[K\n";
+    frame = frame + "  Enter: select | Esc: quit\x1b[K\n";
     frame = frame + "\x1b[K\n";
 
-    let visible_count = height - 4;
+    let visible_count = height - 5;
     let i: i64 = 0;
     while i < visible_count {
         let idx = state.scroll + i;
@@ -124,7 +125,7 @@ fn process_event(event: String, state: State, height: i64) -> State {
     }
 
     // Scroll
-    let visible_count = height - 4;
+    let visible_count = height - 5;
     if cursor < scroll {
         scroll = cursor;
     }

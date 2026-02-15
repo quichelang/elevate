@@ -11,6 +11,12 @@ import sys
 import subprocess
 
 
+if os.name == "nt":
+    import msvcrt
+    import ctypes
+    from ctypes import wintypes
+
+
 # ---------------------------------------------------------------------------
 # Directory scanning
 # ---------------------------------------------------------------------------
@@ -45,9 +51,14 @@ def fuzzy_match(name, query):
 
 def term_init():
     """Enter raw mode and alternate screen."""
-    saved = subprocess.check_output(["stty", "-f", "/dev/tty", "-g"]).decode().strip()
-    subprocess.run(["stty", "-f", "/dev/tty", "-echo", "-icanon", "min", "1", "time", "0"],
-                   check=True)
+    if os.name == "nt":
+        state = _win_console_state_save_and_enable_vt()
+        sys.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l")
+        sys.stdout.flush()
+        return state
+
+    saved = _run_stty(["-g"]) or ""
+    _run_stty(["-echo", "-icanon", "min", "1", "time", "0"])
     sys.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l")
     sys.stdout.flush()
     return saved
@@ -57,11 +68,42 @@ def term_cleanup(saved):
     """Restore terminal state."""
     sys.stdout.write("\x1b[?25h\x1b[?1049l")
     sys.stdout.flush()
-    subprocess.run(["stty", "-f", "/dev/tty", saved], check=True)
+    if os.name == "nt":
+        _win_console_state_restore(saved)
+        return
+    if saved:
+        _run_stty([saved])
 
 
 def term_read_key():
     """Read a single key event from stdin. Returns a string tag."""
+    if os.name == "nt":
+        ch = msvcrt.getwch()
+        if not ch:
+            return None
+        if ch in ("\x00", "\xe0"):
+            ext = msvcrt.getwch()
+            if ext == "H":
+                return "up"
+            if ext == "P":
+                return "down"
+            if ext == "M":
+                return "right"
+            if ext == "K":
+                return "left"
+            return None
+        if ch == "\x03":
+            return "escape"
+        if ch == "\x08":
+            return "backspace"
+        if ch in ("\r", "\n"):
+            return "enter"
+        if ch == "\x1b":
+            return "escape"
+        if " " <= ch <= "~":
+            return "char:" + ch
+        return None
+
     b = os.read(sys.stdin.fileno(), 1)
     if not b:
         return None
@@ -98,6 +140,57 @@ def term_height():
         return 24
 
 
+def _run_stty(args):
+    for prefix in (["stty", "-f", "/dev/tty"], ["stty"]):
+        try:
+            output = subprocess.check_output(prefix + args, stderr=subprocess.DEVNULL)
+            return output.decode().strip()
+        except Exception:
+            continue
+    return None
+
+
+def _win_console_state_save_and_enable_vt():
+    kernel32 = ctypes.windll.kernel32
+    stdin = kernel32.GetStdHandle(-10)   # STD_INPUT_HANDLE
+    stdout = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+
+    in_mode = wintypes.DWORD()
+    out_mode = wintypes.DWORD()
+    kernel32.GetConsoleMode(stdin, ctypes.byref(in_mode))
+    kernel32.GetConsoleMode(stdout, ctypes.byref(out_mode))
+
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+    ENABLE_PROCESSED_INPUT = 0x0001
+    ENABLE_LINE_INPUT = 0x0002
+    ENABLE_ECHO_INPUT = 0x0004
+
+    new_out_mode = wintypes.DWORD(out_mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+    kernel32.SetConsoleMode(stdout, new_out_mode)
+
+    new_in_mode = wintypes.DWORD(
+        (in_mode.value | ENABLE_PROCESSED_INPUT) & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT)
+    )
+    kernel32.SetConsoleMode(stdin, new_in_mode)
+
+    return f"{in_mode.value}:{out_mode.value}"
+
+
+def _win_console_state_restore(saved):
+    try:
+        in_raw, out_raw = saved.split(":", 1)
+        in_mode = int(in_raw)
+        out_mode = int(out_raw)
+    except Exception:
+        return
+
+    kernel32 = ctypes.windll.kernel32
+    stdin = kernel32.GetStdHandle(-10)
+    stdout = kernel32.GetStdHandle(-11)
+    kernel32.SetConsoleMode(stdin, in_mode)
+    kernel32.SetConsoleMode(stdout, out_mode)
+
+
 def term_draw(frame):
     """Write a full frame to stdout."""
     sys.stdout.write(frame)
@@ -115,10 +208,11 @@ def render(query, results, cursor, scroll, height):
     lines.append("\x1b[2J\x1b[H")  # Clear + home
     lines.append(f"\x1b[1m> {query}\x1b[0m\x1b[K\n")
     lines.append(f"  {len(results)} matches\x1b[K\n")
+    lines.append("  Enter: select | Esc: quit\x1b[K\n")
     lines.append("\x1b[K\n")
 
     # File list
-    visible_count = height - 4
+    visible_count = height - 5
     for i in range(visible_count):
         idx = scroll + i
         if idx < len(results):
@@ -139,7 +233,7 @@ def render(query, results, cursor, scroll, height):
 
 def snapshot(event, query, cursor, matches, scroll, results, height):
     """Emit one snapshot line for scripted comparison."""
-    visible_count = height - 4
+    visible_count = height - 5
     visible = results[scroll:scroll + visible_count]
     selected = results[cursor] if cursor < len(results) else ""
     visible_str = ",".join(visible[:5])  # Cap at 5 for readability
@@ -178,7 +272,7 @@ def process_event(event, query, cursor, scroll, files, height):
         cursor = matches - 1 if matches > 0 else 0
 
     # Scroll
-    visible_count = height - 4
+    visible_count = height - 5
     if cursor < scroll:
         scroll = cursor
     if cursor >= scroll + visible_count:
