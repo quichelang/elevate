@@ -178,7 +178,7 @@ fn run_script(events_path: String, root: String) {
         let event_for_check = format!("{}", event);
         state = process_event(event, state, height);
 
-        host::println(snapshot(event_label, state));
+        host::println(snapshot(event_label, state).as_str());
 
         if event_for_check == "enter" or event_for_check == "escape" {
             return;
@@ -207,7 +207,7 @@ fn run_interactive(root: String) {
     };
 
     let saved = host::term_init();
-    host::term_draw(render(state, height));
+    host::term_draw(render(state, height).as_str());
 
     let running = true;
     while running {
@@ -225,7 +225,7 @@ fn run_interactive(root: String) {
             if state.cursor < host::vec_len(state.results) {
                 const selected = state.results[state.cursor];
                 host::term_cleanup(saved);
-                host::println(selected);
+                host::println(selected.as_str());
                 return;
             }
             running = false;
@@ -233,7 +233,7 @@ fn run_interactive(root: String) {
         }
 
         state = process_event(key, state, height);
-        host::term_draw(render(state, height));
+        host::term_draw(render(state, height).as_str());
     }
 
     host::term_cleanup(saved);
@@ -247,7 +247,7 @@ fn main() {
     let args = host::get_args();
     const argc = host::vec_len(args);
 
-    if argc >= 2 and args[0] == "--script" {
+    if argc >= 2 and args[0] == "--script".to_string() {
         const events_path = args[1];
         let root = String::from(".");
         if argc >= 3 {

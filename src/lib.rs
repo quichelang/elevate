@@ -71,6 +71,7 @@ impl ExperimentFlags {
 pub struct CompileOptions {
     pub experiments: ExperimentFlags,
     pub direct_borrow_hints: Vec<DirectBorrowHint>,
+    pub host_function_hints: Vec<HostFunctionHint>,
     pub forced_clone_places: Vec<String>,
     pub fail_on_hot_clone: bool,
     pub allow_hot_clone_places: Vec<String>,
@@ -84,6 +85,13 @@ pub struct CompileOptions {
 pub struct DirectBorrowHint {
     pub path: String,
     pub borrowed_arg_indexes: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostFunctionHint {
+    pub path: String,
+    pub borrowed_arg_indexes: Vec<usize>,
+    pub mut_borrowed_arg_indexes: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]

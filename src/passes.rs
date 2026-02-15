@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use crate::DirectBorrowHint;
+use crate::{DirectBorrowHint, HostFunctionHint};
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, EnumVariantFields, Expr,
     GenericParam, Item, Module, Pattern, Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp,
@@ -1302,6 +1302,9 @@ pub fn lower_to_rust_with_hints(
     let mut state = LoweringState::from_module(module);
     state.experiment_flags = options.experiments.clone();
     state.debug_enabled = options.debug_log.is_some();
+    for hint in &options.host_function_hints {
+        state.register_host_function_hint(hint);
+    }
     for hint in hints {
         state
             .registry
@@ -1780,6 +1783,36 @@ impl LoweringState {
             }
         }
         None
+    }
+
+    fn register_host_function_hint(&mut self, hint: &HostFunctionHint) {
+        self.known_functions.insert(hint.path.clone());
+
+        if !hint.borrowed_arg_indexes.is_empty() {
+            let entry = self
+                .known_function_borrowed_args
+                .entry(hint.path.clone())
+                .or_default();
+            for index in &hint.borrowed_arg_indexes {
+                if !entry.contains(index) {
+                    entry.push(*index);
+                }
+            }
+            entry.sort_unstable();
+        }
+
+        if !hint.mut_borrowed_arg_indexes.is_empty() {
+            let entry = self
+                .known_function_mut_args
+                .entry(hint.path.clone())
+                .or_default();
+            for index in &hint.mut_borrowed_arg_indexes {
+                if !entry.contains(index) {
+                    entry.push(*index);
+                }
+            }
+            entry.sort_unstable();
+        }
     }
 
     fn push_ownership_note(&mut self, note: String) {

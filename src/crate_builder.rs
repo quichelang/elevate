@@ -48,6 +48,12 @@ enum ContractType {
     Unknown,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct HostInteropHints {
+    direct_borrow_hints: Vec<crate::DirectBorrowHint>,
+    function_hints: Vec<crate::HostFunctionHint>,
+}
+
 pub fn build_ers_crate(crate_root: &Path, release: bool) -> Result<BuildSummary, String> {
     build_ers_crate_with_options(crate_root, release, &CompileOptions::default())
 }
@@ -147,17 +153,17 @@ pub fn transpile_ers_crate_with_options(
         copied_files: 0,
     };
 
-    // Extract host module borrow hints: prefer Rustdex (cargo rustdoc JSON),
+    // Extract host module function hints: prefer Rustdex (cargo rustdoc JSON),
     // fall back to regex source scanning if cargo rustdoc is unavailable.
-    let host_hints = match rustdex_borrow_hints(&summary.source_root) {
+    let host_hints = match rustdex_host_hints(&summary.source_root) {
         Ok(hints) => hints,
         Err(_reason) => {
             // Fallback: regex-based source scanning
-            scan_rust_source_borrow_hints(&source_src)
+            scan_rust_source_host_hints(&source_src)
         }
     };
     let mut enriched_options = options.clone();
-    for hint in host_hints {
+    for hint in host_hints.direct_borrow_hints {
         if !enriched_options
             .direct_borrow_hints
             .iter()
@@ -166,6 +172,7 @@ pub fn transpile_ers_crate_with_options(
             enriched_options.direct_borrow_hints.push(hint);
         }
     }
+    let _ = merge_host_function_hints(&mut enriched_options, host_hints.function_hints);
 
     let mut transpiled_ers = Vec::new();
     process_src_dir(
@@ -258,6 +265,60 @@ fn merge_direct_borrow_hints(
         .collect::<Vec<_>>();
     flattened.sort_by(|left, right| left.path.cmp(&right.path));
     options.direct_borrow_hints = flattened;
+    added
+}
+
+fn merge_host_function_hints(
+    options: &mut CompileOptions,
+    hints: Vec<crate::HostFunctionHint>,
+) -> usize {
+    let mut merged = options
+        .host_function_hints
+        .iter()
+        .map(|hint| {
+            (
+                hint.path.clone(),
+                (
+                    hint.borrowed_arg_indexes
+                        .iter()
+                        .copied()
+                        .collect::<BTreeSet<_>>(),
+                    hint.mut_borrowed_arg_indexes
+                        .iter()
+                        .copied()
+                        .collect::<BTreeSet<_>>(),
+                ),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut added = 0usize;
+    for hint in hints {
+        let entry = merged
+            .entry(hint.path)
+            .or_insert_with(|| (BTreeSet::new(), BTreeSet::new()));
+        for index in hint.borrowed_arg_indexes {
+            if entry.0.insert(index) {
+                added += 1;
+            }
+        }
+        for index in hint.mut_borrowed_arg_indexes {
+            if entry.1.insert(index) {
+                added += 1;
+            }
+        }
+    }
+    let mut flattened = merged
+        .into_iter()
+        .map(
+            |(path, (borrowed_arg_indexes, mut_borrowed_arg_indexes))| crate::HostFunctionHint {
+                path,
+                borrowed_arg_indexes: borrowed_arg_indexes.into_iter().collect(),
+                mut_borrowed_arg_indexes: mut_borrowed_arg_indexes.into_iter().collect(),
+            },
+        )
+        .collect::<Vec<_>>();
+    flattened.sort_by(|left, right| left.path.cmp(&right.path));
+    options.host_function_hints = flattened;
     added
 }
 
@@ -531,13 +592,13 @@ fn infer_clone_places_from_suggestion(original_line: &str, suggested_line: &str)
 // ---------------------------------------------------------------------------
 
 /// Run `cargo rustdoc` on the source crate to produce a rustdoc JSON file,
-/// then use Rustdex to extract `DirectBorrowHint`s for all public functions.
+/// then use Rustdex to extract host function hints for all public functions.
 ///
 /// Returns `Ok(hints)` on success, or `Err(reason)` if `cargo rustdoc` fails
 /// (so the caller can fall back to the regex scanner).
-fn rustdex_borrow_hints(source_root: &Path) -> Result<Vec<crate::DirectBorrowHint>, String> {
+fn rustdex_host_hints(source_root: &Path) -> Result<HostInteropHints, String> {
     let json_path = generate_host_rustdoc_json(source_root)?;
-    rustdex_borrow_hints_from_json(&json_path)
+    rustdex_host_hints_from_json(&json_path)
 }
 
 /// Run `cargo rustdoc -Z unstable-options --output-format json` on the source
@@ -587,32 +648,87 @@ fn generate_host_rustdoc_json(source_root: &Path) -> Result<PathBuf, String> {
     ))
 }
 
-/// Extract `DirectBorrowHint`s from a rustdoc JSON file using Rustdex.
-fn rustdex_borrow_hints_from_json(
-    json_path: &Path,
-) -> Result<Vec<crate::DirectBorrowHint>, String> {
+/// Extract host function hints from a rustdoc JSON file using Rustdex.
+fn rustdex_host_hints_from_json(json_path: &Path) -> Result<HostInteropHints, String> {
     let index = rustdex::IndexBuilder::from_path(json_path).build()?;
-    let mut hints = Vec::new();
+    let mut merged = HashMap::<String, (BTreeSet<usize>, BTreeSet<usize>)>::new();
 
     for func in &index.functions {
+        for alias in host_path_aliases(&func.path) {
+            merged.entry(alias).or_default();
+        }
+
         let borrowed_indexes: Vec<usize> = func
             .sig
             .params
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.is_ref)
+            .filter(|(_, p)| p.is_ref && !p.is_mut_ref)
             .map(|(i, _)| i)
             .collect();
 
-        if !borrowed_indexes.is_empty() {
-            hints.push(crate::DirectBorrowHint {
-                path: func.path.clone(),
-                borrowed_arg_indexes: borrowed_indexes,
-            });
+        let mut_borrowed_indexes: Vec<usize> = func
+            .sig
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_mut_ref)
+            .map(|(i, _)| i)
+            .collect();
+
+        for alias in host_path_aliases(&func.path) {
+            let entry = merged.entry(alias).or_default();
+            for index in &borrowed_indexes {
+                entry.0.insert(*index);
+            }
+            for index in &mut_borrowed_indexes {
+                entry.1.insert(*index);
+            }
         }
     }
 
-    Ok(hints)
+    let mut function_hints = merged
+        .iter()
+        .map(|(path, (borrowed, mut_borrowed))| crate::HostFunctionHint {
+            path: path.clone(),
+            borrowed_arg_indexes: borrowed.iter().copied().collect(),
+            mut_borrowed_arg_indexes: mut_borrowed.iter().copied().collect(),
+        })
+        .collect::<Vec<_>>();
+    function_hints.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut direct_borrow_hints = merged
+        .into_iter()
+        .filter_map(|(path, (borrowed, mut_borrowed))| {
+            let mut indexes = borrowed;
+            indexes.extend(mut_borrowed);
+            if indexes.is_empty() {
+                return None;
+            }
+            Some(crate::DirectBorrowHint {
+                path,
+                borrowed_arg_indexes: indexes.into_iter().collect(),
+            })
+        })
+        .collect::<Vec<_>>();
+    direct_borrow_hints.sort_by(|left, right| left.path.cmp(&right.path));
+
+    Ok(HostInteropHints {
+        direct_borrow_hints,
+        function_hints,
+    })
+}
+
+fn host_path_aliases(path: &str) -> Vec<String> {
+    let mut aliases = BTreeSet::new();
+    if !path.is_empty() {
+        aliases.insert(path.to_string());
+    }
+    let parts = path.split("::").collect::<Vec<_>>();
+    if parts.len() > 2 {
+        aliases.insert(parts[1..].join("::"));
+    }
+    aliases.into_iter().collect()
 }
 
 /// Extract the crate name from a Cargo.toml file.
@@ -639,20 +755,41 @@ fn crate_name_from_manifest(manifest_path: &Path) -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 /// Scan `.rs` files under `src_dir` for `pub fn` signatures and extract
-/// `DirectBorrowHint` entries for parameters whose types start with `&`.
+/// host function hints.
 ///
 /// For a file named `host.rs` containing `pub fn scan_dir(root: &str)`,
 /// this produces `DirectBorrowHint { path: "host::scan_dir", borrowed_arg_indexes: [0] }`.
-fn scan_rust_source_borrow_hints(src_dir: &Path) -> Vec<crate::DirectBorrowHint> {
-    let mut hints = Vec::new();
-    collect_rust_source_hints(src_dir, src_dir, &mut hints);
-    hints
+fn scan_rust_source_host_hints(src_dir: &Path) -> HostInteropHints {
+    let mut function_hints = Vec::new();
+    collect_rust_source_hints(src_dir, src_dir, &mut function_hints);
+
+    let mut direct_borrow_hints = function_hints
+        .iter()
+        .filter_map(|hint| {
+            let mut indexes = BTreeSet::new();
+            indexes.extend(hint.borrowed_arg_indexes.iter().copied());
+            indexes.extend(hint.mut_borrowed_arg_indexes.iter().copied());
+            if indexes.is_empty() {
+                return None;
+            }
+            Some(crate::DirectBorrowHint {
+                path: hint.path.clone(),
+                borrowed_arg_indexes: indexes.into_iter().collect(),
+            })
+        })
+        .collect::<Vec<_>>();
+    function_hints.sort_by(|left, right| left.path.cmp(&right.path));
+    direct_borrow_hints.sort_by(|left, right| left.path.cmp(&right.path));
+    HostInteropHints {
+        direct_borrow_hints,
+        function_hints,
+    }
 }
 
 fn collect_rust_source_hints(
     root: &Path,
     current: &Path,
-    hints: &mut Vec<crate::DirectBorrowHint>,
+    hints: &mut Vec<crate::HostFunctionHint>,
 ) {
     let Ok(entries) = fs::read_dir(current) else {
         return;
@@ -681,13 +818,12 @@ fn collect_rust_source_hints(
         let Ok(source) = fs::read_to_string(&path) else {
             continue;
         };
-        for (fn_name, borrowed_indexes) in extract_pub_fn_borrow_info(&source) {
-            if borrowed_indexes.is_empty() {
-                continue;
-            }
-            hints.push(crate::DirectBorrowHint {
+        for (fn_name, borrowed_indexes, mut_borrowed_indexes) in extract_pub_fn_borrow_info(&source)
+        {
+            hints.push(crate::HostFunctionHint {
                 path: format!("{module_path}::{fn_name}"),
                 borrowed_arg_indexes: borrowed_indexes,
+                mut_borrowed_arg_indexes: mut_borrowed_indexes,
             });
         }
     }
@@ -709,31 +845,20 @@ fn module_path_for_rs_file(root: &Path, file: &Path) -> Option<String> {
     Some(parts.join("::"))
 }
 
-/// Extract `(fn_name, borrowed_arg_indexes)` pairs from a Rust source file.
+/// Extract `(fn_name, borrowed_arg_indexes, mut_borrowed_arg_indexes)`
+/// pairs from a Rust source file.
 ///
 /// Handles multi-line signatures by joining continuation lines. Only considers
 /// `pub fn` (not methods inside `impl` blocks or private functions).
-fn extract_pub_fn_borrow_info(source: &str) -> Vec<(String, Vec<usize>)> {
+fn extract_pub_fn_borrow_info(source: &str) -> Vec<(String, Vec<usize>, Vec<usize>)> {
     let mut results = Vec::new();
     let lines: Vec<&str> = source.lines().collect();
     let mut i = 0;
-    let mut brace_depth: i32 = 0;
 
     while i < lines.len() {
         let line = lines[i].trim();
 
-        // Track brace depth to skip functions inside impl blocks.
-        for ch in line.chars() {
-            match ch {
-                '{' => brace_depth += 1,
-                '}' => brace_depth -= 1,
-                _ => {}
-            }
-        }
-
-        // Only consider top-level pub fn (brace_depth == 0 before this line,
-        // but since we already counted braces on this line, a pub fn opening
-        // its body will have depth 1 after this line).
+        // Only consider top-level `pub fn` declarations.
         if !line.starts_with("pub fn ") {
             i += 1;
             continue;
@@ -748,8 +873,8 @@ fn extract_pub_fn_borrow_info(source: &str) -> Vec<(String, Vec<usize>)> {
             j += 1;
         }
 
-        if let Some((name, borrowed)) = parse_pub_fn_signature(&sig) {
-            results.push((name, borrowed));
+        if let Some((name, borrowed, mut_borrowed)) = parse_pub_fn_signature(&sig) {
+            results.push((name, borrowed, mut_borrowed));
         }
         i = j;
     }
@@ -757,8 +882,8 @@ fn extract_pub_fn_borrow_info(source: &str) -> Vec<(String, Vec<usize>)> {
 }
 
 /// Parse a single `pub fn name(params...) -> ...` signature line.
-/// Returns `(fn_name, borrowed_param_indexes)`.
-fn parse_pub_fn_signature(sig: &str) -> Option<(String, Vec<usize>)> {
+/// Returns `(fn_name, borrowed_param_indexes, mut_borrowed_param_indexes)`.
+fn parse_pub_fn_signature(sig: &str) -> Option<(String, Vec<usize>, Vec<usize>)> {
     let after_pub_fn = sig.strip_prefix("pub fn ")?.trim_start();
     // Extract function name (up to first `(` or `<`)
     let name_end = after_pub_fn.find(|c: char| c == '(' || c == '<')?;
@@ -773,6 +898,7 @@ fn parse_pub_fn_signature(sig: &str) -> Option<(String, Vec<usize>)> {
 
     let params = split_params(params_text);
     let mut borrowed = Vec::new();
+    let mut mut_borrowed = Vec::new();
     for (index, param) in params.iter().enumerate() {
         let param = param.trim();
         if param.is_empty() || param == "self" || param == "&self" || param == "&mut self" {
@@ -781,12 +907,14 @@ fn parse_pub_fn_signature(sig: &str) -> Option<(String, Vec<usize>)> {
         // Extract the type part after the first `:`
         if let Some(colon_pos) = param.find(':') {
             let ty = param[colon_pos + 1..].trim();
-            if ty.starts_with('&') {
+            if ty.starts_with("&mut ") {
+                mut_borrowed.push(index);
+            } else if ty.starts_with('&') {
                 borrowed.push(index);
             }
         }
     }
-    Some((name, borrowed))
+    Some((name, borrowed, mut_borrowed))
 }
 
 /// Find the text up to the matching `)` accounting for nested parens.
@@ -2281,10 +2409,10 @@ mod tests {
 
     use super::{
         infer_borrow_indexes_from_suggestion, infer_clone_places_from_suggestion,
-        merge_direct_borrow_hints, merge_forced_clone_places, parse_diagnostic_location,
-        transpile_ers_crate,
+        merge_direct_borrow_hints, merge_forced_clone_places, merge_host_function_hints,
+        parse_diagnostic_location, parse_pub_fn_signature, transpile_ers_crate,
     };
-    use crate::{CompileOptions, DirectBorrowHint};
+    use crate::{CompileOptions, DirectBorrowHint, HostFunctionHint};
 
     #[test]
     fn transpile_multi_file_crate_preserves_layout() {
@@ -2835,6 +2963,54 @@ mod tests {
                 .iter()
                 .any(|hint| hint.path == "Other::query" && hint.borrowed_arg_indexes == vec![0])
         );
+    }
+
+    #[test]
+    fn parse_pub_fn_signature_tracks_mut_and_shared_borrows() {
+        let sig = "pub fn touch(value: &mut String, label: &str, times: i64) -> bool {";
+        let (name, borrowed, mut_borrowed) =
+            parse_pub_fn_signature(sig).expect("signature should parse");
+        assert_eq!(name, "touch");
+        assert_eq!(borrowed, vec![1]);
+        assert_eq!(mut_borrowed, vec![0]);
+    }
+
+    #[test]
+    fn merge_host_hints_unions_borrow_modes_per_path() {
+        let mut options = CompileOptions {
+            host_function_hints: vec![HostFunctionHint {
+                path: "host::draw".to_string(),
+                borrowed_arg_indexes: vec![0],
+                mut_borrowed_arg_indexes: vec![],
+            }],
+            ..CompileOptions::default()
+        };
+        let added = merge_host_function_hints(
+            &mut options,
+            vec![
+                HostFunctionHint {
+                    path: "host::draw".to_string(),
+                    borrowed_arg_indexes: vec![1],
+                    mut_borrowed_arg_indexes: vec![2],
+                },
+                HostFunctionHint {
+                    path: "host::tick".to_string(),
+                    borrowed_arg_indexes: vec![],
+                    mut_borrowed_arg_indexes: vec![0],
+                },
+            ],
+        );
+        assert_eq!(added, 3);
+        assert!(options.host_function_hints.iter().any(|hint| {
+            hint.path == "host::draw"
+                && hint.borrowed_arg_indexes == vec![0, 1]
+                && hint.mut_borrowed_arg_indexes == vec![2]
+        }));
+        assert!(options.host_function_hints.iter().any(|hint| {
+            hint.path == "host::tick"
+                && hint.borrowed_arg_indexes.is_empty()
+                && hint.mut_borrowed_arg_indexes == vec![0]
+        }));
     }
 
     #[test]
