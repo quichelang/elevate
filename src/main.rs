@@ -254,6 +254,7 @@ fn build_script_binary(
 
 fn compile_script_to_rust(script_path: &Path, options: &CompileOptions) -> Result<String, String> {
     let source = elevate::source::load_file(script_path)?;
+    ensure_script_has_main_entrypoint(&source, script_path)?;
     let mut compile_options = options.clone();
     compile_options.source_name = Some(script_path.display().to_string());
     let output = elevate::compile_source_with_options(&source, &compile_options)
@@ -270,6 +271,34 @@ fn compile_script_to_rust(script_path: &Path, options: &CompileOptions) -> Resul
     }
     flush_debug_log(&output.debug_log, &compile_options);
     Ok(output.rust_code)
+}
+
+fn ensure_script_has_main_entrypoint(source: &str, script_path: &Path) -> Result<(), String> {
+    let tokens = elevate::lexer::lex(source).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.message)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let module = elevate::parser::parse_module(tokens).map_err(|diagnostics| {
+        diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.message)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let has_main = module.items.iter().any(|item| {
+        matches!(item, elevate::ast::Item::Function(function) if function.name == "main")
+    });
+    if has_main {
+        Ok(())
+    } else {
+        Err(format!(
+            "script {} cannot be run as a binary because it does not define `fn main(...)`. Add a `main` function for `elevate run/build`, or compile as a library module via crate mode.",
+            script_path.display()
+        ))
+    }
 }
 
 fn compile_rust_to_binary(
