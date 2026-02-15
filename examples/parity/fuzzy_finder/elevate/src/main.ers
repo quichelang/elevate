@@ -17,14 +17,14 @@ struct State {
 // Fuzzy matching
 // ---------------------------------------------------------------------------
 
-fn fuzzy_match(name: String, query: String) -> bool {
+fn fuzzy_match(name: String, query: str) -> bool {
     if host::string_len(query) == 0 {
         return true;
     }
     return str::contains(name, query);
 }
 
-fn filter_files(files: Vec<String>, query: String) -> Vec<String> {
+fn filter_files(files: Vec<String>, query: str) -> Vec<String> {
     let results: Vec<String> = [];
     for file in files {
         if fuzzy_match(file, query) {
@@ -155,10 +155,10 @@ fn run_script(events_path: String, root: String) {
     let height: i64 = 24;
     let initial_count: i64 = host::vec_len(files);
     let initial_files = host::clone_vec(files);
-    let initial_results = filter_files(files, String::from(""));
+    let initial_results = filter_files(files, "");
 
     let state = State {
-        query: String::from(""),
+        query: "".to_string(),
         cursor: 0,
         scroll: 0,
         results: initial_results,
@@ -179,7 +179,7 @@ fn run_script(events_path: String, root: String) {
         let event_for_check = format!("{}", event);
         state = process_event(event, state, height);
 
-        host::println(snapshot(event_label, state).as_str());
+        host::println(snapshot(event_label, state));
 
         if event_for_check == "enter" or event_for_check == "escape" {
             return;
@@ -196,10 +196,10 @@ fn run_interactive(root: String) {
     let height = host::term_height();
     let initial_count: i64 = host::vec_len(files);
     let initial_files = host::clone_vec(files);
-    let initial_results = filter_files(files, String::from(""));
+    let initial_results = filter_files(files, "");
 
     let state = State {
-        query: String::from(""),
+        query: "".to_string(),
         cursor: 0,
         scroll: 0,
         results: initial_results,
@@ -208,7 +208,7 @@ fn run_interactive(root: String) {
     };
 
     let saved = host::term_init();
-    host::term_draw(render(state, height).as_str());
+    host::term_draw(render(state, height));
 
     let running = true;
     while running {
@@ -226,7 +226,7 @@ fn run_interactive(root: String) {
             if state.cursor < host::vec_len(state.results) {
                 const selected = state.results[state.cursor];
                 host::term_cleanup(saved);
-                host::println(selected.as_str());
+                host::println(selected);
                 return;
             }
             running = false;
@@ -234,7 +234,7 @@ fn run_interactive(root: String) {
         }
 
         state = process_event(key, state, height);
-        host::term_draw(render(state, height).as_str());
+        host::term_draw(render(state, height));
     }
 
     host::term_cleanup(saved);
