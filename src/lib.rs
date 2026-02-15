@@ -24,6 +24,9 @@ use std::fmt;
 
 use ast::{Item, Module};
 use diag::Diagnostic;
+use diagnostics_catalog::{
+    FrontendDiagnosticProfile, infer_elevate_code_from_message, resolve_catalog_entry_for_frontend,
+};
 use ir::lowered::RustModule;
 use ir::typed::TypedModule;
 
@@ -145,6 +148,44 @@ impl CompileError {
             source_name,
             source_text,
         }
+    }
+}
+
+pub fn render_compile_error_for_frontend(
+    error: &CompileError,
+    profile: Option<&FrontendDiagnosticProfile>,
+) -> String {
+    let mut out = String::new();
+    for (index, diagnostic) in error.diagnostics.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let inferred = infer_elevate_code_from_message(&diagnostic.message);
+        let Some(entry) = resolve_catalog_entry_for_frontend(inferred, profile) else {
+            continue;
+        };
+        let location = if let Some(source_name) = error.source_name.as_deref() {
+            let loc = source_map::format_location(diagnostic.span, error.source_text.as_deref());
+            format!("{source_name}:{loc}")
+        } else {
+            source_map::format_location(diagnostic.span, error.source_text.as_deref())
+        };
+        out.push_str(&format!(
+            "[{}] {}\nLocation: {}\nExpected: {}\nActual: {}\nWhy: {}\nFix: {}\nDetail: {}",
+            entry.code,
+            entry.title,
+            location,
+            entry.expected,
+            entry.actual,
+            entry.explanation,
+            entry.direct_fix_hint,
+            diagnostic.message
+        ));
+    }
+    if out.is_empty() {
+        error.to_string()
+    } else {
+        out
     }
 }
 

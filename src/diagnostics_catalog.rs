@@ -250,6 +250,75 @@ pub fn resolve_catalog_entry_for_frontend(
     })
 }
 
+pub fn infer_elevate_code_from_message(message: &str) -> ElevateErrorCode {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("unexpected") && lower.contains("token") {
+        ElevateErrorCode::E1001
+    } else if lower.contains("unknown function")
+        || lower.contains("unknown method")
+        || lower.contains("unresolved")
+    {
+        ElevateErrorCode::E1002
+    } else if lower.contains("mismatch") && lower.contains("type") {
+        ElevateErrorCode::E2001
+    } else if lower.contains("capability") || lower.contains("borrow") {
+        ElevateErrorCode::E2002
+    } else if lower.contains("moved") && lower.contains("use") {
+        ElevateErrorCode::E3001
+    } else if lower.contains("cannot borrow") && lower.contains("mutable") {
+        ElevateErrorCode::E3002
+    } else if lower.contains("multiple mutable") {
+        ElevateErrorCode::E3003
+    } else if lower.contains("read-only") && lower.contains("mut") {
+        ElevateErrorCode::E3004
+    } else {
+        ElevateErrorCode::E9002
+    }
+}
+
+pub fn quiche_default_profile() -> FrontendDiagnosticProfile {
+    FrontendDiagnosticProfile {
+        language: "quiche".to_string(),
+        groups: vec![
+            FrontendDiagnosticGroup {
+                elevate_codes: vec![ElevateErrorCode::E1001],
+                frontend_code: "Q-SYNTAX-001".to_string(),
+                title: "Invalid syntax".to_string(),
+                explanation: "This source fragment does not match Quiche syntax.".to_string(),
+                expected: Some("A valid Quiche statement or expression".to_string()),
+                actual: Some("A token sequence the parser cannot continue".to_string()),
+                direct_fix_hint: Some(
+                    "Fix nearby punctuation/indentation and verify block structure.".to_string(),
+                ),
+                severity: DiagnosticSeverity::Error,
+            },
+            FrontendDiagnosticGroup {
+                elevate_codes: vec![
+                    ElevateErrorCode::E2001,
+                    ElevateErrorCode::E2002,
+                    ElevateErrorCode::E3001,
+                    ElevateErrorCode::E3002,
+                    ElevateErrorCode::E3003,
+                    ElevateErrorCode::E3004,
+                ],
+                frontend_code: "Q-SEM-001".to_string(),
+                title: "Invalid operation".to_string(),
+                explanation:
+                    "This operation is not valid in Quiche's simplified source semantics."
+                        .to_string(),
+                expected: Some("An operation allowed by Quiche runtime/ownership rules".to_string()),
+                actual: Some("An operation requiring unsupported ownership/type behavior".to_string()),
+                direct_fix_hint: Some(
+                    "Rewrite the expression using Quiche-native control/data-flow constructs."
+                        .to_string(),
+                ),
+                severity: DiagnosticSeverity::Error,
+            },
+        ],
+        passthrough_unmapped: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -293,5 +362,17 @@ mod tests {
 
         let resolved = resolve_catalog_entry_for_frontend(ElevateErrorCode::E1002, Some(&profile));
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn infer_code_from_message_defaults_for_frontend_bridge() {
+        assert_eq!(
+            super::infer_elevate_code_from_message("Unexpected token `:`"),
+            ElevateErrorCode::E1001
+        );
+        assert_eq!(
+            super::infer_elevate_code_from_message("Type mismatch in assignment"),
+            ElevateErrorCode::E2001
+        );
     }
 }

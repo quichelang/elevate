@@ -122,6 +122,25 @@ Language segregation is by catalog namespace (`language` + language-specific cod
 - Populate envelope metadata (`language`, `source_path`, `source_map_id`).
 - Prefer stable source IDs so sidecar span maps can be resolved consistently.
 
+### Quiche call path (verified)
+
+Quiche currently integrates by calling `elevate::compile_ast_with_options` (from `quiche/src/lib.rs`).
+
+Diagnostics 2.0 now supports this path directly:
+
+- `render_compile_error_for_frontend(error, profile)` maps Elevate compile errors into frontend-facing grouped/optional semantics.
+- `translate_backend_build_failure(..., profile, include_raw)` maps backend rustc/cargo failures into structured frontend-facing diagnostics.
+
+### Optional/grouped semantics model
+
+Frontends that simplify semantics (for example, no explicit type surface) can avoid re-implementing diagnostics by supplying a `FrontendDiagnosticProfile`:
+
+- map many Elevate codes into one frontend code (for example `E2001|E2002|E300* -> Q-SEM-001`),
+- keep passthrough for unmapped codes (`passthrough_unmapped = true`), or
+- hide unmapped backend details (`passthrough_unmapped = false`).
+
+This gives frontends control over language wording while Elevate remains the diagnostics engine.
+
 ## CLI Surface
 
 - `--verbose-backend-diagnostics`:

@@ -23,6 +23,16 @@ Relevant option for diagnostics:
   - Set this to original frontend file path (for example `src/demo.q`).
   - Elevate includes it in diagnostics.
 
+Frontend diagnostics bridge (for `compile_ast_with_options` callers):
+
+- `render_compile_error_for_frontend(error, profile)`
+  - Converts `CompileError` diagnostics into frontend language phrasing.
+- `translate_backend_build_failure(..., profile, include_raw)`
+  - Converts backend rustc/cargo diagnostics into structured frontend diagnostics.
+- `FrontendDiagnosticProfile`
+  - Lets frontends map multiple Elevate error codes into one frontend code,
+    useful when frontend semantics are intentionally simpler than Elevate.
+
 ## Diagnostics metadata path
 
 When compiling from raw source (`compile_source_with_options`), Elevate has:

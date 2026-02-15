@@ -1,7 +1,31 @@
 use std::path::{Path, PathBuf};
 
 use crate::crate_builder::GeneratedSourceLink;
-use crate::diagnostics_catalog::{ElevateErrorCode, elevate_catalog_entry};
+use crate::diagnostics_catalog::{
+    ElevateErrorCode, FrontendDiagnosticProfile, elevate_catalog_entry,
+    resolve_catalog_entry_for_frontend,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendRenderedDiagnostic {
+    pub language: String,
+    pub code: String,
+    pub title: String,
+    pub location: String,
+    pub expected: String,
+    pub actual: String,
+    pub explanation: String,
+    pub direct_fix_hint: String,
+    pub backend_detail: String,
+    pub elevate_source_code: ElevateErrorCode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendDiagnosticsReport {
+    pub classified_as_ice: bool,
+    pub diagnostics: Vec<BackendRenderedDiagnostic>,
+    pub raw_backend: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedRustcDiagnostic {
@@ -19,23 +43,56 @@ pub(crate) fn render_backend_build_failure(
     generated_links: &[GeneratedSourceLink],
     verbose_backend_diagnostics: bool,
 ) -> String {
+    let report = translate_backend_build_failure(
+        stderr,
+        generated_root,
+        generated_links,
+        None,
+        verbose_backend_diagnostics,
+    );
+    render_backend_report_text(&report)
+}
+
+pub fn translate_backend_build_failure(
+    stderr: &str,
+    generated_root: &Path,
+    generated_links: &[GeneratedSourceLink],
+    frontend_profile: Option<&FrontendDiagnosticProfile>,
+    include_raw_backend: bool,
+) -> BackendDiagnosticsReport {
     let diagnostics = parse_rustc_stderr(stderr, generated_root);
     if diagnostics.is_empty() {
-        let fallback = elevate_catalog_entry(ElevateErrorCode::E9002);
-        let mut out = format!(
-            "[{}] {}: {}\nExpected: {}\nActual: {}\nFix: {}",
-            fallback.code.as_str(),
-            fallback.title,
-            fallback.explanation,
-            fallback.expected,
-            fallback.actual,
-            fallback.direct_fix_hint
-        );
-        if verbose_backend_diagnostics {
-            out.push_str("\n\n--- raw rustc/cargo diagnostics ---\n");
-            out.push_str(stderr.trim());
-        }
-        return out;
+        let fallback = resolve_catalog_entry_for_frontend(ElevateErrorCode::E9002, frontend_profile)
+            .unwrap_or_else(|| {
+                let elevate = elevate_catalog_entry(ElevateErrorCode::E9002);
+                crate::diagnostics_catalog::ResolvedCatalogEntry {
+                    language: elevate.language.to_string(),
+                    code: elevate.code.as_str().to_string(),
+                    severity: elevate.severity,
+                    title: elevate.title.to_string(),
+                    explanation: elevate.explanation.to_string(),
+                    expected: elevate.expected.to_string(),
+                    actual: elevate.actual.to_string(),
+                    direct_fix_hint: elevate.direct_fix_hint.to_string(),
+                    source_code: ElevateErrorCode::E9002,
+                }
+            });
+        return BackendDiagnosticsReport {
+            classified_as_ice: false,
+            diagnostics: vec![BackendRenderedDiagnostic {
+                language: fallback.language,
+                code: fallback.code,
+                title: fallback.title,
+                location: "location unavailable".to_string(),
+                expected: fallback.expected,
+                actual: fallback.actual,
+                explanation: fallback.explanation,
+                direct_fix_hint: fallback.direct_fix_hint,
+                backend_detail: "No parseable rustc diagnostic payload.".to_string(),
+                elevate_source_code: ElevateErrorCode::E9002,
+            }],
+            raw_backend: include_raw_backend.then(|| stderr.trim().to_string()),
+        };
     }
 
     let mapped_errors = diagnostics
@@ -50,23 +107,13 @@ pub(crate) fn render_backend_build_failure(
     let total_errors = diagnostics.iter().filter(|diag| diag.level == "error").count();
     let classify_as_ice = mapped_errors > 0 && mapped_errors == total_errors;
 
-    let mut out = String::new();
-    if classify_as_ice {
-        let ice = elevate_catalog_entry(ElevateErrorCode::E9001);
-        out.push_str(&format!(
-            "[{}] {}: {}\nExpected: {}\nActual: {}\nFix: {}\n",
-            ice.code.as_str(),
-            ice.title,
-            ice.explanation,
-            ice.expected,
-            ice.actual,
-            ice.direct_fix_hint
-        ));
-    }
+    let mut rendered = Vec::new();
 
     for diag in diagnostics.iter().filter(|diag| diag.level == "error") {
         let mapped_code = map_rustc_code_to_elevate(diag.code.as_deref(), &diag.message);
-        let entry = elevate_catalog_entry(mapped_code);
+        let Some(entry) = resolve_catalog_entry_for_frontend(mapped_code, frontend_profile) else {
+            continue;
+        };
         let location = diag
             .path
             .as_ref()
@@ -89,24 +136,88 @@ pub(crate) fn render_backend_build_failure(
             })
             .unwrap_or_else(|| "location unavailable".to_string());
 
-        out.push_str(&format!(
-            "\n[{}] {}\nLocation: {}\nExpected: {}\nActual: {}\nWhy: {}\nFix: {}",
-            entry.code.as_str(),
-            entry.title,
+        rendered.push(BackendRenderedDiagnostic {
+            language: entry.language,
+            code: entry.code,
+            title: entry.title,
             location,
-            entry.expected,
-            entry.actual,
-            entry.explanation,
-            entry.direct_fix_hint,
+            expected: entry.expected,
+            actual: entry.actual,
+            explanation: entry.explanation,
+            direct_fix_hint: entry.direct_fix_hint,
+            backend_detail: diag.message.clone(),
+            elevate_source_code: entry.source_code,
+        });
+    }
+
+    if rendered.is_empty() {
+        let fallback = resolve_catalog_entry_for_frontend(ElevateErrorCode::E9002, frontend_profile)
+            .unwrap_or_else(|| {
+                let elevate = elevate_catalog_entry(ElevateErrorCode::E9002);
+                crate::diagnostics_catalog::ResolvedCatalogEntry {
+                    language: elevate.language.to_string(),
+                    code: elevate.code.as_str().to_string(),
+                    severity: elevate.severity,
+                    title: elevate.title.to_string(),
+                    explanation: elevate.explanation.to_string(),
+                    expected: elevate.expected.to_string(),
+                    actual: elevate.actual.to_string(),
+                    direct_fix_hint: elevate.direct_fix_hint.to_string(),
+                    source_code: ElevateErrorCode::E9002,
+                }
+            });
+        rendered.push(BackendRenderedDiagnostic {
+            language: fallback.language,
+            code: fallback.code,
+            title: fallback.title,
+            location: "location unavailable".to_string(),
+            expected: fallback.expected,
+            actual: fallback.actual,
+            explanation: fallback.explanation,
+            direct_fix_hint: fallback.direct_fix_hint,
+            backend_detail: "Diagnostics were filtered by frontend profile.".to_string(),
+            elevate_source_code: ElevateErrorCode::E9002,
+        });
+    }
+
+    BackendDiagnosticsReport {
+        classified_as_ice: classify_as_ice,
+        diagnostics: rendered,
+        raw_backend: include_raw_backend.then(|| stderr.trim().to_string()),
+    }
+}
+
+fn render_backend_report_text(report: &BackendDiagnosticsReport) -> String {
+    let mut out = String::new();
+    if report.classified_as_ice {
+        let ice = elevate_catalog_entry(ElevateErrorCode::E9001);
+        out.push_str(&format!(
+            "[{}] {}: {}\nExpected: {}\nActual: {}\nFix: {}\n",
+            ice.code.as_str(),
+            ice.title,
+            ice.explanation,
+            ice.expected,
+            ice.actual,
+            ice.direct_fix_hint
         ));
-        out.push_str(&format!("\nBackend detail: {}", diag.message));
     }
-
-    if verbose_backend_diagnostics {
+    for diag in &report.diagnostics {
+        out.push_str(&format!(
+            "\n[{}] {}\nLocation: {}\nExpected: {}\nActual: {}\nWhy: {}\nFix: {}\nBackend detail: {}",
+            diag.code,
+            diag.title,
+            diag.location,
+            diag.expected,
+            diag.actual,
+            diag.explanation,
+            diag.direct_fix_hint,
+            diag.backend_detail
+        ));
+    }
+    if let Some(raw) = &report.raw_backend {
         out.push_str("\n\n--- raw rustc/cargo diagnostics ---\n");
-        out.push_str(stderr.trim());
+        out.push_str(raw);
     }
-
     out.trim().to_string()
 }
 
@@ -244,9 +355,14 @@ fn parse_location_triplet(line: &str, generated_root: &Path) -> Option<(PathBuf,
 mod tests {
     use std::path::PathBuf;
 
-    use super::{map_rustc_code_to_elevate, parse_rustc_stderr, render_backend_build_failure};
+    use super::{
+        map_rustc_code_to_elevate, parse_rustc_stderr, render_backend_build_failure,
+        translate_backend_build_failure,
+    };
     use crate::crate_builder::GeneratedSourceLink;
-    use crate::diagnostics_catalog::ElevateErrorCode;
+    use crate::diagnostics_catalog::{
+        DiagnosticSeverity, ElevateErrorCode, FrontendDiagnosticGroup, FrontendDiagnosticProfile,
+    };
 
     #[test]
     fn rustc_code_mapping_uses_known_ownership_codes() {
@@ -281,5 +397,35 @@ mod tests {
         let rendered = render_backend_build_failure(stderr, &generated_root, &links, false);
         assert!(rendered.contains("[E9001]"));
         assert!(rendered.contains("/src/lib.ers:9:18"));
+    }
+
+    #[test]
+    fn frontend_profile_can_collapse_backend_codes() {
+        let stderr = "error[E0308]: mismatched types\n --> src/lib.rs:9:18\n";
+        let generated_root = PathBuf::from("/tmp/gen");
+        let links = vec![GeneratedSourceLink {
+            generated_path: generated_root.join("src/lib.rs"),
+            source_path: PathBuf::from("/src/main.q"),
+        }];
+        let profile = FrontendDiagnosticProfile {
+            language: "quiche".to_string(),
+            groups: vec![FrontendDiagnosticGroup {
+                elevate_codes: vec![ElevateErrorCode::E2001],
+                frontend_code: "Q-SEM-001".to_string(),
+                title: "Invalid operation".to_string(),
+                explanation: "Operation violates Quiche semantics".to_string(),
+                expected: Some("A valid Quiche expression".to_string()),
+                actual: Some("An invalid operation shape".to_string()),
+                direct_fix_hint: Some("Rewrite using Quiche-native forms".to_string()),
+                severity: DiagnosticSeverity::Error,
+            }],
+            passthrough_unmapped: true,
+        };
+
+        let report =
+            translate_backend_build_failure(stderr, &generated_root, &links, Some(&profile), false);
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].code, "Q-SEM-001");
+        assert_eq!(report.diagnostics[0].language, "quiche");
     }
 }
