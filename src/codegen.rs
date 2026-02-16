@@ -127,7 +127,7 @@ fn emit_trait(def: &RustTrait, out: &mut String) {
         let params = method
             .params
             .iter()
-            .map(|p| format!("{}: {}", p.name, p.ty))
+            .map(|p| emit_param(p, None))
             .collect::<Vec<_>>()
             .join(", ");
         let generics = if method.type_params.is_empty() {
@@ -154,13 +154,7 @@ fn emit_function(def: &RustFunction, out: &mut String) {
     let params = def
         .params
         .iter()
-        .map(|p| {
-            if mutated.contains(&p.name) && !p.ty.trim_start().starts_with("&mut") {
-                format!("mut {}: {}", p.name, p.ty)
-            } else {
-                format!("{}: {}", p.name, p.ty)
-            }
-        })
+        .map(|p| emit_param(p, Some(&mutated)))
         .collect::<Vec<_>>()
         .join(", ");
     let generics = emit_type_params(&def.type_params);
@@ -196,13 +190,7 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
         let params = method
             .params
             .iter()
-            .map(|p| {
-                if mutated.contains(&p.name) && !p.ty.trim_start().starts_with("&mut") {
-                    format!("mut {}: {}", p.name, p.ty)
-                } else {
-                    format!("{}: {}", p.name, p.ty)
-                }
-            })
+            .map(|p| emit_param(p, Some(&mutated)))
             .collect::<Vec<_>>()
             .join(", ");
         let generics = emit_type_params(&method.type_params);
@@ -237,6 +225,31 @@ fn emit_const(def: &RustConst, out: &mut String) {
     out.push_str(" = ");
     out.push_str(&emit_expr(&def.value));
     out.push_str(";\n");
+}
+
+fn emit_param(
+    param: &crate::ir::lowered::RustParam,
+    mutated: Option<&std::collections::HashSet<String>>,
+) -> String {
+    if param.name == "self" {
+        let ty = param.ty.trim_start();
+        if ty.starts_with("&mut") {
+            return "&mut self".to_string();
+        }
+        if ty.starts_with('&') {
+            return "&self".to_string();
+        }
+        if mutated.is_some_and(|set| set.contains("self")) {
+            return "mut self".to_string();
+        }
+        return "self".to_string();
+    }
+
+    if mutated.is_some_and(|set| set.contains(&param.name)) && !param.ty.trim_start().starts_with("&mut") {
+        format!("mut {}: {}", param.name, param.ty)
+    } else {
+        format!("{}: {}", param.name, param.ty)
+    }
 }
 
 fn emit_static(def: &RustStatic, out: &mut String) {

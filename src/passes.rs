@@ -1706,6 +1706,12 @@ impl LoweringState {
                     state
                         .known_function_borrowed_args
                         .insert(def.name.clone(), borrowed_param_indexes(&def.params));
+                    let mut_indexes = mut_borrowed_param_indexes(&def.params);
+                    if !mut_indexes.is_empty() {
+                        state
+                            .known_function_mut_args
+                            .insert(def.name.clone(), mut_indexes);
+                    }
                 }
                 TypedItem::Impl(def) => {
                     for method in &def.methods {
@@ -1713,7 +1719,11 @@ impl LoweringState {
                         state.known_functions.insert(lookup.clone());
                         state
                             .known_function_borrowed_args
-                            .insert(lookup, borrowed_param_indexes(&method.params));
+                            .insert(lookup.clone(), borrowed_param_indexes(&method.params));
+                        let mut_indexes = mut_borrowed_param_indexes(&method.params);
+                        if !mut_indexes.is_empty() {
+                            state.known_function_mut_args.insert(lookup, mut_indexes);
+                        }
                     }
                 }
                 TypedItem::RustBlock(_) => {}
@@ -2115,11 +2125,21 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         return_type: Some(def.return_type.clone()),
         ..LoweringContext::default()
     };
-    let lowered_body: Vec<RustStmt> = def
+    let mut lowered_body: Vec<RustStmt> = def
         .body
         .iter()
         .map(|stmt| lower_stmt_with_context(stmt, &mut context, state))
         .collect();
+
+    let borrowed_self_returns_self = def.return_type == "Self"
+        && def
+            .params
+            .iter()
+            .find(|param| param.name == "self")
+            .is_some_and(|param| param.ty.trim_start().starts_with('&'));
+    if borrowed_self_returns_self {
+        rewrite_borrowed_self_returns_to_clone(&mut lowered_body);
+    }
 
     // Detect which params are mutated and safe to promote to &mut T.
     // A param is promotable when it is mutated AND not consumed (returned,
@@ -2170,6 +2190,54 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         params,
         return_type: def.return_type.clone(),
         body: lowered_body,
+    }
+}
+
+fn rewrite_borrowed_self_returns_to_clone(stmts: &mut [RustStmt]) {
+    for stmt in stmts {
+        match stmt {
+            RustStmt::Return(Some(expr)) => {
+                if is_plain_self_path(expr) {
+                    *expr = clone_of_self_expr();
+                }
+            }
+            RustStmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                rewrite_borrowed_self_returns_to_clone(then_body);
+                if let Some(else_body) = else_body {
+                    rewrite_borrowed_self_returns_to_clone(else_body);
+                }
+            }
+            RustStmt::While { body, .. }
+            | RustStmt::For { body, .. }
+            | RustStmt::Loop { body } => rewrite_borrowed_self_returns_to_clone(body),
+            RustStmt::Const(_)
+            | RustStmt::DestructureConst { .. }
+            | RustStmt::Assign { .. }
+            | RustStmt::Return(None)
+            | RustStmt::Break
+            | RustStmt::Continue
+            | RustStmt::Raw(_)
+            | RustStmt::Expr(_) => {}
+        }
+    }
+}
+
+fn is_plain_self_path(expr: &RustExpr) -> bool {
+    matches!(expr, RustExpr::Path(path) if path.len() == 1 && path[0] == "self")
+}
+
+fn clone_of_self_expr() -> RustExpr {
+    RustExpr::Call {
+        callee: Box::new(RustExpr::Field {
+            base: Box::new(RustExpr::Path(vec!["self".to_string()])),
+            field: "clone".to_string(),
+        }),
+        args: Vec::new(),
+        mutates_receiver: false,
     }
 }
 
@@ -3252,6 +3320,7 @@ fn lower_item(
         })),
         Item::Impl(def) => {
             let mut methods = Vec::new();
+            let mut known_mutating_self_methods = HashSet::new();
             for method in &def.methods {
                 let typed_method = with_diag_span_scope(method.span, || {
                     let resolved_sig =
@@ -3373,6 +3442,16 @@ fn lower_item(
                         .get(&method_lookup_name)
                         .map(|sig| sig.type_param_bounds.clone())
                         .unwrap_or_default();
+                    let mutates_self = def.trait_target.is_none()
+                        && typed_method_requires_mut_self(
+                            &body,
+                            context,
+                            Some(&known_mutating_self_methods),
+                        );
+                    let impl_target_ty =
+                        (def.trait_target.is_none()).then(|| impl_target_rust_type(def, context));
+                    let returns_impl_self_like = def.trait_target.is_none()
+                        && method_returns_impl_self_like(method, &final_return_ty, def, context);
                     TypedFunction {
                         is_public: method.visibility == Visibility::Public,
                         name: method.name.clone(),
@@ -3397,9 +3476,8 @@ fn lower_item(
                             .filter(|(index, _)| {
                                 !is_redundant_impl_self_param(&method.params, *index)
                             })
-                            .map(|(index, param)| TypedParam {
-                                name: param.name.clone(),
-                                ty: resolved_sig
+                            .map(|(index, param)| {
+                                let default_ty = resolved_sig
                                     .param_rust_types
                                     .as_ref()
                                     .and_then(|types| types.get(index).cloned())
@@ -3418,16 +3496,49 @@ fn lower_item(
                                                     ),
                                                 )
                                             })
-                                    }),
+                                    });
+
+                                let ty = if param.name == "self" && def.trait_target.is_none() {
+                                    if let Some(target_ty) = &impl_target_ty {
+                                        if mutates_self {
+                                            format!("&mut {target_ty}")
+                                        } else {
+                                            format!("&{target_ty}")
+                                        }
+                                    } else {
+                                        default_ty
+                                    }
+                                } else {
+                                    default_ty
+                                };
+
+                                TypedParam {
+                                    name: param.name.clone(),
+                                    ty,
+                                }
                             })
                             .collect(),
-                        return_type: resolved_sig
-                            .return_rust_type
-                            .clone()
-                            .unwrap_or_else(|| rust_owned_type_string(&final_return_ty)),
+                        return_type: if returns_impl_self_like {
+                            "Self".to_string()
+                        } else {
+                            resolved_sig
+                                .return_rust_type
+                                .clone()
+                                .unwrap_or_else(|| rust_owned_type_string(&final_return_ty))
+                        },
                         body,
                     }
                 });
+                if def.trait_target.is_none() && known_mutating_self_methods.insert(method.name.clone()) {
+                    let requires_mut = typed_method_requires_mut_self(
+                        &typed_method.body,
+                        context,
+                        Some(&known_mutating_self_methods),
+                    );
+                    if !requires_mut {
+                        known_mutating_self_methods.remove(&method.name);
+                    }
+                }
                 methods.push(typed_method);
             }
             let impl_param_bounds = inferred_impl_type_param_bounds(def, context);
@@ -9426,7 +9537,10 @@ fn lower_expr_with_context(
                                 ExprPosition::NonConsuming,
                                 state,
                             );
-                            if type_supports_borrow_trait(&arg.ty, "BorrowMut") {
+                            let arg_ty = arg.ty.trim();
+                            if arg_ty.starts_with('&') {
+                                lowered
+                            } else if type_supports_borrow_trait(&arg.ty, "BorrowMut") {
                                 state.needs_borrow_trait_import = true;
                                 RustExpr::BorrowMutCall(Box::new(lowered))
                             } else {
@@ -10318,17 +10432,38 @@ fn resolve_method_call_modes(
         if let Some(indexes) = state.known_function_borrowed_args.get(&lookup) {
             let mut arg_modes = vec![CallArgMode::Owned; args.len()];
             let mut receiver = CallArgMode::Owned;
+            let mut mutates_receiver = false;
+            let mut_indexes = state.known_function_mut_args.get(&lookup);
             for index in indexes {
                 if *index == 0 {
-                    receiver = CallArgMode::Borrowed;
+                    let receiver_is_mut = mut_indexes
+                        .map(|items| items.contains(index))
+                        .unwrap_or(false);
+                    receiver = if receiver_is_mut {
+                        CallArgMode::MutBorrowed
+                    } else {
+                        CallArgMode::Borrowed
+                    };
+                    if receiver_is_mut {
+                        mutates_receiver = true;
+                    }
                 } else {
                     set_borrowed(&mut arg_modes, *index - 1);
+                }
+            }
+            if let Some(mut_indexes) = mut_indexes {
+                for index in mut_indexes {
+                    if *index != 0 {
+                        if let Some(slot) = arg_modes.get_mut(*index - 1) {
+                            *slot = CallArgMode::MutBorrowed;
+                        }
+                    }
                 }
             }
             return Some(MethodCallModes {
                 receiver,
                 args: arg_modes,
-                mutates_receiver: false,
+                mutates_receiver,
             });
         }
     }
@@ -10349,9 +10484,8 @@ fn resolve_method_call_modes(
         let mutates = capability.receiver_mode == CapabilityReceiverMode::MutBorrowed;
         let receiver = match capability.receiver_mode {
             CapabilityReceiverMode::Owned => CallArgMode::Owned,
-            CapabilityReceiverMode::Borrowed | CapabilityReceiverMode::MutBorrowed => {
-                CallArgMode::Borrowed
-            }
+            CapabilityReceiverMode::Borrowed => CallArgMode::Borrowed,
+            CapabilityReceiverMode::MutBorrowed => CallArgMode::MutBorrowed,
         };
         let mut arg_modes = capability.arg_modes;
         if arg_modes.len() < args.len() {
@@ -10420,9 +10554,8 @@ fn resolve_associated_call_modes(
     let mut modes = vec![CallArgMode::Owned; args.len()];
     modes[0] = match capability.receiver_mode {
         CapabilityReceiverMode::Owned => CallArgMode::Owned,
-        CapabilityReceiverMode::Borrowed | CapabilityReceiverMode::MutBorrowed => {
-            CallArgMode::Borrowed
-        }
+        CapabilityReceiverMode::Borrowed => CallArgMode::Borrowed,
+        CapabilityReceiverMode::MutBorrowed => CallArgMode::MutBorrowed,
     };
     for (index, mode) in capability.arg_modes.iter().enumerate() {
         if let Some(slot) = modes.get_mut(index + 1) {
@@ -10903,6 +11036,20 @@ fn borrowed_param_indexes(params: &[TypedParam]) -> Vec<usize> {
         .enumerate()
         .filter_map(|(index, param)| {
             if param.ty.trim_start().starts_with('&') {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn mut_borrowed_param_indexes(params: &[TypedParam]) -> Vec<usize> {
+    params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            if param.ty.trim_start().starts_with("&mut") {
                 Some(index)
             } else {
                 None
@@ -11541,6 +11688,229 @@ fn is_redundant_impl_self_param(params: &[crate::ast::Param], index: usize) -> b
         return false;
     };
     first.name == "self" && params[index].name == "self"
+}
+
+fn impl_target_rust_type(imp: &crate::ast::ImplBlock, context: &Context) -> String {
+    if imp.target_args.is_empty() {
+        return imp.target.clone();
+    }
+    let args = imp
+        .target_args
+        .iter()
+        .map(|arg| rust_owned_type_string(&type_from_ast_in_context(arg, context)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}<{args}>", imp.target)
+}
+
+fn method_returns_impl_self_like(
+    method: &crate::ast::FunctionDef,
+    final_return_ty: &SemType,
+    imp: &crate::ast::ImplBlock,
+    context: &Context,
+) -> bool {
+    if method
+        .return_type
+        .as_ref()
+        .is_some_and(|ty| ty.path.len() == 1 && ty.path[0] == "Self")
+    {
+        return true;
+    }
+
+    let impl_target = impl_target_rust_type(imp, context);
+    rust_owned_type_string(final_return_ty) == impl_target
+}
+
+fn typed_method_requires_mut_self(
+    stmts: &[TypedStmt],
+    context: &Context,
+    known_mutating_self_methods: Option<&HashSet<String>>,
+) -> bool {
+    stmts
+        .iter()
+        .any(|stmt| typed_stmt_requires_mut_self(stmt, context, known_mutating_self_methods))
+}
+
+fn typed_stmt_requires_mut_self(
+    stmt: &TypedStmt,
+    context: &Context,
+    known_mutating_self_methods: Option<&HashSet<String>>,
+) -> bool {
+    match stmt {
+        TypedStmt::Const(def) => {
+            typed_expr_requires_mut_self(&def.value, context, known_mutating_self_methods)
+        }
+        TypedStmt::DestructureConst { value, .. } => {
+            typed_expr_requires_mut_self(value, context, known_mutating_self_methods)
+        }
+        TypedStmt::Assign { target, value, .. } => {
+            typed_assign_target_roots_to_self(target)
+                || typed_expr_requires_mut_self(value, context, known_mutating_self_methods)
+        }
+        TypedStmt::Return(Some(value)) => {
+            typed_expr_requires_mut_self(value, context, known_mutating_self_methods)
+        }
+        TypedStmt::Return(None) => false,
+        TypedStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            typed_expr_requires_mut_self(condition, context, known_mutating_self_methods)
+                || typed_method_requires_mut_self(
+                    then_body,
+                    context,
+                    known_mutating_self_methods,
+                )
+                || else_body.as_ref().is_some_and(|body| {
+                    typed_method_requires_mut_self(body, context, known_mutating_self_methods)
+                })
+        }
+        TypedStmt::While { condition, body } => {
+            typed_expr_requires_mut_self(condition, context, known_mutating_self_methods)
+                || typed_method_requires_mut_self(body, context, known_mutating_self_methods)
+        }
+        TypedStmt::For { iter, body, .. } => {
+            typed_expr_requires_mut_self(iter, context, known_mutating_self_methods)
+                || typed_method_requires_mut_self(body, context, known_mutating_self_methods)
+        }
+        TypedStmt::Loop { body } => {
+            typed_method_requires_mut_self(body, context, known_mutating_self_methods)
+        }
+        TypedStmt::Expr(expr) => {
+            typed_expr_requires_mut_self(expr, context, known_mutating_self_methods)
+        }
+        TypedStmt::Break | TypedStmt::Continue | TypedStmt::RustBlock(_) => false,
+    }
+}
+
+fn typed_assign_target_roots_to_self(target: &TypedAssignTarget) -> bool {
+    match target {
+        TypedAssignTarget::Path(name) => name == "self",
+        TypedAssignTarget::Field { base, .. } | TypedAssignTarget::Index { base, .. } => {
+            typed_expr_roots_to_self(base)
+        }
+        TypedAssignTarget::Tuple(items) => items.iter().any(typed_assign_target_roots_to_self),
+    }
+}
+
+fn typed_expr_roots_to_self(expr: &TypedExpr) -> bool {
+    match &expr.kind {
+        TypedExprKind::Path(path) => path.len() == 1 && path[0] == "self",
+        TypedExprKind::Field { base, .. } | TypedExprKind::Index { base, .. } => {
+            typed_expr_roots_to_self(base)
+        }
+        _ => false,
+    }
+}
+
+fn typed_expr_requires_mut_self(
+    expr: &TypedExpr,
+    context: &Context,
+    known_mutating_self_methods: Option<&HashSet<String>>,
+) -> bool {
+    match &expr.kind {
+        TypedExprKind::Call { callee, args } => {
+            let callee_mutates_self = match &callee.kind {
+                TypedExprKind::Field { base, field } if typed_expr_roots_to_self(base) => {
+                    let base_sem = sem_type_from_typed_type_string(&base.ty);
+                    let mut diagnostics = Vec::new();
+                    resolve_method_capability(
+                        &base_sem,
+                        field,
+                        args.len(),
+                        context,
+                        &mut diagnostics,
+                    )
+                    .is_some_and(|cap| cap.receiver_mode == CapabilityReceiverMode::MutBorrowed)
+                        || known_mutating_self_methods
+                            .is_some_and(|names| names.contains(field))
+                }
+                _ => false,
+            };
+            callee_mutates_self
+                || typed_expr_requires_mut_self(callee, context, known_mutating_self_methods)
+                || args
+                    .iter()
+                    .any(|arg| {
+                        typed_expr_requires_mut_self(arg, context, known_mutating_self_methods)
+                    })
+        }
+        TypedExprKind::MacroCall { args, .. }
+        | TypedExprKind::Array(args)
+        | TypedExprKind::Tuple(args) => args
+            .iter()
+            .any(|arg| typed_expr_requires_mut_self(arg, context, known_mutating_self_methods)),
+        TypedExprKind::Field { base, .. }
+        | TypedExprKind::Try(base)
+        | TypedExprKind::Unary { expr: base, .. }
+        | TypedExprKind::Cast { expr: base, .. } => {
+            typed_expr_requires_mut_self(base, context, known_mutating_self_methods)
+        }
+        TypedExprKind::Index { base, index, .. } => {
+            typed_expr_requires_mut_self(base, context, known_mutating_self_methods)
+                || typed_expr_requires_mut_self(index, context, known_mutating_self_methods)
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            typed_expr_requires_mut_self(scrutinee, context, known_mutating_self_methods)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|guard| {
+                            typed_expr_requires_mut_self(
+                                guard,
+                                context,
+                                known_mutating_self_methods,
+                            )
+                        })
+                        || typed_expr_requires_mut_self(
+                            &arm.value,
+                            context,
+                            known_mutating_self_methods,
+                        )
+                })
+        }
+        TypedExprKind::Binary { left, right, .. } => {
+            typed_expr_requires_mut_self(left, context, known_mutating_self_methods)
+                || typed_expr_requires_mut_self(right, context, known_mutating_self_methods)
+        }
+        TypedExprKind::StructLiteral { fields, .. } => fields
+            .iter()
+            .any(|field| {
+                typed_expr_requires_mut_self(&field.value, context, known_mutating_self_methods)
+            }),
+        TypedExprKind::Block { body, tail } => {
+            typed_method_requires_mut_self(body, context, known_mutating_self_methods)
+                || tail.as_ref().is_some_and(|value| {
+                    typed_expr_requires_mut_self(value, context, known_mutating_self_methods)
+                })
+        }
+        TypedExprKind::Closure { body, .. } => {
+            typed_method_requires_mut_self(body, context, known_mutating_self_methods)
+        }
+        TypedExprKind::Range { start, end, .. } => {
+            start
+                .as_ref()
+                .is_some_and(|value| {
+                    typed_expr_requires_mut_self(value, context, known_mutating_self_methods)
+                })
+                || end
+                    .as_ref()
+                    .is_some_and(|value| {
+                        typed_expr_requires_mut_self(
+                            value,
+                            context,
+                            known_mutating_self_methods,
+                        )
+                    })
+        }
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::String(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Path(_) => false,
+    }
 }
 
 fn type_from_ast(ty: &Type) -> SemType {

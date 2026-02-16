@@ -2118,7 +2118,7 @@ mod tests {
 
         let output = compile_source(source).expect("expected generic impl support");
         assert!(output.rust_code.contains("impl<T> Wrapper<T>"));
-        assert!(output.rust_code.contains("fn get(self: Wrapper<T>) -> T"));
+        assert!(output.rust_code.contains("fn get(self: &Wrapper<T>) -> T"));
         assert!(output.rust_code.contains("fn run() -> i64"));
         assert_rust_code_compiles(&output.rust_code);
     }
@@ -3478,13 +3478,13 @@ mod tests {
             pub struct Point { x: i64, }
 
             impl Point {
-                pub fn bump(self, n: i64) -> Point {
+                pub fn bump(self, n: i64) -> i64 {
                     self.x += n;
-                    self
+                    self.x
                 }
             }
 
-            pub fn run(p: Point) -> Point {
+            pub fn run(p: Point) -> i64 {
                 Point::bump(p, 1)
             }
         "#;
@@ -3494,10 +3494,10 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("pub fn bump(mut self: Point, n: i64) -> Point")
+                .contains("pub fn bump(self: &mut Point, n: i64) -> i64")
         );
         assert!(output.rust_code.contains("self.x += n;"));
-        assert!(output.rust_code.contains("Point::bump(p, 1)"));
+        assert!(output.rust_code.contains("Point::bump(&mut p, 1)"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
@@ -4765,7 +4765,7 @@ world"#;
         };
 
         let output = compile_ast(&module).expect("duplicate bridge self param should be tolerated");
-        assert!(output.rust_code.contains("fn get(self: Counter) -> i64"));
+        assert!(output.rust_code.contains("fn get(self: &Counter) -> i64"));
         assert!(output.rust_code.contains("return counter.get();"));
         assert_rust_code_compiles(&output.rust_code);
     }

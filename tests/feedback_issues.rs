@@ -1223,6 +1223,274 @@ fn cross_destructure_struct_vec_method() {
     assert_rust_code_compiles(&output.rust_code);
 }
 
+
+
+#[test]
+fn issue_impl_complex_struct_selective_mut_self_inference() {
+    let source = r#"
+        pub struct Workflow {
+            name: String,
+            steps: Vec<String>,
+            completed: i64,
+            archived: bool,
+        }
+
+        impl Workflow {
+            pub fn push_step(self, step: String) -> Workflow {
+                self.steps.push(step);
+                self
+            }
+
+            pub fn complete_one(self) -> Workflow {
+                self.completed += 1;
+                self
+            }
+
+            pub fn archive(self) -> Workflow {
+                self.archived = true;
+                self
+            }
+
+            pub fn summary(self) -> String {
+                format!("{}:{}:{}", self.name, self.steps.len(), self.completed)
+            }
+        }
+
+        fn run() -> String {
+            let base = Workflow {
+                name: String::from("deploy"),
+                steps: Vec::new(),
+                completed: 0,
+                archived: false,
+            };
+
+            const done = base
+                .push_step(String::from("build"))
+                .push_step(String::from("test"))
+                .complete_one()
+                .archive();
+
+            done.summary()
+        }
+    "#;
+
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options)
+        .expect("should compile — mutating and non-mutating self methods");
+    assert!(
+        !output.rust_code.contains("self: &")
+            && !output.rust_code.contains("&self:")
+            && !output.rust_code.contains("&mut self:"),
+        "non-canonical receiver syntax leaked into generated Rust\n{}",
+        output.rust_code
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn push_step(&mut self, step: String) -> Self")
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn complete_one(&mut self) -> Self")
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn archive(&mut self) -> Self")
+    );
+    assert!(
+        output.rust_code.contains("pub fn summary(&self) -> String"),
+        "non-mutating method should not require mut self\n{}",
+        output.rust_code
+    );
+    assert!(!output.rust_code.contains("pub fn summary(&mut self) -> String"));
+    assert!(!output.rust_code.contains("-> &mut Self"));
+    assert_rust_code_compiles(&output.rust_code);
+}
+
+#[test]
+fn issue_impl_complex_struct_method_interactions_chain() {
+    let source = r#"
+        pub struct Ledger {
+            entries: Vec<i64>,
+            total: i64,
+        }
+
+        impl Ledger {
+            pub fn add(self, value: i64) -> Ledger {
+                self.entries.push(value);
+                self.total += value;
+                self
+            }
+
+            pub fn absorb(self, incoming: Vec<i64>) -> Ledger {
+                for value in incoming {
+                    self.entries.push(value);
+                    self.total += value;
+                }
+                self
+            }
+
+            pub fn total_value(self) -> i64 {
+                self.total
+            }
+        }
+
+        fn run() -> i64 {
+            let start = Ledger {
+                entries: vec![10],
+                total: 10,
+            };
+
+            start
+                .add(2)
+                .absorb(vec![3, 4, 5])
+                .add(6)
+                .total_value()
+        }
+    "#;
+
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options)
+        .expect("should compile — method chain interactions on complex struct");
+    assert!(
+        !output.rust_code.contains("self: &")
+            && !output.rust_code.contains("&self:")
+            && !output.rust_code.contains("&mut self:"),
+        "non-canonical receiver syntax leaked into generated Rust\n{}",
+        output.rust_code
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn add(&mut self, value: i64) -> Self")
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn absorb(&mut self, incoming: Vec<i64>) -> Self")
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn total_value(&self) -> i64")
+    );
+    assert!(
+        output.rust_code.contains(".add(2)") && output.rust_code.contains(".absorb(vec!(3, 4, 5))"),
+        "expected chained method interaction in emitted code\n{}",
+        output.rust_code
+    );
+    assert!(!output.rust_code.contains("-> &mut Self"));
+    assert_rust_code_compiles(&output.rust_code);
+}
+
+#[test]
+fn issue_impl_complex_struct_cross_method_mutation_in_impl() {
+    let source = r#"
+        pub struct Queue {
+            items: Vec<String>,
+            pops: i64,
+        }
+
+        impl Queue {
+            pub fn enqueue(self, value: String) -> Queue {
+                self.items.push(value);
+                self
+            }
+
+            pub fn pop_one(self) -> Queue {
+                if self.items.len() > 0 {
+                    self.items.pop();
+                    self.pops += 1;
+                }
+                self
+            }
+
+            pub fn rotate_once(self) -> Queue {
+                let after_pop = self.pop_one();
+                after_pop.enqueue(String::from("tail"))
+            }
+
+            pub fn pop_count(self) -> i64 {
+                self.pops
+            }
+        }
+
+        fn run() -> i64 {
+            let q = Queue {
+                items: vec![String::from("a"), String::from("b")],
+                pops: 0,
+            };
+
+            q.rotate_once().pop_count()
+        }
+    "#;
+
+    let options = CompileOptions {
+        experiments: ExperimentFlags {
+            type_system: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let output = compile_source_with_options(source, &options)
+        .expect("should compile — cross-method self mutation inside impl");
+    assert!(
+        !output.rust_code.contains("self: &")
+            && !output.rust_code.contains("&self:")
+            && !output.rust_code.contains("&mut self:"),
+        "non-canonical receiver syntax leaked into generated Rust\n{}",
+        output.rust_code
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn enqueue(&mut self, value: String) -> Self"),
+        "enqueue should take mut self\n{}",
+        output.rust_code
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn pop_one(&mut self) -> Self")
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn rotate_once(&mut self) -> Self"),
+        "rotate_once should also take mut self\n{}",
+        output.rust_code
+    );
+    assert!(
+        output
+            .rust_code
+            .contains("pub fn pop_count(&self) -> i64"),
+        "read-only method should use &self\n{}",
+        output.rust_code
+    );
+    assert!(
+        output.rust_code.contains("self.pop_one()")
+            && output.rust_code.contains("after_pop.enqueue(String::from(\"tail\"))"),
+        "expected interaction between impl methods in emitted code\n{}",
+        output.rust_code
+    );
+    assert!(!output.rust_code.contains("-> &mut Self"));
+    assert_rust_code_compiles(&output.rust_code);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helper
 // ═══════════════════════════════════════════════════════════════════════════
