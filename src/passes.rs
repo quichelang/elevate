@@ -2434,9 +2434,11 @@ fn collect_definitions(module: &Module, context: &mut Context, diagnostics: &mut
             }
             Item::RustUse(_) => {}
             Item::RustBlock(code) => {
-                context
-                    .rust_block_functions
-                    .extend(extract_rust_block_function_names(code));
+                let names = extract_rust_block_function_names(code);
+                context.rust_block_functions.extend(names.iter().cloned());
+                for (name, sig) in extract_rust_block_function_signatures(code) {
+                    context.functions.entry(name).or_insert(sig);
+                }
             }
         }
     }
@@ -3219,6 +3221,197 @@ fn extract_rust_block_function_names(code: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+fn extract_rust_block_function_signatures(code: &str) -> Vec<(String, FunctionSig)> {
+    let mut out = Vec::new();
+    let bytes = code.as_bytes();
+    let mut i = 0usize;
+
+    while i + 3 <= bytes.len() {
+        if &bytes[i..i + 3] != b"fn " {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i + 3;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        let name_start = j;
+        while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+            j += 1;
+        }
+        if j == name_start {
+            i += 1;
+            continue;
+        }
+        let name = code[name_start..j].to_string();
+
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b'<' {
+            if let Some(generic_end) = find_matching_angle(code, j) {
+                j = generic_end + 1;
+            } else {
+                i += 1;
+                continue;
+            }
+        }
+
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b'(' {
+            i += 1;
+            continue;
+        }
+
+        let params_open = j;
+        let Some(params_close) = find_matching_paren_in_rust_block(code, params_open) else {
+            i += 1;
+            continue;
+        };
+
+        let params_src = &code[params_open + 1..params_close];
+        let params = parse_rust_fn_params(params_src);
+
+        let mut k = params_close + 1;
+        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+            k += 1;
+        }
+
+        let return_type = if k + 1 < bytes.len() && bytes[k] == b'-' && bytes[k + 1] == b'>' {
+            k += 2;
+            while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                k += 1;
+            }
+            let ret_start = k;
+            while k < bytes.len() && bytes[k] != b'{' {
+                k += 1;
+            }
+            let ret_src = code[ret_start..k].trim();
+            if ret_src.is_empty() {
+                SemType::Unknown
+            } else {
+                crate::rustdex_adapter::parse_rustdoc_type_str(ret_src, &[], "")
+            }
+        } else {
+            SemType::Unit
+        };
+
+        out.push((
+            name,
+            FunctionSig {
+                type_params: Vec::new(),
+                type_param_bounds: HashMap::new(),
+                params,
+                return_type,
+                structural_requirements: HashMap::new(),
+            },
+        ));
+
+        i = params_close + 1;
+    }
+
+    out
+}
+
+fn parse_rust_fn_params(params_src: &str) -> Vec<SemType> {
+    let mut params = Vec::new();
+    for raw in split_top_level(params_src, ',') {
+        let part = raw.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let ty_src = if let Some((_, right)) = part.split_once(':') {
+            right.trim()
+        } else {
+            "_"
+        };
+        if ty_src == "_" {
+            params.push(SemType::Unknown);
+        } else {
+            params.push(crate::rustdex_adapter::parse_rustdoc_type_str(
+                ty_src,
+                &[],
+                "",
+            ));
+        }
+    }
+    params
+}
+
+fn split_top_level(src: &str, delimiter: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth_angle = 0usize;
+    let mut depth_paren = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in src.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => depth_angle = depth_angle.saturating_sub(1),
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            _ => {}
+        }
+        if ch == delimiter && depth_angle == 0 && depth_paren == 0 && depth_bracket == 0 {
+            out.push(src[start..idx].to_string());
+            start = idx + ch.len_utf8();
+        }
+    }
+    out.push(src[start..].to_string());
+    out
+}
+
+fn find_matching_angle(code: &str, open: usize) -> Option<usize> {
+    let bytes = code.as_bytes();
+    if bytes.get(open) != Some(&b'<') {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut i = open + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'<' => depth += 1,
+            b'>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_matching_paren_in_rust_block(code: &str, open: usize) -> Option<usize> {
+    let bytes = code.as_bytes();
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut i = open + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 fn lower_item(
@@ -7907,22 +8100,29 @@ fn resolve_method_capability(
     // ── Dynamic resolution via rustdex ──────────────────────────────────
     // Try signature lookup first — it handles Deref coercion (Vec→[T], String→str)
     // which the strict existence check does not.
-    if let Some(sig) = crate::rustdex_backend::lookup_method_signature(type_name, method) {
-        let mut capability =
-            crate::rustdex_adapter::method_sig_to_capability(&sig, type_name, generic_args);
+    for rustdex_type_name in rustdex_type_name_candidates(type_name) {
+        if let Some(sig) = crate::rustdex_backend::lookup_method_signature(&rustdex_type_name, method)
+        {
+            let mut capability =
+                crate::rustdex_adapter::method_sig_to_capability(&sig, type_name, generic_args);
 
-        // Override return type for iterator-producing methods (Elevate semantics)
-        capability.return_ty =
-            override_iterator_return_type(method, capability.return_ty, type_name, generic_args);
+            // Override return type for iterator-producing methods (Elevate semantics)
+            capability.return_ty = override_iterator_return_type(
+                method,
+                capability.return_ty,
+                type_name,
+                generic_args,
+            );
 
-        expect_method_arity(
-            type_name,
-            method,
-            actual_arity,
-            capability.expected_args.len(),
-            diagnostics,
-        );
-        return Some(capability);
+            expect_method_arity(
+                type_name,
+                method,
+                actual_arity,
+                capability.expected_args.len(),
+                diagnostics,
+            );
+            return Some(capability);
+        }
     }
 
     // Strict existence check — only fires when lookup (including deref) found nothing.
@@ -12711,7 +12911,8 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
                 let expected_joined = expected_path.join("::");
                 let a = last_path_segment(&actual_joined);
                 let e = last_path_segment(&expected_joined);
-                if (a == "&str" || a == "str") && (e == "String" || e == "&str" || e == "str")
+                if (a == "&str" || a == "str")
+                    && (e == "String" || e == "&str" || e == "str")
                     || (a == "String") && (e == "&str" || e == "str")
                 {
                     return true;
