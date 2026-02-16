@@ -83,25 +83,29 @@ This is the practical value proposition for new users:
 ## Quick Start CLI
 
 ```bash
-# Install (requires Rust 2024 edition / rustc 1.85+)
+# Install (requires Rust nightly)
+rustup toolchain install nightly
+rustup component add rust-docs-json --toolchain nightly
 git clone https://github.com/quichelang/elevate.git
 cd elevate
-cargo build --release
+cargo +nightly build --release
 
 # Compile a single file → prints generated Rust to stdout
-cargo run -q -- examples/point.ers
+cargo +nightly run -q -- examples/point.ers
 
 # Save generated Rust to a file
-cargo run -q -- examples/point.ers --emit-rust output.rs
+cargo +nightly run -q -- examples/point.ers --emit-rust output.rs
 
 # Create a new Elevate project with transparent bootstrap runner
-cargo run -q -- init my-app
+cargo +nightly run -q -- init my-app
 
 # Build an .ers crate project
-cargo run -q -- build examples/boardgame-kit
+cargo +nightly run -q -- build examples/boardgame-kit
 
 # Run tests for an .ers crate
-cargo run -q -- test examples/lexopt-elevate
+cargo +nightly run -q -- test examples/lexopt-elevate
+
+This repository includes a `rust-toolchain.toml` that requests `nightly` and the `rust-docs-json` component; running `cargo` inside the repo will pick that toolchain automatically.
 ```
 
 ---
