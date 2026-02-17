@@ -4927,6 +4927,45 @@ world"#;
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_function_where_clause() {
+        let source = r#"
+            fn id<T>(value: T) -> T
+            where
+                T: Clone,
+            {
+                value
+            }
+        "#;
+
+        let output = compile_source(source).expect("function where clause should compile");
+        assert!(output.rust_code.contains("fn id<T: Clone>("));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_impl_method_where_clause() {
+        let source = r#"
+            struct Bag<T> { values: Vec<T>, }
+
+            impl<T> Bag<T> {
+                fn same<U>(self, left: U, right: U) -> bool
+                where
+                    T: PartialEq,
+                    U: PartialEq,
+                {
+                    left == right
+                }
+            }
+        "#;
+
+        let output = compile_source(source).expect("impl method where clause should compile");
+        assert!(output.rust_code.contains("fn same<"));
+        assert!(output.rust_code.contains("PartialEq"));
+        assert!(output.rust_code.contains("left == right"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {

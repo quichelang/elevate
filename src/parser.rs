@@ -296,11 +296,11 @@ impl Parser {
     fn parse_function(
         &mut self,
         visibility: Visibility,
-        impl_target: Option<(&str, &[Type])>,
+        impl_target: Option<(&str, &[Type], &[String])>,
     ) -> Option<FunctionDef> {
         let start = self.previous_span_end();
         let name = self.expect_ident("Expected function name")?;
-        let type_params = self.parse_optional_generic_params()?;
+        let mut type_params = self.parse_optional_generic_params()?;
         self.expect(TokenKind::LParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
         while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
@@ -310,7 +310,7 @@ impl Parser {
             let param_name = self.expect_ident("Expected parameter name")?;
             let param_ty =
                 if param_name == "self" && impl_target.is_some() && !self.at(TokenKind::Colon) {
-                    let (impl_target_name, impl_target_args) =
+                    let (impl_target_name, impl_target_args, _) =
                         impl_target.expect("impl target checked above");
                     Type {
                         path: vec![impl_target_name.to_string()],
@@ -340,10 +340,11 @@ impl Parser {
         };
         let effect_row = self.parse_optional_effect_row()?;
         if self.at_ident("where") {
-            self.error_current(
-                "Function `where` clauses are not supported yet; move bounds to generic parameters",
-            );
-            self.skip_until_block_start();
+            self.advance();
+            let inherited = impl_target
+                .map(|(_, _, names)| names)
+                .unwrap_or(&[]);
+            self.parse_where_clause_into(&mut type_params, inherited)?;
         }
         let body = self.parse_block()?;
         Some(FunctionDef {
@@ -411,6 +412,10 @@ impl Parser {
     fn parse_impl(&mut self) -> Option<ImplBlock> {
         let start = self.previous_span_end();
         let type_params = self.parse_optional_generic_params()?;
+        let impl_type_param_names = type_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<Vec<_>>();
         let first = self.parse_type()?;
         let mut trait_target = None;
         let target_ty = if self.match_kind(TokenKind::For) {
@@ -434,7 +439,10 @@ impl Parser {
                 Visibility::Private
             };
             self.expect(TokenKind::Fn, "Expected `fn` in impl block")?;
-            methods.push(self.parse_function(method_visibility, Some((&target, &target_args)))?);
+            methods.push(self.parse_function(
+                method_visibility,
+                Some((&target, &target_args, &impl_type_param_names)),
+            )?);
         }
         self.expect(TokenKind::RBrace, "Expected '}' after impl block")?;
         Some(ImplBlock {
@@ -495,6 +503,45 @@ impl Parser {
         }
         self.expect(TokenKind::RBracket, "Expected ']' after effect row")?;
         Some(Some(EffectRow { caps, rest }))
+    }
+
+    fn parse_where_clause_into(
+        &mut self,
+        type_params: &mut Vec<GenericParam>,
+        inherited_type_params: &[String],
+    ) -> Option<()> {
+        while !self.at(TokenKind::LBrace) && !self.at(TokenKind::Eof) {
+            let param_name = self.expect_ident("Expected type parameter name in where clause")?;
+            self.expect(TokenKind::Colon, "Expected ':' in where clause")?;
+            let mut bounds = vec![self.parse_type_bound()?];
+            while self.match_kind(TokenKind::Plus) {
+                bounds.push(self.parse_type_bound()?);
+            }
+
+            if let Some(existing) = type_params.iter_mut().find(|param| param.name == param_name) {
+                for bound in bounds {
+                    if existing.bounds.iter().all(|present| present != &bound) {
+                        existing.bounds.push(bound);
+                    }
+                }
+            } else if inherited_type_params.iter().any(|name| name == &param_name) {
+                // Bound applies to an enclosing impl type parameter; do not
+                // redeclare it as a method generic.
+            } else {
+                type_params.push(GenericParam {
+                    name: param_name,
+                    bounds,
+                });
+            }
+
+            if !self.match_kind(TokenKind::Comma) {
+                break;
+            }
+            if self.at(TokenKind::LBrace) {
+                break;
+            }
+        }
+        Some(())
     }
 
     fn parse_const_item(&mut self, visibility: Visibility) -> Option<ConstDef> {
@@ -1700,12 +1747,6 @@ impl Parser {
         self.error_current(&format!("{message}, found {found}"));
     }
 
-    fn skip_until_block_start(&mut self) {
-        while !self.at(TokenKind::LBrace) && !self.at(TokenKind::Eof) {
-            self.advance();
-        }
-    }
-
     fn synchronize_top_level(&mut self) {
         while !self.at(TokenKind::Eof) {
             if self.match_kind(TokenKind::Semicolon) {
@@ -2045,7 +2086,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_reports_unsupported_where_clause_on_function() {
+    fn parse_where_clause_on_function() {
         let source = r#"
             fn keep<T>(value: T) -> T
             where
@@ -2055,11 +2096,39 @@ mod tests {
             }
         "#;
         let tokens = lex(source).expect("expected lex success");
-        let diagnostics = parse_module(tokens).expect_err("expected parse error");
-        assert!(diagnostics.iter().any(|diag| {
-            diag.message
-                .contains("Function `where` clauses are not supported yet")
-        }));
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+        let Item::Function(def) = &module.items[0] else {
+            panic!("expected function item");
+        };
+        assert_eq!(def.type_params.len(), 1);
+        assert_eq!(def.type_params[0].name, "T");
+        assert_eq!(def.type_params[0].bounds.len(), 1);
+    }
+
+    #[test]
+    fn parse_where_clause_on_impl_method() {
+        let source = r#"
+            struct Bag<T> { values: Vec<T>, }
+            impl<T> Bag<T> {
+                fn has<U>(self, left: U, right: U) -> bool
+                where
+                    T: PartialEq,
+                    U: PartialEq,
+                {
+                    left == right
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
+        let Item::Impl(def) = &module.items[1] else {
+            panic!("expected impl item");
+        };
+        assert_eq!(def.methods.len(), 1);
+        assert_eq!(def.methods[0].type_params.len(), 1);
+        assert_eq!(def.methods[0].type_params[0].name, "U");
     }
 
     #[test]
