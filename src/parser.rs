@@ -610,33 +610,68 @@ impl Parser {
         }
         if self.match_kind(TokenKind::If) {
             if self.match_kind(TokenKind::Let) {
-                let pattern = self.parse_pattern()?;
-                self.expect(TokenKind::Equal, "Expected '=' after `if let` pattern")?;
-                let scrutinee = self.parse_expr()?;
+                enum IfChainClause {
+                    Let(Pattern, Expr),
+                    Bool(Expr),
+                }
+
+                let mut clauses = Vec::new();
+                let (pattern, scrutinee) = self.parse_if_let_clause()?;
+                clauses.push(IfChainClause::Let(pattern, scrutinee));
+                while self.match_kind(TokenKind::And) {
+                    if self.match_kind(TokenKind::Let) {
+                        let (pattern, scrutinee) = self.parse_if_let_clause()?;
+                        clauses.push(IfChainClause::Let(pattern, scrutinee));
+                    } else {
+                        // Support mixed chains like:
+                        // if let Some(x) = value and x > 0 and let Some(y) = other { ... }
+                        clauses.push(IfChainClause::Bool(self.parse_cmp_expr()?));
+                    }
+                }
                 let then_block = self.parse_block()?;
                 let else_block = if self.match_kind(TokenKind::Else) {
                     Some(self.parse_block()?)
                 } else {
                     None
                 };
-                let fallback_block = else_block.unwrap_or(Block {
+                let fallback_expr = Expr::Block(else_block.unwrap_or(Block {
                     statements: Vec::new(),
-                });
-                let match_expr = Expr::Match {
-                    scrutinee: Box::new(scrutinee),
-                    arms: vec![
-                        MatchArm {
-                            pattern,
-                            guard: None,
-                            value: Expr::Block(then_block),
+                }));
+                let mut match_expr = Expr::Block(then_block);
+                for clause in clauses.into_iter().rev() {
+                    match_expr = match clause {
+                        IfChainClause::Let(pattern, scrutinee) => Expr::Match {
+                            scrutinee: Box::new(scrutinee),
+                            arms: vec![
+                                MatchArm {
+                                    pattern,
+                                    guard: None,
+                                    value: match_expr,
+                                },
+                                MatchArm {
+                                    pattern: Pattern::Wildcard,
+                                    guard: None,
+                                    value: fallback_expr.clone(),
+                                },
+                            ],
                         },
-                        MatchArm {
-                            pattern: Pattern::Wildcard,
-                            guard: None,
-                            value: Expr::Block(fallback_block),
+                        IfChainClause::Bool(condition) => Expr::Match {
+                            scrutinee: Box::new(condition),
+                            arms: vec![
+                                MatchArm {
+                                    pattern: Pattern::Bool(true),
+                                    guard: None,
+                                    value: match_expr,
+                                },
+                                MatchArm {
+                                    pattern: Pattern::Bool(false),
+                                    guard: None,
+                                    value: fallback_expr.clone(),
+                                },
+                            ],
                         },
-                    ],
-                };
+                    };
+                }
                 if self.at(TokenKind::RBrace) {
                     return Some(Stmt::TailExpr(match_expr));
                 }
@@ -732,6 +767,14 @@ impl Parser {
         }
         self.error_current("Expected ';' after expression statement");
         None
+    }
+
+    fn parse_if_let_clause(&mut self) -> Option<(Pattern, Expr)> {
+        let pattern = self.parse_pattern()?;
+        self.expect(TokenKind::Equal, "Expected '=' after `if let` pattern")?;
+        // Parse scrutinee up to `and let` chain separator, without consuming the separator.
+        let scrutinee = self.parse_cmp_expr()?;
+        Some((pattern, scrutinee))
     }
 
     fn parse_local_binding_stmt(&mut self, is_const: bool) -> Option<Stmt> {
@@ -2153,6 +2196,37 @@ mod tests {
             fn f() -> () {
                 if let Some(v) = maybe() {
                     print(v);
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_if_let_chain_with_else() {
+        let source = r#"
+            fn f() -> i64 {
+                if let Some(a) = left() and let Some(b) = right() {
+                    a
+                } else {
+                    0
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_if_let_chain_without_else() {
+        let source = r#"
+            fn f() -> () {
+                if let Some(a) = left() and let Some(b) = right() {
+                    print(a);
+                    print(b);
                 }
             }
         "#;

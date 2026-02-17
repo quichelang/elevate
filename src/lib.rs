@@ -4966,6 +4966,29 @@ world"#;
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_if_let_chain() {
+        let source = r#"
+            enum Maybe {
+                Some(i64),
+                None,
+            }
+
+            fn both(left: Maybe, right: Maybe) -> i64 {
+                if let Maybe::Some(a) = left and let Maybe::Some(b) = right {
+                    a + b
+                } else {
+                    0
+                }
+            }
+        "#;
+
+        let output = compile_source(source).expect("if let chain should compile");
+        assert!(output.rust_code.contains("match left"));
+        assert!(output.rust_code.contains("match right"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {
