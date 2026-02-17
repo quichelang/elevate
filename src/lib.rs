@@ -4879,6 +4879,54 @@ world"#;
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_if_let_with_iter_position_and_closure_shorthand() {
+        let source = r#"
+            fn has_even(values: Vec<i64>) -> bool {
+                if let Some(pos) = values.iter().position(|x| x % 2 == 0) {
+                    pos >= 0
+                } else {
+                    false
+                }
+            }
+        "#;
+
+        let output =
+            compile_source(source).expect("if let + iter.position + closure shorthand should compile");
+        assert!(output.rust_code.contains(".position("));
+        assert!(output.rust_code.contains("match "));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_mut_parameters_in_functions_and_methods() {
+        let source = r#"
+            struct Counter { value: i64, }
+
+            impl Counter {
+                fn bump(mut self, n: i64) -> Counter {
+                    self.value += n;
+                    self
+                }
+            }
+
+            fn add(mut left: i64, mut right: i64) -> i64 {
+                left + right
+            }
+
+            fn run() -> i64 {
+                let c = Counter { value: add(1, 2) };
+                let next = c.bump(3);
+                next.value
+            }
+        "#;
+
+        let output = compile_source(source).expect("mut parameters should compile");
+        assert!(output.rust_code.contains("fn add("));
+        assert!(output.rust_code.contains("fn bump(&mut self"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {

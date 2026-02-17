@@ -101,7 +101,7 @@ impl Parser {
             return None;
         }
 
-        self.error_current(
+        self.error_expected_with_found(
             "Expected top-level item (`use`, `rust { ... }`, `struct`, `enum`, `trait`, `impl`, `fn`, `const`, `static`)",
         );
         None
@@ -304,6 +304,9 @@ impl Parser {
         self.expect(TokenKind::LParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
         while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+            if self.at_ident("mut") {
+                self.advance();
+            }
             let param_name = self.expect_ident("Expected parameter name")?;
             let param_ty =
                 if param_name == "self" && impl_target.is_some() && !self.at(TokenKind::Colon) {
@@ -336,6 +339,12 @@ impl Parser {
             None
         };
         let effect_row = self.parse_optional_effect_row()?;
+        if self.at_ident("where") {
+            self.error_current(
+                "Function `where` clauses are not supported yet; move bounds to generic parameters",
+            );
+            self.skip_until_block_start();
+        }
         let body = self.parse_block()?;
         Some(FunctionDef {
             visibility,
@@ -356,6 +365,9 @@ impl Parser {
         self.expect(TokenKind::LParen, "Expected '(' after trait method name")?;
         let mut params = Vec::new();
         while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+            if self.at_ident("mut") {
+                self.advance();
+            }
             let param_name = self.expect_ident("Expected parameter name")?;
             let param_ty = if param_name == "self" && !self.at(TokenKind::Colon) {
                 Type {
@@ -550,6 +562,39 @@ impl Parser {
             return Some(Stmt::Return(Some(expr)));
         }
         if self.match_kind(TokenKind::If) {
+            if self.match_kind(TokenKind::Let) {
+                let pattern = self.parse_pattern()?;
+                self.expect(TokenKind::Equal, "Expected '=' after `if let` pattern")?;
+                let scrutinee = self.parse_expr()?;
+                let then_block = self.parse_block()?;
+                let else_block = if self.match_kind(TokenKind::Else) {
+                    Some(self.parse_block()?)
+                } else {
+                    None
+                };
+                let fallback_block = else_block.unwrap_or(Block {
+                    statements: Vec::new(),
+                });
+                let match_expr = Expr::Match {
+                    scrutinee: Box::new(scrutinee),
+                    arms: vec![
+                        MatchArm {
+                            pattern,
+                            guard: None,
+                            value: Expr::Block(then_block),
+                        },
+                        MatchArm {
+                            pattern: Pattern::Wildcard,
+                            guard: None,
+                            value: Expr::Block(fallback_block),
+                        },
+                    ],
+                };
+                if self.at(TokenKind::RBrace) {
+                    return Some(Stmt::TailExpr(match_expr));
+                }
+                return Some(Stmt::Expr(match_expr));
+            }
             let condition = self.parse_expr()?;
             let then_block = self.parse_block()?;
             let else_block = if self.match_kind(TokenKind::Else) {
@@ -1260,7 +1305,7 @@ impl Parser {
             }
             TokenKind::LBrace => self.parse_block().map(Expr::Block),
             _ => {
-                self.error_current("Expected expression");
+                self.error_expected_with_found("Expected expression");
                 None
             }
         }
@@ -1384,7 +1429,15 @@ impl Parser {
         } else {
             None
         };
-        let body = self.parse_block()?;
+        let body = if self.at(TokenKind::LBrace) {
+            self.parse_block()?
+        } else {
+            // Rust shorthand: `|x| expr` desugars to a tail-expression block.
+            let value = self.parse_expr()?;
+            Block {
+                statements: vec![Stmt::TailExpr(value)],
+            }
+        };
         Some(Expr::Closure {
             params,
             return_type,
@@ -1578,7 +1631,7 @@ impl Parser {
                 Some(name)
             }
             _ => {
-                self.error_current(message);
+                self.error_expected_with_found(message);
                 None
             }
         }
@@ -1589,7 +1642,7 @@ impl Parser {
             self.advance();
             Some(())
         } else {
-            self.error_current(message);
+            self.error_expected_with_found(message);
             None
         }
     }
@@ -1605,6 +1658,10 @@ impl Parser {
 
     fn at(&self, kind: TokenKind) -> bool {
         same_variant(&self.peek().kind, &kind)
+    }
+
+    fn at_ident(&self, name: &str) -> bool {
+        matches!(&self.peek().kind, TokenKind::Identifier(current) if current == name)
     }
 
     fn advance(&mut self) {
@@ -1638,6 +1695,17 @@ impl Parser {
         self.diagnostics.push(Diagnostic::new(message, span));
     }
 
+    fn error_expected_with_found(&mut self, message: &str) {
+        let found = Self::token_label(&self.peek().kind);
+        self.error_current(&format!("{message}, found {found}"));
+    }
+
+    fn skip_until_block_start(&mut self) {
+        while !self.at(TokenKind::LBrace) && !self.at(TokenKind::Eof) {
+            self.advance();
+        }
+    }
+
     fn synchronize_top_level(&mut self) {
         while !self.at(TokenKind::Eof) {
             if self.match_kind(TokenKind::Semicolon) {
@@ -1659,6 +1727,90 @@ impl Parser {
             }
             self.advance();
         }
+    }
+
+    fn token_label(kind: &TokenKind) -> String {
+        match kind {
+            TokenKind::Identifier(name) => format!("identifier `{name}`"),
+            TokenKind::IntLiteral(value) => format!("integer literal `{value}`"),
+            TokenKind::FloatLiteral(value) => format!("float literal `{value}`"),
+            TokenKind::CharLiteral(value) => format!("char literal `{value}`"),
+            TokenKind::StringLiteral(value) => format!("string literal \"{value}\""),
+            TokenKind::RustBlock(_) => "`rust { ... }` block".to_string(),
+            TokenKind::Eof => "end of file".to_string(),
+            other => format!("token `{}`", token_kind_symbol(other)),
+        }
+    }
+}
+
+fn token_kind_symbol(kind: &TokenKind) -> &'static str {
+    match kind {
+        TokenKind::Rust => "rust",
+        TokenKind::Use => "use",
+        TokenKind::Struct => "struct",
+        TokenKind::Enum => "enum",
+        TokenKind::Trait => "trait",
+        TokenKind::Impl => "impl",
+        TokenKind::Fn => "fn",
+        TokenKind::Let => "let",
+        TokenKind::Const => "const",
+        TokenKind::Static => "static",
+        TokenKind::Return => "return",
+        TokenKind::If => "if",
+        TokenKind::Else => "else",
+        TokenKind::While => "while",
+        TokenKind::For => "for",
+        TokenKind::In => "in",
+        TokenKind::Loop => "loop",
+        TokenKind::Break => "break",
+        TokenKind::Continue => "continue",
+        TokenKind::Pub => "pub",
+        TokenKind::Match => "match",
+        TokenKind::And => "and",
+        TokenKind::Or => "or",
+        TokenKind::Not => "not",
+        TokenKind::True => "true",
+        TokenKind::False => "false",
+        TokenKind::Underscore => "_",
+        TokenKind::LBrace => "{",
+        TokenKind::RBrace => "}",
+        TokenKind::LParen => "(",
+        TokenKind::RParen => ")",
+        TokenKind::LBracket => "[",
+        TokenKind::RBracket => "]",
+        TokenKind::Colon => ":",
+        TokenKind::ColonColon => "::",
+        TokenKind::Semicolon => ";",
+        TokenKind::Comma => ",",
+        TokenKind::Dot => ".",
+        TokenKind::DotDot => "..",
+        TokenKind::DotDotEq => "..=",
+        TokenKind::Pipe => "|",
+        TokenKind::At => "@",
+        TokenKind::Bang => "!",
+        TokenKind::Plus => "+",
+        TokenKind::PlusEqual => "+=",
+        TokenKind::Minus => "-",
+        TokenKind::Star => "*",
+        TokenKind::Slash => "/",
+        TokenKind::Percent => "%",
+        TokenKind::Equal => "=",
+        TokenKind::EqualEqual => "==",
+        TokenKind::BangEqual => "!=",
+        TokenKind::FatArrow => "=>",
+        TokenKind::Arrow => "->",
+        TokenKind::Lt => "<",
+        TokenKind::LtEqual => "<=",
+        TokenKind::Gt => ">",
+        TokenKind::GtEqual => ">=",
+        TokenKind::Question => "?",
+        TokenKind::Identifier(_)
+        | TokenKind::IntLiteral(_)
+        | TokenKind::FloatLiteral(_)
+        | TokenKind::CharLiteral(_)
+        | TokenKind::StringLiteral(_)
+        | TokenKind::RustBlock(_)
+        | TokenKind::Eof => "<literal>",
     }
 }
 
@@ -1876,6 +2028,81 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let diagnostics = parse_module(tokens).expect_err("expected parse error");
         assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parse_mut_parameters() {
+        let source = r#"
+            struct Box<T> { value: T, }
+            impl<T> Box<T> {
+                fn take(mut self) -> T { self.value }
+                fn swap(mut left: i64, mut right: i64) -> i64 { left + right }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
+    }
+
+    #[test]
+    fn parser_reports_unsupported_where_clause_on_function() {
+        let source = r#"
+            fn keep<T>(value: T) -> T
+            where
+                T: Clone,
+            {
+                value
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let diagnostics = parse_module(tokens).expect_err("expected parse error");
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message
+                .contains("Function `where` clauses are not supported yet")
+        }));
+    }
+
+    #[test]
+    fn parse_if_let_with_else() {
+        let source = r#"
+            fn f() -> i64 {
+                if let Some(v) = maybe() {
+                    v
+                } else {
+                    0
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_if_let_without_else() {
+        let source = r#"
+            fn f() -> () {
+                if let Some(v) = maybe() {
+                    print(v);
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_closure_expression_shorthand_body() {
+        let source = r#"
+            fn f() -> bool {
+                const equals = |x: i64, y: i64| x == y;
+                equals(1, 1)
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
     }
 
     #[test]

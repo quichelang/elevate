@@ -8074,6 +8074,12 @@ fn resolve_method_capability(
                 expected_args: vec![],
                 return_ty: named_type("usize"),
             },
+            "position" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![CallArgMode::Owned],
+                expected_args: vec![SemType::Unknown],
+                return_ty: option_type(named_type("usize")),
+            },
             "sum" | "product" => MethodCapability {
                 receiver_mode: CapabilityReceiverMode::Owned,
                 arg_modes: vec![],

@@ -26,7 +26,7 @@ impl<T> Collection<T> {
         self.items.first()
     }
 
-    pub fn add(mut self, item: T) {
+    pub fn add(self, item: T) {
         self.items.push(item);
     }
 
@@ -42,17 +42,11 @@ impl<T> Collection<T> {
         self.items.clear();
     }
 
-    pub fn contains(self, item: T) -> bool
-    where
-        T: PartialEq,
-    {
+    pub fn contains<T: PartialEq>(self, item: T) -> bool {
         self.items.contains(item)
     }
 
-    pub fn remove(self, item: T) -> bool
-    where
-        T: PartialEq,
-    {
+    pub fn remove<T: PartialEq>(self, item: T) -> bool {
         if let Some(pos) = self.items.iter().position(|x| x == item) {
             self.items.remove(pos);
             true
