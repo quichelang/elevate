@@ -2165,6 +2165,7 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         if mutated.contains(&param.name)
             && !param.ty.trim_start().starts_with('&')
             && !param_is_consumed_in_body(&param.name, &lowered_body)
+            && has_direct_mutation_for_param(&param.name, &lowered_body)
         {
             param.ty = format!("&mut {}", param.ty);
             mut_arg_indexes.push(index);
@@ -3643,8 +3644,6 @@ fn lower_item(
                         );
                     let impl_target_ty =
                         (def.trait_target.is_none()).then(|| impl_target_rust_type(def, context));
-                    let returns_impl_self_like = def.trait_target.is_none()
-                        && method_returns_impl_self_like(method, &final_return_ty, def, context);
                     TypedFunction {
                         is_public: method.visibility == Visibility::Public,
                         name: method.name.clone(),
@@ -3692,11 +3691,17 @@ fn lower_item(
                                     });
 
                                 let ty = if param.name == "self" && def.trait_target.is_none() {
-                                    if let Some(target_ty) = &impl_target_ty {
-                                        if mutates_self {
+                                    if mutates_self {
+                                        if let Some(target_ty) = &impl_target_ty {
                                             format!("&mut {target_ty}")
                                         } else {
+                                            default_ty
+                                        }
+                                    } else if impl_self_param_defaults_to_borrow(method, index, def) {
+                                        if let Some(target_ty) = &impl_target_ty {
                                             format!("&{target_ty}")
+                                        } else {
+                                            default_ty
                                         }
                                     } else {
                                         default_ty
@@ -3711,14 +3716,10 @@ fn lower_item(
                                 }
                             })
                             .collect(),
-                        return_type: if returns_impl_self_like {
-                            "Self".to_string()
-                        } else {
-                            resolved_sig
-                                .return_rust_type
-                                .clone()
-                                .unwrap_or_else(|| rust_owned_type_string(&final_return_ty))
-                        },
+                        return_type: resolved_sig
+                            .return_rust_type
+                            .clone()
+                            .unwrap_or_else(|| rust_owned_type_string(&final_return_ty)),
                         body,
                     }
                 });
@@ -4101,6 +4102,24 @@ fn inferred_impl_type_param_bounds(
             let entry = out.entry(param.name.clone()).or_default();
             for bound in inferred {
                 push_unique_bound(entry, bound.clone());
+            }
+        }
+
+        // If an implicit borrowed `self` method returns an impl type parameter
+        // by value, codegen/lowering must clone from a borrowed receiver.
+        // Ensure the returned type parameter carries a `Clone` bound.
+        let method_is_mutating_self = method_body_mutates_self(method);
+        let implicit_borrowed_self =
+            impl_self_param_defaults_to_borrow(method, 0, imp) && !method_is_mutating_self;
+        if implicit_borrowed_self
+            && let SemType::Path { path, args } = &sig.return_type
+            && path.len() == 1
+            && args.is_empty()
+        {
+            let return_param = &path[0];
+            if imp.type_params.iter().any(|param| &param.name == return_param) {
+                let entry = out.entry(return_param.clone()).or_default();
+                push_unique_bound(entry, named_type("Clone"));
             }
         }
     }
@@ -9827,6 +9846,14 @@ fn lower_expr_with_context(
                 context,
                 state,
             );
+            let must_clone_borrowed_field =
+                position == ExprPosition::Consuming && base.ty.trim_start().starts_with('&');
+            if must_clone_borrowed_field {
+                if let Some(name) = place_name {
+                    push_auto_clone_notes(state, context, &name, expr.ty.trim(), false);
+                }
+                return clone_expr(lowered_field);
+            }
             match decision {
                 CloneDecision::Clone { is_hot } => {
                     if !forced_clone && let Some(name) = place_name {
@@ -9857,8 +9884,32 @@ fn lower_expr_with_context(
                 SemType::Path { path, .. } => Some(path.clone()),
                 _ => None,
             };
-            let lowered_base =
-                lower_expr_with_context(base, context, ExprPosition::NonConsuming, state);
+            let custom_index_receiver_mode = if indexing.source == TypedIndexSource::CustomMethod {
+                match indexing.mode {
+                    TypedIndexMode::DirectIndex => {
+                        custom_index_receiver_mode_for_base(&base_ty, "index", state)
+                    }
+                    TypedIndexMode::GetLikeOption => {
+                        custom_index_receiver_mode_for_base(&base_ty, "get", state)
+                    }
+                    TypedIndexMode::Unknown => CallArgMode::Owned,
+                }
+            } else {
+                CallArgMode::Owned
+            };
+            let base_position = if indexing.source == TypedIndexSource::CustomMethod
+                && custom_index_receiver_mode == CallArgMode::Owned
+            {
+                ExprPosition::Consuming
+            } else {
+                ExprPosition::NonConsuming
+            };
+            let lowered_base = lower_expr_with_context(base, context, base_position, state);
+            let lowered_base_for_custom = match custom_index_receiver_mode {
+                CallArgMode::Owned => lowered_base.clone(),
+                CallArgMode::Borrowed => borrow_expr(lowered_base.clone()),
+                CallArgMode::MutBorrowed => RustExpr::MutBorrow(Box::new(lowered_base.clone())),
+            };
             let key_position = match indexing.key_passing {
                 TypedIndexKeyPassing::Borrowed => ExprPosition::NonConsuming,
                 TypedIndexKeyPassing::Owned => ExprPosition::Consuming,
@@ -9896,7 +9947,7 @@ fn lower_expr_with_context(
                         method_path.push("index".to_string());
                         RustExpr::Call {
                             callee: Box::new(RustExpr::Path(method_path)),
-                            args: vec![lowered_base, lowered_key_arg],
+                            args: vec![lowered_base_for_custom.clone(), lowered_key_arg],
                             mutates_receiver: false,
                         }
                     } else {
@@ -9927,7 +9978,7 @@ fn lower_expr_with_context(
                         method_path.push("get".to_string());
                         RustExpr::Call {
                             callee: Box::new(RustExpr::Path(method_path)),
-                            args: vec![lowered_base, lowered_key_arg],
+                            args: vec![lowered_base_for_custom.clone(), lowered_key_arg],
                             mutates_receiver: false,
                         }
                     } else {
@@ -10789,6 +10840,163 @@ fn method_base_type_name(base_ty: &str) -> Option<&str> {
     if name.is_empty() { None } else { Some(name) }
 }
 
+fn has_direct_mutation_for_param(name: &str, stmts: &[RustStmt]) -> bool {
+    stmts
+        .iter()
+        .any(|stmt| stmt_has_direct_param_mutation(name, stmt))
+}
+
+fn stmt_has_direct_param_mutation(name: &str, stmt: &RustStmt) -> bool {
+    match stmt {
+        RustStmt::Assign { target, value, .. } => {
+            assign_target_roots_to_name(target, name) || expr_has_direct_param_mutation(name, value)
+        }
+        RustStmt::Expr(expr) => expr_has_direct_param_mutation(name, expr),
+        RustStmt::Const(def) => expr_has_direct_param_mutation(name, &def.value),
+        RustStmt::DestructureConst { value, .. } => expr_has_direct_param_mutation(name, value),
+        RustStmt::Return(Some(expr)) => expr_has_direct_param_mutation(name, expr),
+        RustStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_has_direct_param_mutation(name, condition)
+                || has_direct_mutation_for_param(name, then_body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| has_direct_mutation_for_param(name, body))
+        }
+        RustStmt::While { condition, body } => {
+            expr_has_direct_param_mutation(name, condition)
+                || has_direct_mutation_for_param(name, body)
+        }
+        RustStmt::For { iter, body, .. } => {
+            expr_has_direct_param_mutation(name, iter) || has_direct_mutation_for_param(name, body)
+        }
+        RustStmt::Loop { body } => has_direct_mutation_for_param(name, body),
+        RustStmt::Return(None)
+        | RustStmt::Break
+        | RustStmt::Continue
+        | RustStmt::Raw(_) => false,
+    }
+}
+
+fn assign_target_roots_to_name(target: &RustAssignTarget, name: &str) -> bool {
+    match target {
+        RustAssignTarget::Path(path) => path == name,
+        RustAssignTarget::Field { base, .. } | RustAssignTarget::Index { base, .. } => {
+            expr_roots_to_name(base, name)
+        }
+        RustAssignTarget::Tuple(items) => items
+            .iter()
+            .any(|item| assign_target_roots_to_name(item, name)),
+    }
+}
+
+fn expr_roots_to_name(expr: &RustExpr, name: &str) -> bool {
+    match expr {
+        RustExpr::Path(path) => path.len() == 1 && path[0] == name,
+        RustExpr::Field { base, .. } | RustExpr::Index { base, .. } => expr_roots_to_name(base, name),
+        _ => false,
+    }
+}
+
+fn expr_has_direct_param_mutation(name: &str, expr: &RustExpr) -> bool {
+    match expr {
+        RustExpr::Call {
+            callee,
+            args,
+            mutates_receiver,
+        } => {
+            (*mutates_receiver
+                && matches!(callee.as_ref(), RustExpr::Field { base, .. } if expr_roots_to_name(base, name)))
+                || expr_has_direct_param_mutation(name, callee)
+                || args
+                    .iter()
+                    .any(|arg| expr_has_direct_param_mutation(name, arg))
+        }
+        RustExpr::Borrow(inner)
+        | RustExpr::MutBorrow(inner)
+        | RustExpr::BorrowCall(inner)
+        | RustExpr::BorrowMutCall(inner)
+        | RustExpr::Try(inner) => expr_has_direct_param_mutation(name, inner),
+        RustExpr::Cast { expr, .. }
+        | RustExpr::Unary { expr, .. } => expr_has_direct_param_mutation(name, expr),
+        RustExpr::Binary { left, right, .. } => {
+            expr_has_direct_param_mutation(name, left)
+                || expr_has_direct_param_mutation(name, right)
+        }
+        RustExpr::Field { base, .. } => expr_has_direct_param_mutation(name, base),
+        RustExpr::Index { base, index } => {
+            expr_has_direct_param_mutation(name, base)
+                || expr_has_direct_param_mutation(name, index)
+        }
+        RustExpr::Match { scrutinee, arms } => {
+            expr_has_direct_param_mutation(name, scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|guard| expr_has_direct_param_mutation(name, guard))
+                        || expr_has_direct_param_mutation(name, &arm.value)
+                })
+        }
+        RustExpr::Array(items) | RustExpr::Tuple(items) => {
+            items.iter().any(|item| expr_has_direct_param_mutation(name, item))
+        }
+        RustExpr::StructLiteral { fields, .. } => fields
+            .iter()
+            .any(|field| expr_has_direct_param_mutation(name, &field.value)),
+        RustExpr::Block { body, tail } => {
+            has_direct_mutation_for_param(name, body)
+                || tail
+                    .as_ref()
+                    .is_some_and(|expr| expr_has_direct_param_mutation(name, expr))
+        }
+        RustExpr::Closure { body, .. } => has_direct_mutation_for_param(name, body),
+        RustExpr::Range { start, end, .. } => {
+            start
+                .as_ref()
+                .is_some_and(|expr| expr_has_direct_param_mutation(name, expr))
+                || end
+                    .as_ref()
+                    .is_some_and(|expr| expr_has_direct_param_mutation(name, expr))
+        }
+        RustExpr::Int(_)
+        | RustExpr::Float(_)
+        | RustExpr::Bool(_)
+        | RustExpr::Char(_)
+        | RustExpr::String(_)
+        | RustExpr::Path(_)
+        | RustExpr::MacroCall { .. } => false,
+    }
+}
+
+fn custom_index_receiver_mode_for_base(
+    base_ty: &str,
+    method: &str,
+    state: &LoweringState,
+) -> CallArgMode {
+    let Some(type_name) = method_base_type_name(base_ty) else {
+        return CallArgMode::Owned;
+    };
+    let lookup = format!("{type_name}::{method}");
+    let mut_borrowed = state
+        .known_function_mut_args
+        .get(&lookup)
+        .is_some_and(|indexes| indexes.contains(&0));
+    if mut_borrowed {
+        return CallArgMode::MutBorrowed;
+    }
+    let borrowed = state
+        .known_function_borrowed_args
+        .get(&lookup)
+        .is_some_and(|indexes| indexes.contains(&0));
+    if borrowed {
+        return CallArgMode::Borrowed;
+    }
+    CallArgMode::Owned
+}
+
 fn resolve_declared_borrow_arg_modes(
     callee: &TypedExpr,
     state: &LoweringState,
@@ -10810,10 +11018,6 @@ fn resolve_heuristic_path_call_arg_modes(
     let TypedExprKind::Path(path) = &callee.kind else {
         return None;
     };
-    let resolved = state.resolve_callee_path(path);
-    if is_known_function_path(state, &resolved) {
-        return None;
-    }
     let Some(name) = path.last() else {
         return None;
     };
@@ -10829,24 +11033,6 @@ fn resolve_heuristic_path_call_arg_modes(
         }
     }
     if borrowed_any { Some(modes) } else { None }
-}
-
-fn is_known_function_path(state: &LoweringState, path: &[String]) -> bool {
-    if state.known_functions.contains(&path.join("::")) {
-        return true;
-    }
-    if let Some(name) = path.last()
-        && state.known_functions.contains(name)
-    {
-        return true;
-    }
-    if path.len() >= 2 {
-        let short = format!("{}::{}", path[path.len() - 2], path[path.len() - 1]);
-        if state.known_functions.contains(&short) {
-            return true;
-        }
-    }
-    false
 }
 
 fn lower_method_callee(
@@ -11890,35 +12076,170 @@ fn is_redundant_impl_self_param(params: &[crate::ast::Param], index: usize) -> b
     first.name == "self" && params[index].name == "self"
 }
 
-fn impl_target_rust_type(imp: &crate::ast::ImplBlock, context: &Context) -> String {
-    if imp.target_args.is_empty() {
-        return imp.target.clone();
-    }
-    let args = imp
-        .target_args
+fn method_body_mutates_self(method: &crate::ast::FunctionDef) -> bool {
+    method
+        .body
+        .statements
         .iter()
-        .map(|arg| rust_owned_type_string(&type_from_ast_in_context(arg, context)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{}<{args}>", imp.target)
+        .any(stmt_mutates_self_in_ast)
 }
 
-fn method_returns_impl_self_like(
+fn stmt_mutates_self_in_ast(stmt: &crate::ast::Stmt) -> bool {
+    match stmt {
+        crate::ast::Stmt::Assign { target, value, .. } => {
+            assign_target_roots_to_self_in_ast(target) || expr_mutates_self_in_ast(value)
+        }
+        crate::ast::Stmt::Const(def) => expr_mutates_self_in_ast(&def.value),
+        crate::ast::Stmt::DestructureConst { value, .. } => expr_mutates_self_in_ast(value),
+        crate::ast::Stmt::Return(Some(expr))
+        | crate::ast::Stmt::Expr(expr)
+        | crate::ast::Stmt::TailExpr(expr) => expr_mutates_self_in_ast(expr),
+        crate::ast::Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            expr_mutates_self_in_ast(condition)
+                || then_block.statements.iter().any(stmt_mutates_self_in_ast)
+                || else_block
+                    .as_ref()
+                    .is_some_and(|block| block.statements.iter().any(stmt_mutates_self_in_ast))
+        }
+        crate::ast::Stmt::While { condition, body } => {
+            expr_mutates_self_in_ast(condition) || body.statements.iter().any(stmt_mutates_self_in_ast)
+        }
+        crate::ast::Stmt::For { iter, body, .. } => {
+            expr_mutates_self_in_ast(iter) || body.statements.iter().any(stmt_mutates_self_in_ast)
+        }
+        crate::ast::Stmt::Loop { body } => body.statements.iter().any(stmt_mutates_self_in_ast),
+        crate::ast::Stmt::Return(None)
+        | crate::ast::Stmt::Break
+        | crate::ast::Stmt::Continue
+        | crate::ast::Stmt::RustBlock(_) => false,
+    }
+}
+
+fn assign_target_roots_to_self_in_ast(target: &crate::ast::AssignTarget) -> bool {
+    match target {
+        crate::ast::AssignTarget::Path(path) => path == "self",
+        crate::ast::AssignTarget::Field { base, .. } | crate::ast::AssignTarget::Index { base, .. } => {
+            expr_roots_to_self_in_ast(base)
+        }
+        crate::ast::AssignTarget::Tuple(items) => {
+            items.iter().any(assign_target_roots_to_self_in_ast)
+        }
+    }
+}
+
+fn expr_roots_to_self_in_ast(expr: &crate::ast::Expr) -> bool {
+    match expr {
+        crate::ast::Expr::Path(path) => path.len() == 1 && path[0] == "self",
+        crate::ast::Expr::Field { base, .. } | crate::ast::Expr::Index { base, .. } => {
+            expr_roots_to_self_in_ast(base)
+        }
+        _ => false,
+    }
+}
+
+fn expr_mutates_self_in_ast(expr: &crate::ast::Expr) -> bool {
+    match expr {
+        crate::ast::Expr::Call { callee, args } => {
+            expr_mutates_self_in_ast(callee) || args.iter().any(expr_mutates_self_in_ast)
+        }
+        crate::ast::Expr::MacroCall { args, .. } => args.iter().any(expr_mutates_self_in_ast),
+        crate::ast::Expr::Field { base, .. } => expr_mutates_self_in_ast(base),
+        crate::ast::Expr::Index { base, index } => {
+            expr_mutates_self_in_ast(base) || expr_mutates_self_in_ast(index)
+        }
+        crate::ast::Expr::Match { scrutinee, arms } => {
+            expr_mutates_self_in_ast(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(expr_mutates_self_in_ast)
+                        || expr_mutates_self_in_ast(&arm.value)
+                })
+        }
+        crate::ast::Expr::Unary { expr, .. } | crate::ast::Expr::Try(expr) => {
+            expr_mutates_self_in_ast(expr)
+        }
+        crate::ast::Expr::Cast { expr, .. } => expr_mutates_self_in_ast(expr),
+        crate::ast::Expr::Binary { left, right, .. } => {
+            expr_mutates_self_in_ast(left) || expr_mutates_self_in_ast(right)
+        }
+        crate::ast::Expr::Array(items) | crate::ast::Expr::Tuple(items) => {
+            items.iter().any(expr_mutates_self_in_ast)
+        }
+        crate::ast::Expr::StructLiteral { fields, .. } => {
+            fields.iter().any(|field| expr_mutates_self_in_ast(&field.value))
+        }
+        crate::ast::Expr::Block(block) => block.statements.iter().any(stmt_mutates_self_in_ast),
+        crate::ast::Expr::Closure { body, .. } => body.statements.iter().any(stmt_mutates_self_in_ast),
+        crate::ast::Expr::Range { start, end, .. } => {
+            start
+                .as_ref()
+                .is_some_and(|expr| expr_mutates_self_in_ast(expr))
+                || end
+                    .as_ref()
+                    .is_some_and(|expr| expr_mutates_self_in_ast(expr))
+        }
+        crate::ast::Expr::Path(_)
+        | crate::ast::Expr::PathWithTypeArgs { .. }
+        | crate::ast::Expr::Int(_)
+        | crate::ast::Expr::Float(_)
+        | crate::ast::Expr::Bool(_)
+        | crate::ast::Expr::String(_)
+        | crate::ast::Expr::Char(_) => false,
+    }
+}
+
+fn impl_self_param_defaults_to_borrow(
     method: &crate::ast::FunctionDef,
-    final_return_ty: &SemType,
+    index: usize,
     imp: &crate::ast::ImplBlock,
-    context: &Context,
 ) -> bool {
-    if method
-        .return_type
-        .as_ref()
-        .is_some_and(|ty| ty.path.len() == 1 && ty.path[0] == "Self")
-    {
+    if method.params.get(index).is_none_or(|param| param.name != "self") {
+        return false;
+    }
+    // Bridge artifacts can duplicate `self`; treat these as implicit receiver
+    // forms and default to borrowed lowering.
+    let duplicate_self = method.params.iter().filter(|param| param.name == "self").count() > 1;
+    if duplicate_self {
         return true;
     }
+    // Parser lowers implicit impl `self` (without `:`) to the impl target type.
+    // Explicit `self: Self` retains a literal `Self` path and should keep
+    // by-value semantics unless mutability analysis requires otherwise.
+    method.params.get(index).is_some_and(|param| {
+        let ty = &param.ty;
+        ty.path.len() == 1
+            && ty.path[0] == imp.target
+            && ty.args.len() == imp.target_args.len()
+            && ty
+                .args
+                .iter()
+                .zip(imp.target_args.iter())
+                .all(|(left, right)| left == right)
+    })
+}
 
-    let impl_target = impl_target_rust_type(imp, context);
-    rust_owned_type_string(final_return_ty) == impl_target
+fn impl_target_rust_type(imp: &crate::ast::ImplBlock, context: &Context) -> String {
+    if imp.target_args.is_empty() && imp.type_params.is_empty() {
+        return imp.target.clone();
+    }
+    let args = if imp.target_args.is_empty() {
+        imp.type_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<Vec<_>>()
+    } else {
+        imp.target_args
+            .iter()
+            .map(|arg| rust_owned_type_string(&type_from_ast_in_context(arg, context)))
+            .collect::<Vec<_>>()
+    }
+    .join(", ");
+    format!("{}<{args}>", imp.target)
 }
 
 fn typed_method_requires_mut_self(
@@ -12917,6 +13238,18 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
                 {
                     return true;
                 }
+
+                // Vec<T> can satisfy slice-style params (&[T] / [T]).
+                if a == "Vec"
+                    && actual_args.len() == 1
+                    && expected_args.is_empty()
+                    && let Some(expected_item_name) = parse_slice_item_type_name(e)
+                {
+                    let expected_item_ty = sem_type_from_typed_type_string(expected_item_name);
+                    if is_compatible(&actual_args[0], &expected_item_ty) {
+                        return true;
+                    }
+                }
             }
             if actual_path != expected_path || actual_args.len() != expected_args.len() {
                 return false;
@@ -12927,6 +13260,22 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
                 .all(|(left, right)| is_compatible(left, right))
         }
         _ => false,
+    }
+}
+
+fn parse_slice_item_type_name(type_name: &str) -> Option<&str> {
+    let trimmed = type_name.trim();
+    let inner = if let Some(rest) = trimmed.strip_prefix("&mut ") {
+        rest.trim()
+    } else if let Some(rest) = trimmed.strip_prefix('&') {
+        rest.trim()
+    } else {
+        trimmed
+    };
+    if inner.starts_with('[') && inner.ends_with(']') && inner.len() > 2 {
+        Some(inner[1..inner.len() - 1].trim())
+    } else {
+        None
     }
 }
 

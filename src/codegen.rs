@@ -175,15 +175,15 @@ fn emit_function(def: &RustFunction, out: &mut String) {
 
 fn emit_impl(def: &RustImpl, out: &mut String) {
     let in_trait_impl = def.trait_target.is_some();
-    let generics = emit_type_params(&def.type_params);
+    let (generics, where_clause) = emit_impl_generics_and_where(&def.type_params);
     let target = emit_named_type(&def.target, &def.target_args);
     if let Some(trait_target) = &def.trait_target {
         out.push_str(&format!(
-            "impl{} {} for {} {{\n",
-            generics, trait_target, target
+            "impl{} {} for {}{} {{\n",
+            generics, trait_target, target, where_clause
         ));
     } else {
-        out.push_str(&format!("impl{} {} {{\n", generics, target));
+        out.push_str(&format!("impl{} {}{} {{\n", generics, target, where_clause));
     }
     for method in &def.methods {
         let mutated = collect_mutated_paths_in_stmts(&method.body);
@@ -217,6 +217,28 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
     out.push_str("}\n");
 }
 
+fn emit_impl_generics_and_where(type_params: &[crate::ir::lowered::RustTypeParam]) -> (String, String) {
+    if type_params.is_empty() {
+        return (String::new(), String::new());
+    }
+    let names = type_params
+        .iter()
+        .map(|param| param.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let where_parts = type_params
+        .iter()
+        .filter(|param| !param.bounds.is_empty())
+        .map(|param| format!("{}: {}", param.name, param.bounds.join(" + ")))
+        .collect::<Vec<_>>();
+    let where_clause = if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" where {}", where_parts.join(", "))
+    };
+    (format!("<{names}>"), where_clause)
+}
+
 fn emit_const(def: &RustConst, out: &mut String) {
     out.push_str(vis(def.is_public));
     out.push_str("const ");
@@ -232,17 +254,7 @@ fn emit_param(
     mutated: Option<&std::collections::HashSet<String>>,
 ) -> String {
     if param.name == "self" {
-        let ty = param.ty.trim_start();
-        if ty.starts_with("&mut") {
-            return "&mut self".to_string();
-        }
-        if ty.starts_with('&') {
-            return "&self".to_string();
-        }
-        if mutated.is_some_and(|set| set.contains("self")) {
-            return "mut self".to_string();
-        }
-        return "self".to_string();
+        return format!("self: {}", param.ty);
     }
 
     if mutated.is_some_and(|set| set.contains(&param.name)) && !param.ty.trim_start().starts_with("&mut") {

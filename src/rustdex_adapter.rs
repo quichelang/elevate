@@ -337,6 +337,17 @@ pub(crate) fn parse_rustdoc_type_str(
         return parse_rustdoc_type_str(rest, generic_args, type_name);
     }
 
+    if s.contains("::") && !s.starts_with('&') {
+        return SemType::Path {
+            path: s
+                .split("::")
+                .filter(|segment| !segment.is_empty())
+                .map(|segment| segment.to_string())
+                .collect(),
+            args: vec![],
+        };
+    }
+
     named_type(s)
 }
 

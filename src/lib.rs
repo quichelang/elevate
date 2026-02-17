@@ -2106,7 +2106,7 @@ mod tests {
                     Wrapper { value: value }
                 }
 
-                fn get(self) -> T {
+                fn get(self: Self) -> T {
                     self.value
                 }
             }
@@ -2118,7 +2118,7 @@ mod tests {
 
         let output = compile_source(source).expect("expected generic impl support");
         assert!(output.rust_code.contains("impl<T> Wrapper<T>"));
-        assert!(output.rust_code.contains("fn get(self: &Wrapper<T>) -> T"));
+        assert!(output.rust_code.contains("fn get(self: Wrapper<T>) -> T"));
         assert!(output.rust_code.contains("fn run() -> i64"));
         assert_rust_code_compiles(&output.rust_code);
     }
