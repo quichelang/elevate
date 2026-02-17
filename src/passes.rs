@@ -2,7 +2,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use crate::{DirectBorrowHint, HostFunctionHint};
 use crate::ast::{
     AssignOp, AssignTarget, BinaryOp, Block, DestructurePattern, EnumVariantFields, Expr,
     GenericParam, Item, Module, Pattern, Stmt, StructLiteralField, TraitMethodSig, Type, UnaryOp,
@@ -29,6 +28,7 @@ use crate::ir::typed::{
 use crate::liveness::BorrowEngine;
 use crate::ownership_planner::{CloneDecision, ClonePlannerInput, decide_clone};
 use crate::rustdex_backend;
+use crate::{DirectBorrowHint, HostFunctionHint};
 
 mod index_capability;
 use index_capability::{
@@ -990,6 +990,133 @@ fn expr_consumes_name(name: &str, expr: &RustExpr) -> bool {
             tail: Some(tail), ..
         } => expr_consumes_name(name, tail),
         _ => false,
+    }
+}
+
+/// Like `param_is_consumed_in_body`, but treats field/index access as
+/// non-consuming.  Used specifically for `&mut` promotion decisions where
+/// partial reads/writes through a reference are fine.
+pub(crate) fn param_is_whole_consumed_in_body(name: &str, stmts: &[RustStmt]) -> bool {
+    if let Some(last) = stmts.last() {
+        if let RustStmt::Expr(expr) = last {
+            if expr_consumes_name(name, expr) {
+                return true;
+            }
+        }
+    }
+    stmts.iter().any(|s| stmt_whole_consumes_name(name, s))
+}
+
+fn stmt_whole_consumes_name(name: &str, stmt: &RustStmt) -> bool {
+    match stmt {
+        RustStmt::Return(Some(expr)) => expr_references_name_as_whole(name, expr),
+        RustStmt::Return(None) => false,
+        RustStmt::Assign {
+            target: RustAssignTarget::Path(target_name),
+            value,
+            ..
+        } => target_name == name && expr_references_name_as_whole(name, value),
+        RustStmt::Assign { value, .. } => expr_references_name_as_whole(name, value),
+        RustStmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body.iter().any(|s| stmt_whole_consumes_name(name, s))
+                || else_body.as_ref().map_or(false, |body| {
+                    body.iter().any(|s| stmt_whole_consumes_name(name, s))
+                })
+        }
+        RustStmt::While { body, .. } | RustStmt::Loop { body } => {
+            body.iter().any(|s| stmt_whole_consumes_name(name, s))
+        }
+        RustStmt::For { iter, body, .. } => {
+            expr_references_name_as_whole(name, iter)
+                || body.iter().any(|s| stmt_whole_consumes_name(name, s))
+        }
+        RustStmt::Const(c) => expr_references_name_as_whole(name, &c.value),
+        RustStmt::DestructureConst { value, .. } => expr_references_name_as_whole(name, value),
+        RustStmt::Expr(expr) => match expr {
+            RustExpr::Call { callee, args, .. } => {
+                let callee_consumes = match callee.as_ref() {
+                    RustExpr::Field { base, .. } => {
+                        if matches!(base.as_ref(), RustExpr::Path(p) if p.len() == 1 && p[0] == name)
+                        {
+                            false
+                        } else {
+                            expr_references_name_as_whole(name, callee)
+                        }
+                    }
+                    _ => expr_references_name_as_whole(name, callee),
+                };
+                callee_consumes
+                    || args
+                        .iter()
+                        .any(|arg| expr_references_name_as_whole(name, arg))
+            }
+            _ => false,
+        },
+        RustStmt::Break | RustStmt::Continue | RustStmt::Raw(_) => false,
+    }
+}
+
+/// Like `expr_references_name_as_owned`, but ignores field/index projections.
+/// `c.value` does NOT consume `c` via this check — only whole-value references
+/// like bare `c`, `return c`, or `consume(c)` count.
+fn expr_references_name_as_whole(name: &str, expr: &RustExpr) -> bool {
+    match expr {
+        RustExpr::Path(segments) => segments.len() == 1 && segments[0] == name,
+        RustExpr::Borrow(_)
+        | RustExpr::MutBorrow(_)
+        | RustExpr::BorrowCall(_)
+        | RustExpr::BorrowMutCall(_) => false,
+        // Field and Index access do NOT consume the whole struct
+        RustExpr::Field { .. } | RustExpr::Index { .. } => false,
+        RustExpr::Call { callee, args, .. } => {
+            expr_references_name_as_whole(name, callee)
+                || args.iter().any(|a| expr_references_name_as_whole(name, a))
+        }
+        RustExpr::Binary { left, right, .. } => {
+            expr_references_name_as_whole(name, left) || expr_references_name_as_whole(name, right)
+        }
+        RustExpr::Unary { expr: inner, .. }
+        | RustExpr::Cast { expr: inner, .. }
+        | RustExpr::Try(inner) => expr_references_name_as_whole(name, inner),
+        RustExpr::Tuple(items) | RustExpr::Array(items) => {
+            items.iter().any(|i| expr_references_name_as_whole(name, i))
+        }
+        RustExpr::Match { scrutinee, arms } => {
+            expr_references_name_as_whole(name, scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| expr_references_name_as_whole(name, &arm.value))
+        }
+        RustExpr::Block { body, tail } => {
+            param_is_whole_consumed_in_body(name, body)
+                || tail
+                    .as_ref()
+                    .map_or(false, |t| expr_references_name_as_whole(name, t))
+        }
+        RustExpr::StructLiteral { fields, .. } => fields
+            .iter()
+            .any(|f| expr_references_name_as_whole(name, &f.value)),
+        RustExpr::MacroCall { args, .. } => {
+            args.iter().any(|a| expr_references_name_as_whole(name, a))
+        }
+        RustExpr::Range { start, end, .. } => {
+            start
+                .as_ref()
+                .map_or(false, |s| expr_references_name_as_whole(name, s))
+                || end
+                    .as_ref()
+                    .map_or(false, |e| expr_references_name_as_whole(name, e))
+        }
+        RustExpr::Closure { body, .. } => body.iter().any(|s| stmt_whole_consumes_name(name, s)),
+        RustExpr::Int(_)
+        | RustExpr::Float(_)
+        | RustExpr::Bool(_)
+        | RustExpr::Char(_)
+        | RustExpr::String(_) => false,
     }
 }
 
@@ -2174,7 +2301,7 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         }
         if mutated.contains(&param.name)
             && !param.ty.trim_start().starts_with('&')
-            && !param_is_consumed_in_body(&param.name, &lowered_body)
+            && !param_is_whole_consumed_in_body(&param.name, &lowered_body)
             && has_direct_mutation_for_param(&param.name, &lowered_body)
         {
             param.ty = format!("&mut {}", param.ty);
@@ -2222,9 +2349,9 @@ fn rewrite_borrowed_self_returns_to_clone(stmts: &mut [RustStmt]) {
                     rewrite_borrowed_self_returns_to_clone(else_body);
                 }
             }
-            RustStmt::While { body, .. }
-            | RustStmt::For { body, .. }
-            | RustStmt::Loop { body } => rewrite_borrowed_self_returns_to_clone(body),
+            RustStmt::While { body, .. } | RustStmt::For { body, .. } | RustStmt::Loop { body } => {
+                rewrite_borrowed_self_returns_to_clone(body)
+            }
             RustStmt::Const(_)
             | RustStmt::DestructureConst { .. }
             | RustStmt::Assign { .. }
@@ -3707,7 +3834,8 @@ fn lower_item(
                                         } else {
                                             default_ty
                                         }
-                                    } else if impl_self_param_defaults_to_borrow(method, index, def) {
+                                    } else if impl_self_param_defaults_to_borrow(method, index, def)
+                                    {
                                         if let Some(target_ty) = &impl_target_ty {
                                             format!("&{target_ty}")
                                         } else {
@@ -3733,7 +3861,9 @@ fn lower_item(
                         body,
                     }
                 });
-                if def.trait_target.is_none() && known_mutating_self_methods.insert(method.name.clone()) {
+                if def.trait_target.is_none()
+                    && known_mutating_self_methods.insert(method.name.clone())
+                {
                     let requires_mut = typed_method_requires_mut_self(
                         &typed_method.body,
                         context,
@@ -4127,7 +4257,11 @@ fn inferred_impl_type_param_bounds(
             && args.is_empty()
         {
             let return_param = &path[0];
-            if imp.type_params.iter().any(|param| &param.name == return_param) {
+            if imp
+                .type_params
+                .iter()
+                .any(|param| &param.name == return_param)
+            {
                 let entry = out.entry(return_param.clone()).or_default();
                 push_unique_bound(entry, named_type("Clone"));
             }
@@ -8136,7 +8270,8 @@ fn resolve_method_capability(
     // Try signature lookup first — it handles Deref coercion (Vec→[T], String→str)
     // which the strict existence check does not.
     for rustdex_type_name in rustdex_type_name_candidates(type_name) {
-        if let Some(sig) = crate::rustdex_backend::lookup_method_signature(&rustdex_type_name, method)
+        if let Some(sig) =
+            crate::rustdex_backend::lookup_method_signature(&rustdex_type_name, method)
         {
             let mut capability =
                 crate::rustdex_adapter::method_sig_to_capability(&sig, type_name, generic_args);
@@ -10890,10 +11025,7 @@ fn stmt_has_direct_param_mutation(name: &str, stmt: &RustStmt) -> bool {
             expr_has_direct_param_mutation(name, iter) || has_direct_mutation_for_param(name, body)
         }
         RustStmt::Loop { body } => has_direct_mutation_for_param(name, body),
-        RustStmt::Return(None)
-        | RustStmt::Break
-        | RustStmt::Continue
-        | RustStmt::Raw(_) => false,
+        RustStmt::Return(None) | RustStmt::Break | RustStmt::Continue | RustStmt::Raw(_) => false,
     }
 }
 
@@ -10912,7 +11044,9 @@ fn assign_target_roots_to_name(target: &RustAssignTarget, name: &str) -> bool {
 fn expr_roots_to_name(expr: &RustExpr, name: &str) -> bool {
     match expr {
         RustExpr::Path(path) => path.len() == 1 && path[0] == name,
-        RustExpr::Field { base, .. } | RustExpr::Index { base, .. } => expr_roots_to_name(base, name),
+        RustExpr::Field { base, .. } | RustExpr::Index { base, .. } => {
+            expr_roots_to_name(base, name)
+        }
         _ => false,
     }
 }
@@ -10936,8 +11070,9 @@ fn expr_has_direct_param_mutation(name: &str, expr: &RustExpr) -> bool {
         | RustExpr::BorrowCall(inner)
         | RustExpr::BorrowMutCall(inner)
         | RustExpr::Try(inner) => expr_has_direct_param_mutation(name, inner),
-        RustExpr::Cast { expr, .. }
-        | RustExpr::Unary { expr, .. } => expr_has_direct_param_mutation(name, expr),
+        RustExpr::Cast { expr, .. } | RustExpr::Unary { expr, .. } => {
+            expr_has_direct_param_mutation(name, expr)
+        }
         RustExpr::Binary { left, right, .. } => {
             expr_has_direct_param_mutation(name, left)
                 || expr_has_direct_param_mutation(name, right)
@@ -10956,9 +11091,9 @@ fn expr_has_direct_param_mutation(name: &str, expr: &RustExpr) -> bool {
                         || expr_has_direct_param_mutation(name, &arm.value)
                 })
         }
-        RustExpr::Array(items) | RustExpr::Tuple(items) => {
-            items.iter().any(|item| expr_has_direct_param_mutation(name, item))
-        }
+        RustExpr::Array(items) | RustExpr::Tuple(items) => items
+            .iter()
+            .any(|item| expr_has_direct_param_mutation(name, item)),
         RustExpr::StructLiteral { fields, .. } => fields
             .iter()
             .any(|field| expr_has_direct_param_mutation(name, &field.value)),
@@ -12093,11 +12228,7 @@ fn is_redundant_impl_self_param(params: &[crate::ast::Param], index: usize) -> b
 }
 
 fn method_body_mutates_self(method: &crate::ast::FunctionDef) -> bool {
-    method
-        .body
-        .statements
-        .iter()
-        .any(stmt_mutates_self_in_ast)
+    method.body.statements.iter().any(stmt_mutates_self_in_ast)
 }
 
 fn stmt_mutates_self_in_ast(stmt: &crate::ast::Stmt) -> bool {
@@ -12122,7 +12253,8 @@ fn stmt_mutates_self_in_ast(stmt: &crate::ast::Stmt) -> bool {
                     .is_some_and(|block| block.statements.iter().any(stmt_mutates_self_in_ast))
         }
         crate::ast::Stmt::While { condition, body } => {
-            expr_mutates_self_in_ast(condition) || body.statements.iter().any(stmt_mutates_self_in_ast)
+            expr_mutates_self_in_ast(condition)
+                || body.statements.iter().any(stmt_mutates_self_in_ast)
         }
         crate::ast::Stmt::For { iter, body, .. } => {
             expr_mutates_self_in_ast(iter) || body.statements.iter().any(stmt_mutates_self_in_ast)
@@ -12138,9 +12270,8 @@ fn stmt_mutates_self_in_ast(stmt: &crate::ast::Stmt) -> bool {
 fn assign_target_roots_to_self_in_ast(target: &crate::ast::AssignTarget) -> bool {
     match target {
         crate::ast::AssignTarget::Path(path) => path == "self",
-        crate::ast::AssignTarget::Field { base, .. } | crate::ast::AssignTarget::Index { base, .. } => {
-            expr_roots_to_self_in_ast(base)
-        }
+        crate::ast::AssignTarget::Field { base, .. }
+        | crate::ast::AssignTarget::Index { base, .. } => expr_roots_to_self_in_ast(base),
         crate::ast::AssignTarget::Tuple(items) => {
             items.iter().any(assign_target_roots_to_self_in_ast)
         }
@@ -12170,9 +12301,7 @@ fn expr_mutates_self_in_ast(expr: &crate::ast::Expr) -> bool {
         crate::ast::Expr::Match { scrutinee, arms } => {
             expr_mutates_self_in_ast(scrutinee)
                 || arms.iter().any(|arm| {
-                    arm.guard
-                        .as_ref()
-                        .is_some_and(expr_mutates_self_in_ast)
+                    arm.guard.as_ref().is_some_and(expr_mutates_self_in_ast)
                         || expr_mutates_self_in_ast(&arm.value)
                 })
         }
@@ -12186,11 +12315,13 @@ fn expr_mutates_self_in_ast(expr: &crate::ast::Expr) -> bool {
         crate::ast::Expr::Array(items) | crate::ast::Expr::Tuple(items) => {
             items.iter().any(expr_mutates_self_in_ast)
         }
-        crate::ast::Expr::StructLiteral { fields, .. } => {
-            fields.iter().any(|field| expr_mutates_self_in_ast(&field.value))
-        }
+        crate::ast::Expr::StructLiteral { fields, .. } => fields
+            .iter()
+            .any(|field| expr_mutates_self_in_ast(&field.value)),
         crate::ast::Expr::Block(block) => block.statements.iter().any(stmt_mutates_self_in_ast),
-        crate::ast::Expr::Closure { body, .. } => body.statements.iter().any(stmt_mutates_self_in_ast),
+        crate::ast::Expr::Closure { body, .. } => {
+            body.statements.iter().any(stmt_mutates_self_in_ast)
+        }
         crate::ast::Expr::Range { start, end, .. } => {
             start
                 .as_ref()
@@ -12214,12 +12345,21 @@ fn impl_self_param_defaults_to_borrow(
     index: usize,
     imp: &crate::ast::ImplBlock,
 ) -> bool {
-    if method.params.get(index).is_none_or(|param| param.name != "self") {
+    if method
+        .params
+        .get(index)
+        .is_none_or(|param| param.name != "self")
+    {
         return false;
     }
     // Bridge artifacts can duplicate `self`; treat these as implicit receiver
     // forms and default to borrowed lowering.
-    let duplicate_self = method.params.iter().filter(|param| param.name == "self").count() > 1;
+    let duplicate_self = method
+        .params
+        .iter()
+        .filter(|param| param.name == "self")
+        .count()
+        > 1;
     if duplicate_self {
         return true;
     }
@@ -12294,11 +12434,7 @@ fn typed_stmt_requires_mut_self(
             else_body,
         } => {
             typed_expr_requires_mut_self(condition, context, known_mutating_self_methods)
-                || typed_method_requires_mut_self(
-                    then_body,
-                    context,
-                    known_mutating_self_methods,
-                )
+                || typed_method_requires_mut_self(then_body, context, known_mutating_self_methods)
                 || else_body.as_ref().is_some_and(|body| {
                     typed_method_requires_mut_self(body, context, known_mutating_self_methods)
                 })
@@ -12360,18 +12496,15 @@ fn typed_expr_requires_mut_self(
                         &mut diagnostics,
                     )
                     .is_some_and(|cap| cap.receiver_mode == CapabilityReceiverMode::MutBorrowed)
-                        || known_mutating_self_methods
-                            .is_some_and(|names| names.contains(field))
+                        || known_mutating_self_methods.is_some_and(|names| names.contains(field))
                 }
                 _ => false,
             };
             callee_mutates_self
                 || typed_expr_requires_mut_self(callee, context, known_mutating_self_methods)
-                || args
-                    .iter()
-                    .any(|arg| {
-                        typed_expr_requires_mut_self(arg, context, known_mutating_self_methods)
-                    })
+                || args.iter().any(|arg| {
+                    typed_expr_requires_mut_self(arg, context, known_mutating_self_methods)
+                })
         }
         TypedExprKind::MacroCall { args, .. }
         | TypedExprKind::Array(args)
@@ -12391,31 +12524,22 @@ fn typed_expr_requires_mut_self(
         TypedExprKind::Match { scrutinee, arms } => {
             typed_expr_requires_mut_self(scrutinee, context, known_mutating_self_methods)
                 || arms.iter().any(|arm| {
-                    arm.guard
-                        .as_ref()
-                        .is_some_and(|guard| {
-                            typed_expr_requires_mut_self(
-                                guard,
-                                context,
-                                known_mutating_self_methods,
-                            )
-                        })
-                        || typed_expr_requires_mut_self(
-                            &arm.value,
-                            context,
-                            known_mutating_self_methods,
-                        )
+                    arm.guard.as_ref().is_some_and(|guard| {
+                        typed_expr_requires_mut_self(guard, context, known_mutating_self_methods)
+                    }) || typed_expr_requires_mut_self(
+                        &arm.value,
+                        context,
+                        known_mutating_self_methods,
+                    )
                 })
         }
         TypedExprKind::Binary { left, right, .. } => {
             typed_expr_requires_mut_self(left, context, known_mutating_self_methods)
                 || typed_expr_requires_mut_self(right, context, known_mutating_self_methods)
         }
-        TypedExprKind::StructLiteral { fields, .. } => fields
-            .iter()
-            .any(|field| {
-                typed_expr_requires_mut_self(&field.value, context, known_mutating_self_methods)
-            }),
+        TypedExprKind::StructLiteral { fields, .. } => fields.iter().any(|field| {
+            typed_expr_requires_mut_self(&field.value, context, known_mutating_self_methods)
+        }),
         TypedExprKind::Block { body, tail } => {
             typed_method_requires_mut_self(body, context, known_mutating_self_methods)
                 || tail.as_ref().is_some_and(|value| {
@@ -12426,20 +12550,11 @@ fn typed_expr_requires_mut_self(
             typed_method_requires_mut_self(body, context, known_mutating_self_methods)
         }
         TypedExprKind::Range { start, end, .. } => {
-            start
-                .as_ref()
-                .is_some_and(|value| {
-                    typed_expr_requires_mut_self(value, context, known_mutating_self_methods)
-                })
-                || end
-                    .as_ref()
-                    .is_some_and(|value| {
-                        typed_expr_requires_mut_self(
-                            value,
-                            context,
-                            known_mutating_self_methods,
-                        )
-                    })
+            start.as_ref().is_some_and(|value| {
+                typed_expr_requires_mut_self(value, context, known_mutating_self_methods)
+            }) || end.as_ref().is_some_and(|value| {
+                typed_expr_requires_mut_self(value, context, known_mutating_self_methods)
+            })
         }
         TypedExprKind::Int(_)
         | TypedExprKind::Float(_)
@@ -13248,8 +13363,7 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
                 let expected_joined = expected_path.join("::");
                 let a = last_path_segment(&actual_joined);
                 let e = last_path_segment(&expected_joined);
-                if (a == "&str" || a == "str")
-                    && (e == "String" || e == "&str" || e == "str")
+                if (a == "&str" || a == "str") && (e == "String" || e == "&str" || e == "str")
                     || (a == "String") && (e == "&str" || e == "str")
                 {
                     return true;

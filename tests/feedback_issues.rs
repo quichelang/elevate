@@ -892,7 +892,6 @@ fn issue10_mutating_vec_string_arg() {
 }
 
 #[test]
-#[ignore = "&mut promotion: function arg should be promoted to &mut T when struct field is mutated, currently clones instead"]
 fn issue10_mutating_struct_field_arg() {
     let source = r#"
         pub struct Counter { value: i64, }
@@ -945,7 +944,6 @@ fn issue10_mutating_hashmap_arg() {
 }
 
 #[test]
-#[ignore = "&mut promotion: nested struct field mutation should produce &mut T arg, currently clones"]
 fn issue10_nested_struct_mutation() {
     let source = r#"
         pub struct Inner { count: i64, }
@@ -1137,7 +1135,6 @@ fn cross_match_arm_vec_subscript_struct() {
 }
 
 #[test]
-#[ignore = "&mut promotion: closure capturing mutable Vec needs `let mut` — mutability detection not applied to closures"]
 fn cross_closure_vec_pop_reuse() {
     let source = r#"
         fn run() -> i64 {
@@ -1222,8 +1219,6 @@ fn cross_destructure_struct_vec_method() {
     assert!(output.rust_code.contains(".extend("));
     assert_rust_code_compiles(&output.rust_code);
 }
-
-
 
 #[test]
 fn issue_impl_complex_struct_selective_mut_self_inference() {
@@ -1310,7 +1305,11 @@ fn issue_impl_complex_struct_selective_mut_self_inference() {
         "non-mutating method should not require mut self\n{}",
         output.rust_code
     );
-    assert!(!output.rust_code.contains("pub fn summary(&mut self) -> String"));
+    assert!(
+        !output
+            .rust_code
+            .contains("pub fn summary(&mut self) -> String")
+    );
     assert!(!output.rust_code.contains("-> &mut Self"));
     assert_rust_code_compiles(&output.rust_code);
 }
@@ -1475,15 +1474,15 @@ fn issue_impl_complex_struct_cross_method_mutation_in_impl() {
         output.rust_code
     );
     assert!(
-        output
-            .rust_code
-            .contains("pub fn pop_count(&self) -> i64"),
+        output.rust_code.contains("pub fn pop_count(&self) -> i64"),
         "read-only method should use &self\n{}",
         output.rust_code
     );
     assert!(
         output.rust_code.contains("self.pop_one()")
-            && output.rust_code.contains("after_pop.enqueue(String::from(\"tail\"))"),
+            && output
+                .rust_code
+                .contains("after_pop.enqueue(String::from(\"tail\"))"),
         "expected interaction between impl methods in emitted code\n{}",
         output.rust_code
     );

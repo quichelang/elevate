@@ -217,7 +217,9 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
     out.push_str("}\n");
 }
 
-fn emit_impl_generics_and_where(type_params: &[crate::ir::lowered::RustTypeParam]) -> (String, String) {
+fn emit_impl_generics_and_where(
+    type_params: &[crate::ir::lowered::RustTypeParam],
+) -> (String, String) {
     if type_params.is_empty() {
         return (String::new(), String::new());
     }
@@ -264,7 +266,9 @@ fn emit_param(
         return format!("self: {}", param.ty);
     }
 
-    if mutated.is_some_and(|set| set.contains(&param.name)) && !param.ty.trim_start().starts_with("&mut") {
+    if mutated.is_some_and(|set| set.contains(&param.name))
+        && !param.ty.trim_start().starts_with("&mut")
+    {
         format!("mut {}: {}", param.name, param.ty)
     } else {
         format!("{}: {}", param.name, param.ty)
@@ -674,11 +678,14 @@ fn emit_stmt_with_indent(
     match stmt {
         RustStmt::Const(def) => {
             let value = emit_expr(&def.value);
-            let mut_kw = if !def.is_const && mutated.contains(&def.name) {
-                "mut "
-            } else {
-                ""
-            };
+            let is_closure_with_mut_capture =
+                matches!(&def.value, RustExpr::Closure { .. }) && mutated.contains(&def.name);
+            let mut_kw =
+                if is_closure_with_mut_capture || (!def.is_const && mutated.contains(&def.name)) {
+                    "mut "
+                } else {
+                    ""
+                };
             if should_annotate_local_binding(&def.ty, &def.value) {
                 out.push_str(&format!(
                     "{pad}let {mut_kw}{}: {} = {};\n",
@@ -884,6 +891,23 @@ pub(crate) fn collect_mutated_paths_in_stmts(
     let mut out = std::collections::HashSet::new();
     for stmt in stmts {
         collect_mutated_paths_in_stmt(stmt, &mut out);
+    }
+    // Second pass: if a `const` binding holds a closure that captures any
+    // mutated variable (not a closure param), calling it requires `let mut`.
+    for stmt in stmts {
+        if let RustStmt::Const(def) = stmt {
+            if let RustExpr::Closure { params, body, .. } = &def.value {
+                let param_names: std::collections::HashSet<&str> =
+                    params.iter().map(|p| p.name.as_str()).collect();
+                let inner = collect_mutated_paths_in_stmts(body);
+                if inner
+                    .iter()
+                    .any(|name| !param_names.contains(name.as_str()) && out.contains(name))
+                {
+                    out.insert(def.name.clone());
+                }
+            }
+        }
     }
     out
 }
