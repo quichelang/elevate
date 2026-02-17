@@ -180,7 +180,7 @@ fn cli_bootstrap_build_forwards_experiment_and_value_flags() {
     let log = workspace.join("elevate.log");
     let fake_bin = workspace.join("fake-bin");
     fs::create_dir_all(&fake_bin).expect("fake-bin should be created");
-    install_fake_command(&fake_bin, "elevate", &log, true);
+    let fake_elevate = install_fake_command(&fake_bin, "elevate", &log, true);
 
     let bootstrap_bin = build_bootstrap_binary(&root, "starter");
     let output = Command::new(&bootstrap_bin)
@@ -190,6 +190,7 @@ fn cli_bootstrap_build_forwards_experiment_and_value_flags() {
         .arg("--source-name")
         .arg("runtime.ers")
         .env("PATH", prepend_path(&fake_bin))
+        .env("ELEVATE_BOOTSTRAP_ELEVATE", &fake_elevate)
         .output()
         .expect("bootstrap should run");
     assert!(output.status.success());
@@ -211,8 +212,8 @@ fn cli_bootstrap_run_forwards_build_flags_and_runtime_args() {
     let cargo_log = workspace.join("cargo.log");
     let fake_bin = workspace.join("fake-bin");
     fs::create_dir_all(&fake_bin).expect("fake-bin should be created");
-    install_fake_command(&fake_bin, "elevate", &elevate_log, true);
-    install_fake_command(&fake_bin, "cargo", &cargo_log, true);
+    let fake_elevate = install_fake_command(&fake_bin, "elevate", &elevate_log, true);
+    let fake_cargo = install_fake_command(&fake_bin, "cargo", &cargo_log, true);
 
     let bootstrap_bin = build_bootstrap_binary(&root, "starter");
     let output = Command::new(&bootstrap_bin)
@@ -223,6 +224,8 @@ fn cli_bootstrap_run_forwards_build_flags_and_runtime_args() {
         .arg("--seed")
         .arg("7")
         .env("PATH", prepend_path(&fake_bin))
+        .env("ELEVATE_BOOTSTRAP_ELEVATE", &fake_elevate)
+        .env("ELEVATE_BOOTSTRAP_CARGO", &fake_cargo)
         .output()
         .expect("bootstrap should run");
     assert!(output.status.success());
@@ -235,7 +238,10 @@ fn cli_bootstrap_run_forwards_build_flags_and_runtime_args() {
     let cargo_logged = fs::read_to_string(&cargo_log).expect("fake cargo log should exist");
     assert!(cargo_logged.contains("run"));
     assert!(cargo_logged.contains("--manifest-path"));
-    assert!(cargo_logged.contains("elevate-gen/Cargo.toml"));
+    assert!(
+        cargo_logged.contains("elevate-gen/Cargo.toml")
+            || cargo_logged.contains("elevate-gen\\Cargo.toml")
+    );
     assert!(cargo_logged.contains("--seed"));
     assert!(cargo_logged.contains("7"));
 }
@@ -276,15 +282,34 @@ fn build_bootstrap_binary(root: &std::path::Path, name: &str) -> std::path::Path
     root.join("target").join("debug").join(name)
 }
 
-fn install_fake_command(dir: &std::path::Path, name: &str, log_path: &std::path::Path, ok: bool) {
-    let path = dir.join(name);
+fn install_fake_command(
+    dir: &std::path::Path,
+    name: &str,
+    log_path: &std::path::Path,
+    ok: bool,
+) -> std::path::PathBuf {
     let status = if ok { 0 } else { 1 };
-    let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nexit {status}\n",
-        log_path.display()
-    );
-    fs::write(&path, script).expect("fake command should be written");
-    make_executable(&path);
+    #[cfg(unix)]
+    {
+        let path = dir.join(name);
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nexit {status}\n",
+            log_path.display()
+        );
+        fs::write(&path, script).expect("fake command should be written");
+        make_executable(&path);
+        return path;
+    }
+    #[cfg(windows)]
+    {
+        let path = dir.join(format!("{name}.cmd"));
+        let log_path = log_path.display().to_string().replace('/', "\\");
+        let script = format!(
+            "@echo off\r\necho ARGS:%*>>\"{log_path}\"\r\necho CMDLINE:%cmdcmdline%>>\"{log_path}\"\r\nexit /b {status}\r\n"
+        );
+        fs::write(&path, script).expect("fake command should be written");
+        return path;
+    }
 }
 
 #[cfg(unix)]

@@ -19,7 +19,7 @@ fn main() {
         return;
     }
 
-    let mut run = Command::new("cargo");
+    let mut run = command_for("cargo");
     run.arg("run")
         .arg("--manifest-path")
         .arg(
@@ -44,7 +44,7 @@ fn main() {
 
 fn build_command(source_root: &Path, release: bool, build_args: &[String]) -> Command {
     if let Some(manifest) = detect_local_elevate_manifest(source_root) {
-        let mut fallback = Command::new("cargo");
+        let mut fallback = command_for("cargo");
         fallback
             .arg("run")
             .arg("--manifest-path")
@@ -58,13 +58,37 @@ fn build_command(source_root: &Path, release: bool, build_args: &[String]) -> Co
         fallback.args(build_args);
         return fallback;
     }
-    let mut build = Command::new("elevate");
+    let mut build = command_for("elevate");
     build.arg("build").arg(source_root);
     if release {
         build.arg("--release");
     }
     build.args(build_args);
     build
+}
+
+fn command_for(program: &str) -> Command {
+    let override_var = match program {
+        "cargo" => Some("ELEVATE_BOOTSTRAP_CARGO"),
+        "elevate" => Some("ELEVATE_BOOTSTRAP_ELEVATE"),
+        _ => None,
+    };
+    if let Some(var) = override_var
+        && let Ok(path) = env::var(var)
+        && !path.trim().is_empty()
+    {
+        return Command::new(path);
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(program);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(program)
+    }
 }
 
 #[derive(Debug, Default)]

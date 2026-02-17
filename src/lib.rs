@@ -3494,7 +3494,7 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("pub fn bump(self: &mut Point, n: i64) -> i64")
+                .contains("pub fn bump(&mut self, n: i64) -> i64")
         );
         assert!(output.rust_code.contains("self.x += n;"));
         assert!(output.rust_code.contains("Point::bump(&mut p, 1)"));
@@ -3599,7 +3599,7 @@ mod tests {
         assert!(output.rust_code.contains("impl Display for Token"));
         assert!(
             output.rust_code.contains(
-                "fn fmt(self: &Token, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result"
+                "fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result"
             )
         );
         assert_rust_code_compiles(&output.rust_code);
@@ -4765,7 +4765,7 @@ world"#;
         };
 
         let output = compile_ast(&module).expect("duplicate bridge self param should be tolerated");
-        assert!(output.rust_code.contains("fn get(self: &Counter) -> i64"));
+        assert!(output.rust_code.contains("fn get(&self) -> i64"));
         assert!(output.rust_code.contains("return counter.get();"));
         assert_rust_code_compiles(&output.rust_code);
     }

@@ -254,6 +254,13 @@ fn emit_param(
     mutated: Option<&std::collections::HashSet<String>>,
 ) -> String {
     if param.name == "self" {
+        let ty = param.ty.trim();
+        if ty.starts_with("&mut ") {
+            return "&mut self".to_string();
+        }
+        if ty.starts_with('&') {
+            return "&self".to_string();
+        }
         return format!("self: {}", param.ty);
     }
 

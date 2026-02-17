@@ -1,0 +1,91 @@
+struct Point<T> {
+    x: T,
+    y: T,
+}
+
+impl<T: Display> Point<T> {
+  pub fn new(x: T, y: T) -> Self {
+     Point { x: x, y: y}
+  }
+
+  pub fn to_string(self) -> String{
+    format!("Point({}, {})", self.x, self.y)
+  }
+}
+
+struct Collection<T> {
+    items: Vec<T>,
+}
+
+impl<T> Collection<T> {
+    pub fn new(items: Vec<T>) -> Self {
+        Collection<T> { items }
+    }
+
+    pub fn first(self) -> Option<T> {
+        self.items.first()
+    }
+
+    pub fn add(mut self, item: T) {
+        self.items.push(item);
+    }
+
+    pub fn len(self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn clear(self) {
+        self.items.clear();
+    }
+
+    pub fn contains(self, item: T) -> bool
+    where
+        T: PartialEq,
+    {
+        self.items.contains(item)
+    }
+
+    pub fn remove(self, item: T) -> bool
+    where
+        T: PartialEq,
+    {
+        if let Some(pos) = self.items.iter().position(|x| x == item) {
+            self.items.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn main() {
+    const p = Point::new(5, 6);
+    println!("{}", p);
+    
+    const p2 = Point::new(-1, 6);
+    println!("{}", p2);
+    
+    const p3 = Point::new(5.1, 6.5);
+    println!("{}", p3);
+    
+    // Simple collection test
+    let c = Collection::new(vec![1, 2, 3]);
+    // println!("First: {:?}", c.first());
+    // c.add(4);
+    // println!("Length: {}", c.len());
+    // println!("Contains 2: {}", c.contains(2));
+
+    // // Collection of points
+    // let points = Collection::new(vec![
+    //     Point::new(1, 2),
+    //     Point::new(3, 4),
+    //     p3 // automatically clone?
+    // ]);
+
+    // println!("First point: {}", points.first());
+    // println!("Contains p3: {}", points.contains(p3));
+}

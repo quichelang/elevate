@@ -1332,11 +1332,12 @@ impl Parser {
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let name = self.expect_ident("Expected field name in struct literal")?;
-            self.expect(
-                TokenKind::Colon,
-                "Expected ':' after struct literal field name",
-            )?;
-            let value = self.parse_expr()?;
+            let value = if self.match_kind(TokenKind::Colon) {
+                self.parse_expr()?
+            } else {
+                // Support Rust-style field init shorthand: `Type { field }`.
+                Expr::Path(vec![name.clone()])
+            };
             fields.push(StructLiteralField { name, value });
 
             if !self.at(TokenKind::RBrace) {
@@ -1357,7 +1358,7 @@ impl Parser {
             TokenKind::RBrace => true,
             TokenKind::Identifier(_) => matches!(
                 self.tokens.get(self.cursor + 2).map(|tok| &tok.kind),
-                Some(TokenKind::Colon)
+                Some(TokenKind::Colon) | Some(TokenKind::Comma) | Some(TokenKind::RBrace)
             ),
             _ => false,
         }
@@ -1444,7 +1445,9 @@ impl Parser {
                     if depth == 0 {
                         return matches!(
                             self.tokens.get(idx + 1).map(|next| &next.kind),
-                            Some(TokenKind::ColonColon) | Some(TokenKind::LParen)
+                            Some(TokenKind::ColonColon)
+                                | Some(TokenKind::LParen)
+                                | Some(TokenKind::LBrace)
                         );
                     }
                 }
@@ -2525,6 +2528,35 @@ world"#;
         assert_eq!(def.type_params.len(), 1);
         assert_eq!(def.target, "Box");
         assert_eq!(def.target_args.len(), 1);
+    }
+
+    #[test]
+    fn parse_generic_struct_literal_with_shorthand_field() {
+        let source = r#"
+            struct Collection<T> { items: Vec<T>, }
+            impl<T> Collection<T> {
+                fn new(items: Vec<T>) -> Self {
+                    Collection<T> { items }
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 2);
+
+        let crate::ast::Item::Impl(def) = &module.items[1] else {
+            panic!("expected impl item");
+        };
+        let method = &def.methods[0];
+        let Some(crate::ast::Stmt::TailExpr(crate::ast::Expr::StructLiteral { path, fields })) =
+            method.body.statements.last()
+        else {
+            panic!("expected tail struct literal expression");
+        };
+        assert_eq!(path, &vec!["Collection".to_string()]);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "items");
+        assert_eq!(fields[0].value, crate::ast::Expr::Path(vec!["items".to_string()]));
     }
 
     #[test]

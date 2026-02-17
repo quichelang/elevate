@@ -2131,15 +2131,25 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         .map(|stmt| lower_stmt_with_context(stmt, &mut context, state))
         .collect();
 
-    let borrowed_self_returns_self = def.return_type == "Self"
-        && def
-            .params
-            .iter()
-            .find(|param| param.name == "self")
-            .is_some_and(|param| param.ty.trim_start().starts_with('&'));
+    let self_param = def.params.iter().find(|param| param.name == "self");
+    let borrowed_self_receiver_type = self_param.and_then(|param| {
+        let ty = param.ty.trim();
+        if let Some(inner) = ty.strip_prefix("&mut ") {
+            return Some(inner.trim().to_string());
+        }
+        ty.strip_prefix('&').map(|inner| inner.trim().to_string())
+    });
+    let borrowed_self_returns_self = borrowed_self_receiver_type
+        .as_deref()
+        .is_some_and(|receiver_ty| def.return_type == "Self" || def.return_type.trim() == receiver_ty);
     if borrowed_self_returns_self {
         rewrite_borrowed_self_returns_to_clone(&mut lowered_body);
     }
+    let emitted_return_type = if borrowed_self_returns_self {
+        "Self".to_string()
+    } else {
+        def.return_type.clone()
+    };
 
     // Detect which params are mutated and safe to promote to &mut T.
     // A param is promotable when it is mutated AND not consumed (returned,
@@ -2189,7 +2199,7 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
             })
             .collect(),
         params,
-        return_type: def.return_type.clone(),
+        return_type: emitted_return_type,
         body: lowered_body,
     }
 }
