@@ -8159,23 +8159,35 @@ fn resolve_method_capability(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<MethodCapability> {
     if let SemType::Iter(item_ty) = base_ty {
+        let iter_predicate_bool = SemType::Fn {
+            params: vec![item_ty.as_ref().clone()],
+            ret: Box::new(named_type("bool")),
+        };
+        let iter_predicate_unit = SemType::Fn {
+            params: vec![item_ty.as_ref().clone()],
+            ret: Box::new(SemType::Unit),
+        };
+        let iter_mapper = SemType::Fn {
+            params: vec![item_ty.as_ref().clone()],
+            ret: Box::new(SemType::Unknown),
+        };
         let capability = match method {
             "map" => MethodCapability {
                 receiver_mode: CapabilityReceiverMode::Owned,
                 arg_modes: vec![CallArgMode::Owned],
-                expected_args: vec![SemType::Unknown],
+                expected_args: vec![iter_mapper.clone()],
                 return_ty: SemType::Iter(Box::new(SemType::Unknown)),
             },
             "flat_map" => MethodCapability {
                 receiver_mode: CapabilityReceiverMode::Owned,
                 arg_modes: vec![CallArgMode::Owned],
-                expected_args: vec![SemType::Unknown],
+                expected_args: vec![iter_mapper],
                 return_ty: SemType::Iter(Box::new(SemType::Unknown)),
             },
             "filter" => MethodCapability {
                 receiver_mode: CapabilityReceiverMode::Owned,
                 arg_modes: vec![CallArgMode::Owned],
-                expected_args: vec![SemType::Unknown],
+                expected_args: vec![iter_predicate_bool.clone()],
                 return_ty: SemType::Iter(item_ty.clone()),
             },
             "collect" => MethodCapability {
@@ -8211,7 +8223,7 @@ fn resolve_method_capability(
             "position" => MethodCapability {
                 receiver_mode: CapabilityReceiverMode::Owned,
                 arg_modes: vec![CallArgMode::Owned],
-                expected_args: vec![SemType::Unknown],
+                expected_args: vec![iter_predicate_bool.clone()],
                 return_ty: option_type(named_type("usize")),
             },
             "sum" | "product" => MethodCapability {
@@ -8223,13 +8235,13 @@ fn resolve_method_capability(
             "any" | "all" => MethodCapability {
                 receiver_mode: CapabilityReceiverMode::Owned,
                 arg_modes: vec![CallArgMode::Owned],
-                expected_args: vec![SemType::Unknown],
+                expected_args: vec![iter_predicate_bool],
                 return_ty: named_type("bool"),
             },
             "for_each" => MethodCapability {
                 receiver_mode: CapabilityReceiverMode::Owned,
                 arg_modes: vec![CallArgMode::Owned],
-                expected_args: vec![SemType::Unknown],
+                expected_args: vec![iter_predicate_unit],
                 return_ty: SemType::Unit,
             },
             _ => return None,
@@ -8244,7 +8256,7 @@ fn resolve_method_capability(
         return Some(capability);
     }
 
-    let (type_name, generic_args): (&str, &[SemType]) = match base_ty {
+    let (raw_type_name, generic_args): (&str, &[SemType]) = match base_ty {
         SemType::Path { path, args } => (
             path.last()
                 .map(|segment| segment.as_str())
@@ -8253,6 +8265,10 @@ fn resolve_method_capability(
         ),
         _ => ("", &[]),
     };
+    let type_name = raw_type_name
+        .strip_prefix("&mut ")
+        .or_else(|| raw_type_name.strip_prefix('&'))
+        .unwrap_or(raw_type_name);
     if type_name.is_empty() {
         return None;
     }
@@ -8264,6 +8280,35 @@ fn resolve_method_capability(
             expected_args: vec![],
             return_ty: named_type("String"),
         });
+    }
+    if type_name == "Vec" {
+        let item = generic_args.first().cloned().unwrap_or(SemType::Unknown);
+        let capability = match method {
+            "iter" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Borrowed,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: SemType::Iter(Box::new(borrow_sem_type(&item))),
+            },
+            "into_iter" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Owned,
+                arg_modes: vec![],
+                expected_args: vec![],
+                return_ty: SemType::Iter(Box::new(item)),
+            },
+            _ => {
+                // Keep searching via rustdex.
+                MethodCapability {
+                    receiver_mode: CapabilityReceiverMode::Owned,
+                    arg_modes: Vec::new(),
+                    expected_args: Vec::new(),
+                    return_ty: SemType::Unknown,
+                }
+            }
+        };
+        if matches!(method, "iter" | "into_iter") {
+            return Some(capability);
+        }
     }
 
     // ── Dynamic resolution via rustdex ──────────────────────────────────
@@ -8333,7 +8378,21 @@ fn override_iterator_return_type(
     type_name: &str,
     generic_args: &[SemType],
 ) -> SemType {
-    if method == "iter" || method == "into_iter" {
+    if method == "iter" {
+        let is_map = matches!(type_name, "HashMap" | "BTreeMap");
+        let item = if is_map && generic_args.len() >= 2 {
+            SemType::Tuple(
+                generic_args
+                    .iter()
+                    .take(2)
+                    .map(borrow_sem_type)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            borrow_sem_type(generic_args.first().unwrap_or(&SemType::Unknown))
+        };
+        SemType::Iter(Box::new(item))
+    } else if method == "into_iter" {
         let is_map = matches!(type_name, "HashMap" | "BTreeMap");
         let item = if is_map && generic_args.len() >= 2 {
             SemType::Tuple(generic_args.iter().take(2).cloned().collect())
@@ -8342,10 +8401,10 @@ fn override_iterator_return_type(
         };
         SemType::Iter(Box::new(item))
     } else if method == "keys" {
-        let key = generic_args.first().cloned().unwrap_or(SemType::Unknown);
+        let key = borrow_sem_type(generic_args.first().unwrap_or(&SemType::Unknown));
         SemType::Iter(Box::new(key))
     } else if method == "values" {
-        let value = generic_args.get(1).cloned().unwrap_or(SemType::Unknown);
+        let value = borrow_sem_type(generic_args.get(1).unwrap_or(&SemType::Unknown));
         SemType::Iter(Box::new(value))
     } else if method == "chars" {
         SemType::Iter(Box::new(named_type("char")))
@@ -8356,6 +8415,11 @@ fn override_iterator_return_type(
         default
     }
 }
+
+fn borrow_sem_type(inner: &SemType) -> SemType {
+    sem_type_from_typed_type_string(&format!("&{}", type_to_string(inner)))
+}
+
 fn expect_method_arity(
     type_name: &str,
     method: &str,
@@ -9412,12 +9476,180 @@ fn apply_expected_call_arg_coercions(
         else {
             break;
         };
+        if let Some(slot) = typed_args.get_mut(index) {
+            apply_expected_closure_signature(slot, expected);
+        }
         if !is_compatible(actual, expected) {
             continue;
         }
         if let Some(slot) = typed_args.get_mut(index) {
             *slot = maybe_insert_implicit_integral_cast(current, actual, expected);
         }
+    }
+}
+
+fn apply_expected_closure_signature(arg: &mut TypedExpr, expected: &SemType) {
+    let SemType::Fn {
+        params: expected_params,
+        ret: expected_ret,
+    } = expected
+    else {
+        return;
+    };
+    let TypedExprKind::Closure {
+        params,
+        return_type,
+        body,
+    } = &mut arg.kind
+    else {
+        return;
+    };
+    if params.len() != expected_params.len() {
+        return;
+    }
+
+    let mut bindings = HashMap::new();
+    for (param, expected_ty) in params.iter_mut().zip(expected_params.iter()) {
+        if param.ty.trim() == "_" {
+            param.ty = type_to_string(expected_ty);
+        }
+        bindings.insert(param.name.clone(), param.ty.clone());
+    }
+    if return_type.trim() == "_" {
+        *return_type = type_to_string(expected_ret);
+    }
+    for stmt in body.iter_mut() {
+        apply_closure_param_types_in_stmt(stmt, &bindings);
+    }
+    arg.ty = type_to_string(expected);
+}
+
+fn apply_closure_param_types_in_stmt(stmt: &mut TypedStmt, bindings: &HashMap<String, String>) {
+    match stmt {
+        TypedStmt::Const(def) => apply_closure_param_types_in_expr(&mut def.value, bindings),
+        TypedStmt::DestructureConst { value, .. } => {
+            apply_closure_param_types_in_expr(value, bindings);
+        }
+        TypedStmt::Assign { value, .. } => apply_closure_param_types_in_expr(value, bindings),
+        TypedStmt::Return(value) => {
+            if let Some(value) = value {
+                apply_closure_param_types_in_expr(value, bindings);
+            }
+        }
+        TypedStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            apply_closure_param_types_in_expr(condition, bindings);
+            for stmt in then_body {
+                apply_closure_param_types_in_stmt(stmt, bindings);
+            }
+            if let Some(else_body) = else_body {
+                for stmt in else_body {
+                    apply_closure_param_types_in_stmt(stmt, bindings);
+                }
+            }
+        }
+        TypedStmt::While { condition, body } => {
+            apply_closure_param_types_in_expr(condition, bindings);
+            for stmt in body {
+                apply_closure_param_types_in_stmt(stmt, bindings);
+            }
+        }
+        TypedStmt::For { iter, body, .. } => {
+            apply_closure_param_types_in_expr(iter, bindings);
+            for stmt in body {
+                apply_closure_param_types_in_stmt(stmt, bindings);
+            }
+        }
+        TypedStmt::Loop { body } => {
+            for stmt in body {
+                apply_closure_param_types_in_stmt(stmt, bindings);
+            }
+        }
+        TypedStmt::Expr(expr) => apply_closure_param_types_in_expr(expr, bindings),
+        TypedStmt::Break | TypedStmt::Continue | TypedStmt::RustBlock(_) => {}
+    }
+}
+
+fn apply_closure_param_types_in_expr(expr: &mut TypedExpr, bindings: &HashMap<String, String>) {
+    match &mut expr.kind {
+        TypedExprKind::Path(path) => {
+            if path.len() == 1
+                && expr.ty.trim() == "_"
+                && let Some(bound_ty) = bindings.get(&path[0])
+            {
+                expr.ty = bound_ty.clone();
+            }
+        }
+        TypedExprKind::Call { callee, args } => {
+            apply_closure_param_types_in_expr(callee, bindings);
+            for arg in args {
+                apply_closure_param_types_in_expr(arg, bindings);
+            }
+        }
+        TypedExprKind::MacroCall { args, .. } => {
+            for arg in args {
+                apply_closure_param_types_in_expr(arg, bindings);
+            }
+        }
+        TypedExprKind::Field { base, .. } => apply_closure_param_types_in_expr(base, bindings),
+        TypedExprKind::Index { base, index, .. } => {
+            apply_closure_param_types_in_expr(base, bindings);
+            apply_closure_param_types_in_expr(index, bindings);
+        }
+        TypedExprKind::Match { scrutinee, arms } => {
+            apply_closure_param_types_in_expr(scrutinee, bindings);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    apply_closure_param_types_in_expr(guard, bindings);
+                }
+                apply_closure_param_types_in_expr(&mut arm.value, bindings);
+            }
+        }
+        TypedExprKind::Unary { expr: inner, .. } => {
+            apply_closure_param_types_in_expr(inner, bindings);
+        }
+        TypedExprKind::Binary { left, right, .. } => {
+            apply_closure_param_types_in_expr(left, bindings);
+            apply_closure_param_types_in_expr(right, bindings);
+        }
+        TypedExprKind::Array(items) | TypedExprKind::Tuple(items) => {
+            for item in items {
+                apply_closure_param_types_in_expr(item, bindings);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for field in fields {
+                apply_closure_param_types_in_expr(&mut field.value, bindings);
+            }
+        }
+        TypedExprKind::Block { body, tail } => {
+            for stmt in body {
+                apply_closure_param_types_in_stmt(stmt, bindings);
+            }
+            if let Some(tail) = tail {
+                apply_closure_param_types_in_expr(tail, bindings);
+            }
+        }
+        TypedExprKind::Closure { .. } => {}
+        TypedExprKind::Range { start, end, .. } => {
+            if let Some(start) = start {
+                apply_closure_param_types_in_expr(start, bindings);
+            }
+            if let Some(end) = end {
+                apply_closure_param_types_in_expr(end, bindings);
+            }
+        }
+        TypedExprKind::Cast { expr: inner, .. } | TypedExprKind::Try(inner) => {
+            apply_closure_param_types_in_expr(inner, bindings);
+        }
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::String(_) => {}
     }
 }
 
@@ -10320,6 +10552,32 @@ fn lower_expr_with_context(
                     lowered_right =
                         cast_expr_to_numeric_if_needed(lowered_right, &right.ty, &cmp_ty);
                 }
+                if let (Some(left_inner), None) = (
+                    numeric_reference_inner_name(&left.ty),
+                    numeric_reference_inner_name(&right.ty),
+                ) && is_numeric_type_name(right.ty.trim())
+                {
+                    lowered_right = cast_expr_to_numeric_if_needed(
+                        lowered_right,
+                        right.ty.trim(),
+                        left_inner,
+                    );
+                    lowered_right = borrow_expr(lowered_right);
+                } else if let (None, Some(right_inner)) = (
+                    numeric_reference_inner_name(&left.ty),
+                    numeric_reference_inner_name(&right.ty),
+                ) && is_numeric_type_name(left.ty.trim())
+                {
+                    lowered_left =
+                        cast_expr_to_numeric_if_needed(lowered_left, left.ty.trim(), right_inner);
+                    lowered_left = borrow_expr(lowered_left);
+                } else if left.ty.trim() == "_" && is_numeric_type_name(right.ty.trim()) {
+                    lowered_left = RustExpr::BorrowCall(Box::new(lowered_left));
+                    lowered_right = borrow_expr(lowered_right);
+                } else if right.ty.trim() == "_" && is_numeric_type_name(left.ty.trim()) {
+                    lowered_left = borrow_expr(lowered_left);
+                    lowered_right = RustExpr::BorrowCall(Box::new(lowered_right));
+                }
             }
 
             RustExpr::Binary {
@@ -10606,6 +10864,18 @@ fn resolve_common_numeric_output_name(left: &str, right: &str) -> Option<String>
         return None;
     }
     Some(promote_numeric_names(left, right).to_string())
+}
+
+fn numeric_reference_inner_name(ty: &str) -> Option<&str> {
+    let trimmed = ty.trim();
+    let inner = if let Some(rest) = trimmed.strip_prefix("&mut ") {
+        rest.trim()
+    } else if let Some(rest) = trimmed.strip_prefix('&') {
+        rest.trim()
+    } else {
+        return None;
+    };
+    is_numeric_type_name(inner).then_some(inner)
 }
 
 fn should_clone_for_reuse(ty: &str, state: &LoweringState) -> bool {
@@ -12026,7 +12296,13 @@ fn merged_impl_and_method_type_params(
 ) -> Vec<GenericParam> {
     let mut merged = impl_params.to_vec();
     for param in method_params {
-        if merged.iter().all(|existing| existing.name != param.name) {
+        if let Some(existing) = merged.iter_mut().find(|existing| existing.name == param.name) {
+            for bound in &param.bounds {
+                if existing.bounds.iter().all(|present| present != bound) {
+                    existing.bounds.push(bound.clone());
+                }
+            }
+        } else {
             merged.push(param.clone());
         }
     }

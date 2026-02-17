@@ -176,6 +176,11 @@ fn emit_function(def: &RustFunction, out: &mut String) {
 fn emit_impl(def: &RustImpl, out: &mut String) {
     let in_trait_impl = def.trait_target.is_some();
     let (generics, where_clause) = emit_impl_generics_and_where(&def.type_params);
+    let impl_type_param_names = def
+        .type_params
+        .iter()
+        .map(|param| param.name.clone())
+        .collect::<std::collections::HashSet<_>>();
     let target = emit_named_type(&def.target, &def.target_args);
     if let Some(trait_target) = &def.trait_target {
         out.push_str(&format!(
@@ -193,7 +198,13 @@ fn emit_impl(def: &RustImpl, out: &mut String) {
             .map(|p| emit_param(p, Some(&mutated)))
             .collect::<Vec<_>>()
             .join(", ");
-        let generics = emit_type_params(&method.type_params);
+        let method_type_params = method
+            .type_params
+            .iter()
+            .filter(|param| !impl_type_param_names.contains(&param.name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let generics = emit_type_params(&method_type_params);
         if in_trait_impl {
             out.push_str(&format!(
                 "    fn {}{}({}) -> {} {{\n",

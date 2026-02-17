@@ -525,8 +525,13 @@ impl Parser {
                     }
                 }
             } else if inherited_type_params.iter().any(|name| name == &param_name) {
-                // Bound applies to an enclosing impl type parameter; do not
-                // redeclare it as a method generic.
+                // Preserve bounds declared in a method `where` clause that
+                // target an enclosing impl type parameter (e.g. `where T: ...`).
+                // Downstream merging deduplicates the param name while keeping bounds.
+                type_params.push(GenericParam {
+                    name: param_name,
+                    bounds,
+                });
             } else {
                 type_params.push(GenericParam {
                     name: param_name,
@@ -2227,6 +2232,22 @@ mod tests {
                 if let Some(a) = left() and let Some(b) = right() {
                     print(a);
                     print(b);
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_if_let_chain_with_boolean_clause() {
+        let source = r#"
+            fn f() -> i64 {
+                if let Some(a) = left() and a > 0 and let Some(b) = right() {
+                    a + b
+                } else {
+                    0
                 }
             }
         "#;

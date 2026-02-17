@@ -4961,6 +4961,7 @@ world"#;
 
         let output = compile_source(source).expect("impl method where clause should compile");
         assert!(output.rust_code.contains("fn same<"));
+        assert!(output.rust_code.contains("impl<T> Bag<T> where T: PartialEq"));
         assert!(output.rust_code.contains("PartialEq"));
         assert!(output.rust_code.contains("left == right"));
         assert_rust_code_compiles(&output.rust_code);
@@ -4975,7 +4976,7 @@ world"#;
             }
 
             fn both(left: Maybe, right: Maybe) -> i64 {
-                if let Maybe::Some(a) = left and let Maybe::Some(b) = right {
+                if let Maybe::Some(a) = left and a > 0 and let Maybe::Some(b) = right {
                     a + b
                 } else {
                     0
@@ -4985,7 +4986,59 @@ world"#;
 
         let output = compile_source(source).expect("if let chain should compile");
         assert!(output.rust_code.contains("match left"));
+        assert!(output.rust_code.contains("match (a > 0)"));
         assert!(output.rust_code.contains("match right"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_full_shorthand_regression() {
+        let source = r#"
+            enum Maybe {
+                Some(i64),
+                None,
+            }
+
+            struct Bag<T> {
+                values: Vec<T>,
+            }
+
+            impl<T> Bag<T> {
+                fn contains_item(self, needle: T) -> bool
+                where
+                    T: PartialEq,
+                {
+                    self.values.contains(needle)
+                }
+            }
+
+            fn first_positive(values: Vec<i64>) -> bool {
+                if let Some(v) = values.iter().position(|x| x > 0) and v >= 0 {
+                    true
+                } else {
+                    false
+                }
+            }
+
+            fn classify<T>(value: Maybe, marker: T) -> i64
+            where
+                T: Clone + PartialEq,
+            {
+                if let Maybe::Some(v) = value and v > 10 and first_positive(vec![v]) {
+                    v
+                } else {
+                    0
+                }
+            }
+        "#;
+
+        let output = compile_source(source).expect("full shorthand regression should compile");
+        assert!(output.rust_code.contains("match value"));
+        assert!(output.rust_code.contains(".position("));
+        assert!(output.rust_code.contains(".borrow() > &0"));
+        assert!(output.rust_code.contains("impl<T> Bag<T>"));
+        assert!(output.rust_code.contains("where T: PartialEq"));
+        assert!(output.rust_code.contains("contains_item"));
         assert_rust_code_compiles(&output.rust_code);
     }
 
