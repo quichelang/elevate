@@ -11,13 +11,20 @@ Define Elevate-native types and capability contracts as the source of truth. Rus
 ## Native Type Model (Core)
 
 ```text
-Scalars:   Int, Float, Bool, Char
-Text:      Text
+Scalars:   Int8..128, UInt8..128, Float32..64, Bool
+Text:      String
 Collections: List<T>, Map<K, V>, Set<T>
 Algebraic: Option<T>, Result<T, E>, Tuple<...>
 Nominal:   StructId, EnumId, NewtypeId
 Function:  Fn<(T1..Tn), R>
 Iter:      Iter<T>
+
+// Deliberately Not Including
+usize, isize - equivalents, the compiler will cast intelligently
+
+// Some useful derived types
+Byte = UInt8
+ByteString = List<Byte>
 ```
 
 Notes:

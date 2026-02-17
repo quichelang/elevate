@@ -13,9 +13,11 @@ Exit criteria:
 
 ## Phase 1: Native Capability Registry
 
+0. Create the core/native type implementations in Rust forming the Elevate language framework implementation. We should consider keeping this in an independent crate? If it relies on ast, we can even consider splitting the AST definitions themselves (or the tokens) into a new crate.
 1. Introduce Elevate capability registry for builtin/native types.
 2. Route method/index capability lookup to registry first.
-3. Keep rustdex fallback only in legacy mode.
+3. Surgically start removing rustdex integration.
+4. Update tests to match new modification in types and semantics.
 
 Exit criteria:
 - Core std use-cases compile in v2 mode without rustdex.
@@ -28,26 +30,22 @@ Exit criteria:
 
 Exit criteria:
 - No v2 capability resolution path calls rustdex.
+- All std use-cases compile without rustdex - which can be safely removed.
 
 ## Phase 3: AST to Core EIR Shift
 
 1. Add normalizer from surface AST to Core EIR.
 2. Migrate typechecker and ownership passes to Core EIR nodes.
-3. Keep Rust lowering as backend step only.
+3. Keep Rust lowering as backend step only. Migrate it to a module with a single purpose (codegen?).
 
 Exit criteria:
 - Core EIR is the only semantic input to lowering.
 
 ## Phase 4: Trait Policy Cutover
 
-Option A (recommended):
-- Constrain traits in Elevate core and route host-framework trait needs through adapters.
-
-Option B:
-- Keep traits but only through Elevate-native interface semantics, not Rust trait metadata.
-
-Exit criteria:
-- Trait behavior no longer requires rustdex metadata.
+Option A:
+- Remove support for ALL traits preceeding this phase?
+- Migrate any needs to a similar + simpler alternative, also relying on row level polymorphism.
 
 ## Phase 5: rustdex Downgrade/Removal
 

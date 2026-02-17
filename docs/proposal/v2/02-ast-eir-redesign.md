@@ -51,6 +51,8 @@ Replace with:
 
 ## Suggested Core EIR Node Families
 
+TBD: which of the following is the tightest possible set for simple implementation, while being flexible enough to implement higher level language features such as row level polymorphism, and OCaml like module types. Furtherm the set below should be very flexible BUT clear from ambiguity. Each TypeRef has one clearly defined role.
+
 ```text
 TypeRef(TypeId)
 Decl: Struct, Enum, Function, Interface/CapabilitySet
@@ -71,6 +73,8 @@ If Core EIR is cleanly decoupled from Rust semantics:
 
 During migration:
 
-- Keep existing AST as `legacy surface`.
+- Start developing in a branch. 
+- No explicit guarentees of backwards compatibility necessary.
+- Deprecate code explicitly with a unique marker such as // @DEPRECATED - it will be removed in a subsequent cleanup pass, when it is confirmed to no longer be used (short pause to avoid deleting something in a hurry then realising we needed it)
+- All relevant tests will be kept and syntax migrated.
 - Add normalization pass to Core EIR.
-- Mark Rust passthrough nodes deprecated in v2 mode.
