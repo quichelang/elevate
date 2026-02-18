@@ -29,7 +29,9 @@ impl<K, V> HashTable<K, V> {
     pub fn with_capacity(capacity: usize) -> Self {
         let size = capacity.max(8).next_power_of_two();
         Self {
-            buckets: std::iter::repeat_with(|| Bucket::Empty).take(size).collect(),
+            buckets: std::iter::repeat_with(|| Bucket::Empty)
+                .take(size)
+                .collect(),
             len: 0,
             tombstones: 0,
         }

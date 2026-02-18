@@ -62,21 +62,22 @@ pub fn translate_backend_build_failure(
 ) -> BackendDiagnosticsReport {
     let diagnostics = parse_rustc_stderr(stderr, generated_root);
     if diagnostics.is_empty() {
-        let fallback = resolve_catalog_entry_for_frontend(ElevateErrorCode::E9002, frontend_profile)
-            .unwrap_or_else(|| {
-                let elevate = elevate_catalog_entry(ElevateErrorCode::E9002);
-                crate::diagnostics_catalog::ResolvedCatalogEntry {
-                    language: elevate.language.to_string(),
-                    code: elevate.code.as_str().to_string(),
-                    severity: elevate.severity,
-                    title: elevate.title.to_string(),
-                    explanation: elevate.explanation.to_string(),
-                    expected: elevate.expected.to_string(),
-                    actual: elevate.actual.to_string(),
-                    direct_fix_hint: elevate.direct_fix_hint.to_string(),
-                    source_code: ElevateErrorCode::E9002,
-                }
-            });
+        let fallback =
+            resolve_catalog_entry_for_frontend(ElevateErrorCode::E9002, frontend_profile)
+                .unwrap_or_else(|| {
+                    let elevate = elevate_catalog_entry(ElevateErrorCode::E9002);
+                    crate::diagnostics_catalog::ResolvedCatalogEntry {
+                        language: elevate.language.to_string(),
+                        code: elevate.code.as_str().to_string(),
+                        severity: elevate.severity,
+                        title: elevate.title.to_string(),
+                        explanation: elevate.explanation.to_string(),
+                        expected: elevate.expected.to_string(),
+                        actual: elevate.actual.to_string(),
+                        direct_fix_hint: elevate.direct_fix_hint.to_string(),
+                        source_code: ElevateErrorCode::E9002,
+                    }
+                });
         return BackendDiagnosticsReport {
             classified_as_ice: false,
             diagnostics: vec![BackendRenderedDiagnostic {
@@ -104,7 +105,10 @@ pub fn translate_backend_build_failure(
                 .is_some_and(|path| map_generated_to_source(path, generated_links).is_some())
         })
         .count();
-    let total_errors = diagnostics.iter().filter(|diag| diag.level == "error").count();
+    let total_errors = diagnostics
+        .iter()
+        .filter(|diag| diag.level == "error")
+        .count();
     let classify_as_ice = mapped_errors > 0 && mapped_errors == total_errors;
 
     let mut rendered = Vec::new();
@@ -151,21 +155,22 @@ pub fn translate_backend_build_failure(
     }
 
     if rendered.is_empty() {
-        let fallback = resolve_catalog_entry_for_frontend(ElevateErrorCode::E9002, frontend_profile)
-            .unwrap_or_else(|| {
-                let elevate = elevate_catalog_entry(ElevateErrorCode::E9002);
-                crate::diagnostics_catalog::ResolvedCatalogEntry {
-                    language: elevate.language.to_string(),
-                    code: elevate.code.as_str().to_string(),
-                    severity: elevate.severity,
-                    title: elevate.title.to_string(),
-                    explanation: elevate.explanation.to_string(),
-                    expected: elevate.expected.to_string(),
-                    actual: elevate.actual.to_string(),
-                    direct_fix_hint: elevate.direct_fix_hint.to_string(),
-                    source_code: ElevateErrorCode::E9002,
-                }
-            });
+        let fallback =
+            resolve_catalog_entry_for_frontend(ElevateErrorCode::E9002, frontend_profile)
+                .unwrap_or_else(|| {
+                    let elevate = elevate_catalog_entry(ElevateErrorCode::E9002);
+                    crate::diagnostics_catalog::ResolvedCatalogEntry {
+                        language: elevate.language.to_string(),
+                        code: elevate.code.as_str().to_string(),
+                        severity: elevate.severity,
+                        title: elevate.title.to_string(),
+                        explanation: elevate.explanation.to_string(),
+                        expected: elevate.expected.to_string(),
+                        actual: elevate.actual.to_string(),
+                        direct_fix_hint: elevate.direct_fix_hint.to_string(),
+                        source_code: ElevateErrorCode::E9002,
+                    }
+                });
         rendered.push(BackendRenderedDiagnostic {
             language: fallback.language,
             code: fallback.code,
@@ -272,7 +277,8 @@ fn parse_rustc_stderr(stderr: &str, generated_root: &Path) -> Vec<ParsedRustcDia
                 if parse_diagnostic_header(&next).is_some() {
                     break;
                 }
-                if let Some((path, line_no, col_no)) = parse_location_triplet(&next, generated_root) {
+                if let Some((path, line_no, col_no)) = parse_location_triplet(&next, generated_root)
+                {
                     diag.path = Some(path);
                     diag.line = Some(line_no);
                     diag.col = Some(col_no);

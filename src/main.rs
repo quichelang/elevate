@@ -288,9 +288,9 @@ fn ensure_script_has_main_entrypoint(source: &str, script_path: &Path) -> Result
             .collect::<Vec<_>>()
             .join("\n")
     })?;
-    let has_main = module.items.iter().any(|item| {
-        matches!(item, elevate::ast::Item::Function(function) if function.name == "main")
-    });
+    let has_main = module.items.iter().any(
+        |item| matches!(item, elevate::ast::Item::Function(function) if function.name == "main"),
+    );
     if has_main {
         Ok(())
     } else {

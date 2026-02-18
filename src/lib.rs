@@ -3598,9 +3598,9 @@ mod tests {
         let output = compile_source(source).expect("expected std trait signature inference");
         assert!(output.rust_code.contains("impl Display for Token"));
         assert!(
-            output.rust_code.contains(
-                "fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result"
-            )
+            output
+                .rust_code
+                .contains("fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result")
         );
         assert_rust_code_compiles(&output.rust_code);
     }
@@ -4891,8 +4891,8 @@ world"#;
             }
         "#;
 
-        let output =
-            compile_source(source).expect("if let + iter.position + closure shorthand should compile");
+        let output = compile_source(source)
+            .expect("if let + iter.position + closure shorthand should compile");
         assert!(output.rust_code.contains(".position("));
         assert!(output.rust_code.contains("match "));
         assert_rust_code_compiles(&output.rust_code);
@@ -4961,7 +4961,11 @@ world"#;
 
         let output = compile_source(source).expect("impl method where clause should compile");
         assert!(output.rust_code.contains("fn same<"));
-        assert!(output.rust_code.contains("impl<T> Bag<T> where T: PartialEq"));
+        assert!(
+            output
+                .rust_code
+                .contains("impl<T> Bag<T> where T: PartialEq")
+        );
         assert!(output.rust_code.contains("PartialEq"));
         assert!(output.rust_code.contains("left == right"));
         assert_rust_code_compiles(&output.rust_code);
@@ -5086,7 +5090,8 @@ world"#;
             }
         "#;
 
-        let output = compile_source(source).expect("generic struct shorthand literal should compile");
+        let output =
+            compile_source(source).expect("generic struct shorthand literal should compile");
         assert!(output.rust_code.contains("Holder"));
         assert!(output.rust_code.contains("ready"));
         assert_rust_code_compiles(&output.rust_code);
@@ -5183,8 +5188,8 @@ world"#;
             }
         "#;
 
-        let output = compile_source(source)
-            .expect("mut generic impl push/contains flow should compile");
+        let output =
+            compile_source(source).expect("mut generic impl push/contains flow should compile");
         assert!(output.rust_code.contains("push_if_missing"));
         assert!(output.rust_code.contains("contains"));
         assert_rust_code_compiles(&output.rust_code);
@@ -5305,8 +5310,8 @@ world"#;
             }
         "#;
 
-        let output = compile_source(source)
-            .expect("generic swap struct literal shorthand should compile");
+        let output =
+            compile_source(source).expect("generic swap struct literal shorthand should compile");
         assert!(output.rust_code.contains("Pair"));
         assert!(output.rust_code.contains("{ left: left, right: right }"));
         assert_rust_code_compiles(&output.rust_code);
@@ -5338,8 +5343,8 @@ world"#;
             }
         "#;
 
-        let output = compile_source(source)
-            .expect("inherited/method generics with mut self should compile");
+        let output =
+            compile_source(source).expect("inherited/method generics with mut self should compile");
         assert!(output.rust_code.contains("seed_and_return"));
         assert!(output.rust_code.contains("where T: Clone + PartialEq"));
         assert!(output.rust_code.contains("U: Clone"));
@@ -5399,8 +5404,8 @@ world"#;
             }
         "#;
 
-        let output = compile_source(source)
-            .expect("generic impl mut self index then push should compile");
+        let output =
+            compile_source(source).expect("generic impl mut self index then push should compile");
         assert!(output.rust_code.contains("self.values.len()"));
         assert!(output.rust_code.contains("self.values.push"));
         assert_rust_code_compiles(&output.rust_code);
@@ -5425,8 +5430,7 @@ world"#;
             }
         "#;
 
-        let output =
-            compile_source(source).expect("else-if-let chain with guards should compile");
+        let output = compile_source(source).expect("else-if-let chain with guards should compile");
         assert!(output.rust_code.contains("match a"));
         assert!(output.rust_code.contains("match b"));
         assert_rust_code_compiles(&output.rust_code);

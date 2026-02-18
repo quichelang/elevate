@@ -303,11 +303,14 @@ pub fn quiche_default_profile() -> FrontendDiagnosticProfile {
                 ],
                 frontend_code: "Q-SEM-001".to_string(),
                 title: "Invalid operation".to_string(),
-                explanation:
-                    "This operation is not valid in Quiche's simplified source semantics."
-                        .to_string(),
-                expected: Some("An operation allowed by Quiche runtime/ownership rules".to_string()),
-                actual: Some("An operation requiring unsupported ownership/type behavior".to_string()),
+                explanation: "This operation is not valid in Quiche's simplified source semantics."
+                    .to_string(),
+                expected: Some(
+                    "An operation allowed by Quiche runtime/ownership rules".to_string(),
+                ),
+                actual: Some(
+                    "An operation requiring unsupported ownership/type behavior".to_string(),
+                ),
                 direct_fix_hint: Some(
                     "Rewrite the expression using Quiche-native control/data-flow constructs."
                         .to_string(),
