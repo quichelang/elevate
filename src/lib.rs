@@ -444,7 +444,7 @@ mod tests {
 
         let output = compile_source(source).expect("expected successful compile");
         assert!(output.rust_code.contains("use std::num::ParseIntError;"));
-        assert!(output.rust_code.contains("parse_i64(&input)?"));
+        assert!(output.rust_code.contains("parse_i64(input)?"));
     }
 
     #[test]

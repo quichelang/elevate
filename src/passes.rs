@@ -1601,11 +1601,10 @@ pub fn lower_to_rust_with_hints(
             }),
         );
     }
-    let mut module = RustModule {
+    let module = RustModule {
         items,
         ownership_notes: state.ownership_notes.clone(),
     };
-    crate::borrow_promotion::apply_borrow_promotions(&mut module);
     let debug_log = state.debug_log;
     (module, debug_log)
 }
