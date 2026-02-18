@@ -2266,9 +2266,12 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
         }
         ty.strip_prefix('&').map(|inner| inner.trim().to_string())
     });
-    let borrowed_self_returns_self = borrowed_self_receiver_type
-        .as_deref()
-        .is_some_and(|receiver_ty| def.return_type == "Self" || def.return_type.trim() == receiver_ty);
+    let borrowed_self_returns_self =
+        borrowed_self_receiver_type
+            .as_deref()
+            .is_some_and(|receiver_ty| {
+                def.return_type == "Self" || def.return_type.trim() == receiver_ty
+            });
     if borrowed_self_returns_self {
         rewrite_borrowed_self_returns_to_clone(&mut lowered_body);
     }
@@ -2335,9 +2338,7 @@ fn rewrite_borrowed_self_returns_to_clone(stmts: &mut [RustStmt]) {
     for stmt in stmts {
         match stmt {
             RustStmt::Return(Some(expr)) => {
-                if is_plain_self_path(expr) {
-                    *expr = clone_of_self_expr();
-                }
+                rewrite_return_expr_self_to_clone(expr);
             }
             RustStmt::If {
                 then_body,
@@ -2361,6 +2362,50 @@ fn rewrite_borrowed_self_returns_to_clone(stmts: &mut [RustStmt]) {
             | RustStmt::Raw(_)
             | RustStmt::Expr(_) => {}
         }
+    }
+}
+
+fn rewrite_return_expr_self_to_clone(expr: &mut RustExpr) {
+    if is_plain_self_path(expr) {
+        *expr = clone_of_self_expr();
+        return;
+    }
+    match expr {
+        RustExpr::Match { arms, .. } => {
+            for arm in arms {
+                rewrite_return_expr_self_to_clone(&mut arm.value);
+            }
+        }
+        RustExpr::Block { body, tail } => {
+            rewrite_borrowed_self_returns_to_clone(body);
+            if let Some(tail) = tail {
+                rewrite_return_expr_self_to_clone(tail);
+            }
+        }
+        RustExpr::Cast { expr: inner, .. } | RustExpr::Try(inner) => {
+            rewrite_return_expr_self_to_clone(inner)
+        }
+        RustExpr::Int(_)
+        | RustExpr::Float(_)
+        | RustExpr::Bool(_)
+        | RustExpr::Char(_)
+        | RustExpr::String(_)
+        | RustExpr::Path(_)
+        | RustExpr::Borrow(_)
+        | RustExpr::MutBorrow(_)
+        | RustExpr::BorrowCall(_)
+        | RustExpr::BorrowMutCall(_)
+        | RustExpr::Call { .. }
+        | RustExpr::MacroCall { .. }
+        | RustExpr::Field { .. }
+        | RustExpr::Index { .. }
+        | RustExpr::Unary { .. }
+        | RustExpr::Binary { .. }
+        | RustExpr::Array(_)
+        | RustExpr::Tuple(_)
+        | RustExpr::StructLiteral { .. }
+        | RustExpr::Closure { .. }
+        | RustExpr::Range { .. } => {}
     }
 }
 
@@ -4480,6 +4525,8 @@ fn lower_stmt_with_types(
                     } else {
                         typed_value =
                             maybe_insert_implicit_integral_cast(typed_value, &value_ty, &target_ty);
+                        typed_value =
+                            maybe_insert_implicit_clone_for_borrowed_value(typed_value, &target_ty);
                     }
                 }
                 AssignOp::AddAssign => {
@@ -8296,6 +8343,12 @@ fn resolve_method_capability(
                 expected_args: vec![],
                 return_ty: SemType::Iter(Box::new(item)),
             },
+            "get" => MethodCapability {
+                receiver_mode: CapabilityReceiverMode::Borrowed,
+                arg_modes: vec![CallArgMode::Owned],
+                expected_args: vec![named_type("usize")],
+                return_ty: option_type(item),
+            },
             _ => {
                 // Keep searching via rustdex.
                 MethodCapability {
@@ -8306,7 +8359,7 @@ fn resolve_method_capability(
                 }
             }
         };
-        if matches!(method, "iter" | "into_iter") {
+        if matches!(method, "iter" | "into_iter" | "get") {
             return Some(capability);
         }
     }
@@ -9466,6 +9519,32 @@ fn maybe_insert_implicit_integral_cast(
     }
 }
 
+fn maybe_insert_implicit_clone_for_borrowed_value(
+    typed_expr: TypedExpr,
+    expected: &SemType,
+) -> TypedExpr {
+    let Some(inner) = reference_inner_type_name(&typed_expr.ty) else {
+        return typed_expr;
+    };
+    let expected_ty = type_to_string(expected);
+    if inner != expected_ty.trim() {
+        return typed_expr;
+    }
+    TypedExpr {
+        kind: TypedExprKind::Call {
+            callee: Box::new(TypedExpr {
+                kind: TypedExprKind::Field {
+                    base: Box::new(typed_expr),
+                    field: "clone".to_string(),
+                },
+                ty: "_".to_string(),
+            }),
+            args: Vec::new(),
+        },
+        ty: expected_ty,
+    }
+}
+
 fn apply_expected_call_arg_coercions(
     typed_args: &mut [TypedExpr],
     arg_types: &[SemType],
@@ -10557,11 +10636,8 @@ fn lower_expr_with_context(
                     numeric_reference_inner_name(&right.ty),
                 ) && is_numeric_type_name(right.ty.trim())
                 {
-                    lowered_right = cast_expr_to_numeric_if_needed(
-                        lowered_right,
-                        right.ty.trim(),
-                        left_inner,
-                    );
+                    lowered_right =
+                        cast_expr_to_numeric_if_needed(lowered_right, right.ty.trim(), left_inner);
                     lowered_right = borrow_expr(lowered_right);
                 } else if let (None, Some(right_inner)) = (
                     numeric_reference_inner_name(&left.ty),
@@ -10579,6 +10655,28 @@ fn lower_expr_with_context(
                     lowered_left = borrow_expr(lowered_left);
                     state.needs_borrow_trait_import = true;
                     lowered_right = RustExpr::BorrowCall(Box::new(lowered_right));
+                } else if left.ty.trim() == "_" {
+                    if matches!(left.kind, TypedExprKind::Path(_)) && right.ty.trim() != "_" {
+                        lowered_right = borrow_expr(lowered_right);
+                    }
+                } else if right.ty.trim() == "_" {
+                    if matches!(right.kind, TypedExprKind::Path(_)) && left.ty.trim() != "_" {
+                        lowered_left = borrow_expr(lowered_left);
+                    }
+                } else if let (Some(left_inner), None) = (
+                    reference_inner_type_name(&left.ty),
+                    reference_inner_type_name(&right.ty),
+                ) {
+                    if left_inner == right.ty.trim() {
+                        lowered_right = borrow_expr(lowered_right);
+                    }
+                } else if let (None, Some(right_inner)) = (
+                    reference_inner_type_name(&left.ty),
+                    reference_inner_type_name(&right.ty),
+                ) {
+                    if right_inner == left.ty.trim() {
+                        lowered_left = borrow_expr(lowered_left);
+                    }
                 }
             }
 
@@ -10869,15 +10967,19 @@ fn resolve_common_numeric_output_name(left: &str, right: &str) -> Option<String>
 }
 
 fn numeric_reference_inner_name(ty: &str) -> Option<&str> {
-    let trimmed = ty.trim();
-    let inner = if let Some(rest) = trimmed.strip_prefix("&mut ") {
-        rest.trim()
-    } else if let Some(rest) = trimmed.strip_prefix('&') {
-        rest.trim()
-    } else {
-        return None;
-    };
+    let inner = reference_inner_type_name(ty)?;
     is_numeric_type_name(inner).then_some(inner)
+}
+
+fn reference_inner_type_name(ty: &str) -> Option<&str> {
+    let trimmed = ty.trim();
+    if let Some(rest) = trimmed.strip_prefix("&mut ") {
+        Some(rest.trim())
+    } else if let Some(rest) = trimmed.strip_prefix('&') {
+        Some(rest.trim())
+    } else {
+        None
+    }
 }
 
 fn should_clone_for_reuse(ty: &str, state: &LoweringState) -> bool {
@@ -12298,7 +12400,10 @@ fn merged_impl_and_method_type_params(
 ) -> Vec<GenericParam> {
     let mut merged = impl_params.to_vec();
     for param in method_params {
-        if let Some(existing) = merged.iter_mut().find(|existing| existing.name == param.name) {
+        if let Some(existing) = merged
+            .iter_mut()
+            .find(|existing| existing.name == param.name)
+        {
             for bound in &param.bounds {
                 if existing.bounds.iter().all(|present| present != bound) {
                     existing.bounds.push(bound.clone());

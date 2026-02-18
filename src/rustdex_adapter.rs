@@ -286,14 +286,18 @@ pub(crate) fn parse_rustdoc_type_str(
         return named_type(type_name);
     }
 
-    // Single-letter generic params: map T→first, K→first, V→second
+    // Single-letter generic params from rustdoc.
+    // Only map known container params; unknown placeholders (e.g. slice index
+    // `I` in `get<I>`) stay unknown instead of being aliased to `T`.
     if s.len() == 1 && s.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
         let idx = match s {
-            "K" => 0,
-            "V" => 1,
-            _ => 0, // T, A, etc. → first
+            "T" | "K" => Some(0),
+            "V" | "E" => Some(1),
+            _ => None,
         };
-        return generic_args.get(idx).cloned().unwrap_or(SemType::Unknown);
+        return idx
+            .and_then(|index| generic_args.get(index).cloned())
+            .unwrap_or(SemType::Unknown);
     }
 
     // Primitives
@@ -453,6 +457,7 @@ mod tests {
         let args = vec![named_type("i64")];
         assert_eq!(parse_rustdoc_type_str("T", &args, "Vec"), named_type("i64"));
         assert_eq!(parse_rustdoc_type_str("T", &[], "Vec"), SemType::Unknown);
+        assert_eq!(parse_rustdoc_type_str("I", &args, "Vec"), SemType::Unknown);
     }
 
     #[test]

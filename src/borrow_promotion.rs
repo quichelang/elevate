@@ -161,6 +161,9 @@ fn find_promotable_params(func: &RustFunction, is_method: bool) -> Vec<usize> {
             if mutated.contains(&param.name) {
                 return None;
             }
+            if param_used_in_assignment_values(&param.name, &func.body) {
+                return None;
+            }
             if param_is_consumed_in_body(&param.name, &func.body) {
                 return None;
             }
@@ -183,6 +186,114 @@ fn find_promotable_params(func: &RustFunction, is_method: bool) -> Vec<usize> {
 
 fn param_has_owned_wrappers(name: &str, stmts: &[RustStmt]) -> bool {
     stmts.iter().any(|s| stmt_has_wrapper(name, s))
+}
+
+fn param_used_in_assignment_values(name: &str, stmts: &[RustStmt]) -> bool {
+    stmts
+        .iter()
+        .any(|stmt| stmt_uses_name_in_assignment_value(name, stmt))
+}
+
+fn stmt_uses_name_in_assignment_value(name: &str, stmt: &RustStmt) -> bool {
+    match stmt {
+        RustStmt::Assign { value, .. } => expr_uses_name(name, value),
+        RustStmt::Const(c) => expr_contains_assignment_value_use(name, &c.value),
+        RustStmt::DestructureConst { value, .. } => expr_contains_assignment_value_use(name, value),
+        RustStmt::Return(Some(expr)) | RustStmt::Expr(expr) => {
+            expr_contains_assignment_value_use(name, expr)
+        }
+        RustStmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_assignment_value_use(name, condition)
+                || param_used_in_assignment_values(name, then_body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| param_used_in_assignment_values(name, body))
+        }
+        RustStmt::While { condition, body } => {
+            expr_contains_assignment_value_use(name, condition)
+                || param_used_in_assignment_values(name, body)
+        }
+        RustStmt::For { iter, body, .. } => {
+            expr_contains_assignment_value_use(name, iter)
+                || param_used_in_assignment_values(name, body)
+        }
+        RustStmt::Loop { body } => param_used_in_assignment_values(name, body),
+        RustStmt::Return(None) | RustStmt::Break | RustStmt::Continue | RustStmt::Raw(_) => false,
+    }
+}
+
+fn expr_contains_assignment_value_use(name: &str, expr: &RustExpr) -> bool {
+    match expr {
+        RustExpr::Call { callee, args, .. } => {
+            expr_contains_assignment_value_use(name, callee)
+                || args
+                    .iter()
+                    .any(|arg| expr_contains_assignment_value_use(name, arg))
+        }
+        RustExpr::MacroCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_contains_assignment_value_use(name, arg)),
+        RustExpr::Field { base, .. } => expr_contains_assignment_value_use(name, base),
+        RustExpr::Index { base, index } => {
+            expr_contains_assignment_value_use(name, base)
+                || expr_contains_assignment_value_use(name, index)
+        }
+        RustExpr::Match { scrutinee, arms } => {
+            expr_contains_assignment_value_use(name, scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|guard| expr_contains_assignment_value_use(name, guard))
+                        || expr_contains_assignment_value_use(name, &arm.value)
+                })
+        }
+        RustExpr::Unary { expr: inner, .. }
+        | RustExpr::Cast { expr: inner, .. }
+        | RustExpr::Try(inner)
+        | RustExpr::Borrow(inner)
+        | RustExpr::MutBorrow(inner)
+        | RustExpr::BorrowCall(inner)
+        | RustExpr::BorrowMutCall(inner) => expr_contains_assignment_value_use(name, inner),
+        RustExpr::Binary { left, right, .. } => {
+            expr_contains_assignment_value_use(name, left)
+                || expr_contains_assignment_value_use(name, right)
+        }
+        RustExpr::Array(items) | RustExpr::Tuple(items) => items
+            .iter()
+            .any(|item| expr_contains_assignment_value_use(name, item)),
+        RustExpr::StructLiteral { fields, .. } => fields
+            .iter()
+            .any(|field| expr_contains_assignment_value_use(name, &field.value)),
+        RustExpr::Block { body, tail } => {
+            param_used_in_assignment_values(name, body)
+                || tail
+                    .as_ref()
+                    .is_some_and(|tail| expr_contains_assignment_value_use(name, tail))
+        }
+        RustExpr::Closure { body, .. } => param_used_in_assignment_values(name, body),
+        RustExpr::Range { start, end, .. } => {
+            start
+                .as_ref()
+                .is_some_and(|start| expr_contains_assignment_value_use(name, start))
+                || end
+                    .as_ref()
+                    .is_some_and(|end| expr_contains_assignment_value_use(name, end))
+        }
+        RustExpr::Path(path) => path.len() == 1 && path[0] == name,
+        RustExpr::Int(_)
+        | RustExpr::Float(_)
+        | RustExpr::Bool(_)
+        | RustExpr::Char(_)
+        | RustExpr::String(_) => false,
+    }
+}
+
+fn expr_uses_name(name: &str, expr: &RustExpr) -> bool {
+    expr_contains_assignment_value_use(name, expr)
 }
 
 fn stmt_has_wrapper(name: &str, stmt: &RustStmt) -> bool {

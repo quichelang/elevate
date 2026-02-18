@@ -304,18 +304,31 @@ impl Parser {
         self.expect(TokenKind::LParen, "Expected '(' after function name")?;
         let mut params = Vec::new();
         while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
-            if self.at_ident("mut") {
+            let had_mut = if self.at_ident("mut") {
                 self.advance();
-            }
+                true
+            } else {
+                false
+            };
             let param_name = self.expect_ident("Expected parameter name")?;
             let param_ty =
                 if param_name == "self" && impl_target.is_some() && !self.at(TokenKind::Colon) {
-                    let (impl_target_name, impl_target_args, _) =
-                        impl_target.expect("impl target checked above");
-                    Type {
-                        path: vec![impl_target_name.to_string()],
-                        args: impl_target_args.to_vec(),
-                        trait_bounds: Vec::new(),
+                    if had_mut {
+                        // Preserve Rust semantics: `mut self` is by-value `Self`,
+                        // not an implicit borrowed receiver.
+                        Type {
+                            path: vec!["Self".to_string()],
+                            args: Vec::new(),
+                            trait_bounds: Vec::new(),
+                        }
+                    } else {
+                        let (impl_target_name, impl_target_args, _) =
+                            impl_target.expect("impl target checked above");
+                        Type {
+                            path: vec![impl_target_name.to_string()],
+                            args: impl_target_args.to_vec(),
+                            trait_bounds: Vec::new(),
+                        }
                     }
                 } else {
                     if self.match_kind(TokenKind::Colon) {
@@ -341,9 +354,7 @@ impl Parser {
         let effect_row = self.parse_optional_effect_row()?;
         if self.at_ident("where") {
             self.advance();
-            let inherited = impl_target
-                .map(|(_, _, names)| names)
-                .unwrap_or(&[]);
+            let inherited = impl_target.map(|(_, _, names)| names).unwrap_or(&[]);
             self.parse_where_clause_into(&mut type_params, inherited)?;
         }
         let body = self.parse_block()?;
@@ -518,7 +529,10 @@ impl Parser {
                 bounds.push(self.parse_type_bound()?);
             }
 
-            if let Some(existing) = type_params.iter_mut().find(|param| param.name == param_name) {
+            if let Some(existing) = type_params
+                .iter_mut()
+                .find(|param| param.name == param_name)
+            {
                 for bound in bounds {
                     if existing.bounds.iter().all(|present| present != &bound) {
                         existing.bounds.push(bound);
@@ -615,68 +629,7 @@ impl Parser {
         }
         if self.match_kind(TokenKind::If) {
             if self.match_kind(TokenKind::Let) {
-                enum IfChainClause {
-                    Let(Pattern, Expr),
-                    Bool(Expr),
-                }
-
-                let mut clauses = Vec::new();
-                let (pattern, scrutinee) = self.parse_if_let_clause()?;
-                clauses.push(IfChainClause::Let(pattern, scrutinee));
-                while self.match_kind(TokenKind::And) {
-                    if self.match_kind(TokenKind::Let) {
-                        let (pattern, scrutinee) = self.parse_if_let_clause()?;
-                        clauses.push(IfChainClause::Let(pattern, scrutinee));
-                    } else {
-                        // Support mixed chains like:
-                        // if let Some(x) = value and x > 0 and let Some(y) = other { ... }
-                        clauses.push(IfChainClause::Bool(self.parse_cmp_expr()?));
-                    }
-                }
-                let then_block = self.parse_block()?;
-                let else_block = if self.match_kind(TokenKind::Else) {
-                    Some(self.parse_block()?)
-                } else {
-                    None
-                };
-                let fallback_expr = Expr::Block(else_block.unwrap_or(Block {
-                    statements: Vec::new(),
-                }));
-                let mut match_expr = Expr::Block(then_block);
-                for clause in clauses.into_iter().rev() {
-                    match_expr = match clause {
-                        IfChainClause::Let(pattern, scrutinee) => Expr::Match {
-                            scrutinee: Box::new(scrutinee),
-                            arms: vec![
-                                MatchArm {
-                                    pattern,
-                                    guard: None,
-                                    value: match_expr,
-                                },
-                                MatchArm {
-                                    pattern: Pattern::Wildcard,
-                                    guard: None,
-                                    value: fallback_expr.clone(),
-                                },
-                            ],
-                        },
-                        IfChainClause::Bool(condition) => Expr::Match {
-                            scrutinee: Box::new(condition),
-                            arms: vec![
-                                MatchArm {
-                                    pattern: Pattern::Bool(true),
-                                    guard: None,
-                                    value: match_expr,
-                                },
-                                MatchArm {
-                                    pattern: Pattern::Bool(false),
-                                    guard: None,
-                                    value: fallback_expr.clone(),
-                                },
-                            ],
-                        },
-                    };
-                }
+                let match_expr = self.parse_if_let_chain_expr_after_let()?;
                 if self.at(TokenKind::RBrace) {
                     return Some(Stmt::TailExpr(match_expr));
                 }
@@ -685,7 +638,14 @@ impl Parser {
             let condition = self.parse_expr()?;
             let then_block = self.parse_block()?;
             let else_block = if self.match_kind(TokenKind::Else) {
-                Some(self.parse_block()?)
+                if self.match_kind(TokenKind::If) {
+                    let nested = self.parse_if_expr_after_if()?;
+                    Some(Block {
+                        statements: vec![Stmt::TailExpr(nested)],
+                    })
+                } else {
+                    Some(self.parse_block()?)
+                }
             } else {
                 None
             };
@@ -782,8 +742,122 @@ impl Parser {
         Some((pattern, scrutinee))
     }
 
+    fn parse_if_let_chain_expr_after_let(&mut self) -> Option<Expr> {
+        enum IfChainClause {
+            Let(Pattern, Expr),
+            Bool(Expr),
+        }
+
+        let mut clauses = Vec::new();
+        let (pattern, scrutinee) = self.parse_if_let_clause()?;
+        clauses.push(IfChainClause::Let(pattern, scrutinee));
+        while self.match_kind(TokenKind::And) {
+            if self.match_kind(TokenKind::Let) {
+                let (pattern, scrutinee) = self.parse_if_let_clause()?;
+                clauses.push(IfChainClause::Let(pattern, scrutinee));
+            } else {
+                // Support mixed chains like:
+                // if let Some(x) = value and x > 0 and let Some(y) = other { ... }
+                clauses.push(IfChainClause::Bool(self.parse_cmp_expr()?));
+            }
+        }
+        let then_block = self.parse_block()?;
+        let fallback_expr = if self.match_kind(TokenKind::Else) {
+            self.parse_if_else_fallback_expr()?
+        } else {
+            Expr::Block(Block {
+                statements: Vec::new(),
+            })
+        };
+        let mut match_expr = Expr::Block(then_block);
+        for clause in clauses.into_iter().rev() {
+            match_expr = match clause {
+                IfChainClause::Let(pattern, scrutinee) => Expr::Match {
+                    scrutinee: Box::new(scrutinee),
+                    arms: vec![
+                        MatchArm {
+                            pattern,
+                            guard: None,
+                            value: match_expr,
+                        },
+                        MatchArm {
+                            pattern: Pattern::Wildcard,
+                            guard: None,
+                            value: fallback_expr.clone(),
+                        },
+                    ],
+                },
+                IfChainClause::Bool(condition) => Expr::Match {
+                    scrutinee: Box::new(condition),
+                    arms: vec![
+                        MatchArm {
+                            pattern: Pattern::Bool(true),
+                            guard: None,
+                            value: match_expr,
+                        },
+                        MatchArm {
+                            pattern: Pattern::Bool(false),
+                            guard: None,
+                            value: fallback_expr.clone(),
+                        },
+                    ],
+                },
+            };
+        }
+        Some(match_expr)
+    }
+
+    fn parse_if_expr_after_if(&mut self) -> Option<Expr> {
+        if self.match_kind(TokenKind::Let) {
+            return self.parse_if_let_chain_expr_after_let();
+        }
+
+        let condition = self.parse_expr()?;
+        let then_block = self.parse_block()?;
+        let else_expr = if self.match_kind(TokenKind::Else) {
+            self.parse_if_else_fallback_expr()?
+        } else {
+            Expr::Block(Block {
+                statements: Vec::new(),
+            })
+        };
+        Some(Expr::Match {
+            scrutinee: Box::new(condition),
+            arms: vec![
+                MatchArm {
+                    pattern: Pattern::Bool(true),
+                    guard: None,
+                    value: Expr::Block(then_block),
+                },
+                MatchArm {
+                    pattern: Pattern::Bool(false),
+                    guard: None,
+                    value: else_expr,
+                },
+            ],
+        })
+    }
+
+    fn parse_if_else_fallback_expr(&mut self) -> Option<Expr> {
+        if self.match_kind(TokenKind::If) {
+            self.parse_if_expr_after_if()
+        } else if self.at(TokenKind::LBrace) {
+            Some(Expr::Block(self.parse_block()?))
+        } else {
+            self.error_expected_with_found("Expected '{' or `if` after `else`");
+            None
+        }
+    }
+
     fn parse_local_binding_stmt(&mut self, is_const: bool) -> Option<Stmt> {
         let start = self.previous_span_end();
+        if is_const && self.at_ident("mut") {
+            self.error_current("`const` bindings cannot be declared `mut`; use `let mut`");
+            return None;
+        }
+        if !is_const && self.at_ident("mut") {
+            self.advance();
+        }
         if self.match_kind(TokenKind::LParen) || self.match_kind(TokenKind::LBracket) {
             let pattern = if matches!(self.tokens[self.cursor - 1].kind, TokenKind::LParen) {
                 self.parse_destructure_pattern_tuple()?
@@ -1015,7 +1089,7 @@ impl Parser {
             let is_block_arm = matches!(value, Expr::Block(_));
             if !is_block_arm {
                 // Accept both `;` and `,` as match arm delimiters (Rust uses `,`).
-                if !self.match_kind(TokenKind::Comma) {
+                if !self.at(TokenKind::RBrace) && !self.match_kind(TokenKind::Comma) {
                     self.expect(
                         TokenKind::Semicolon,
                         "Expected ';' or ',' after match arm expression",
@@ -2131,6 +2205,11 @@ mod tests {
         let tokens = lex(source).expect("expected lex success");
         let module = parse_module(tokens).expect("expected parse success");
         assert_eq!(module.items.len(), 2);
+        let Item::Impl(imp) = &module.items[1] else {
+            panic!("expected impl item");
+        };
+        let self_ty = &imp.methods[0].params[0].ty;
+        assert_eq!(self_ty.path, vec!["Self".to_string()]);
     }
 
     #[test]
@@ -2175,8 +2254,13 @@ mod tests {
             panic!("expected impl item");
         };
         assert_eq!(def.methods.len(), 1);
-        assert_eq!(def.methods[0].type_params.len(), 1);
-        assert_eq!(def.methods[0].type_params[0].name, "U");
+        let mut names = def.methods[0]
+            .type_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, vec!["T".to_string(), "U".to_string()]);
     }
 
     #[test]
@@ -2248,6 +2332,53 @@ mod tests {
                     a + b
                 } else {
                     0
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_else_if_let_chain() {
+        let source = r#"
+            fn f(a: Maybe, b: Maybe) -> i64 {
+                if let Maybe::Some(x) = a and x > 0 {
+                    x
+                } else if let Maybe::Some(y) = b and y > 2 {
+                    y
+                } else {
+                    0
+                }
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_let_mut_binding() {
+        let source = r#"
+            fn f() -> i64 {
+                let mut value = 1;
+                value += 2;
+                value
+            }
+        "#;
+        let tokens = lex(source).expect("expected lex success");
+        let module = parse_module(tokens).expect("expected parse success");
+        assert_eq!(module.items.len(), 1);
+    }
+
+    #[test]
+    fn parse_match_final_arm_without_delimiter() {
+        let source = r#"
+            fn f(flag: bool) -> i64 {
+                match flag {
+                    true => 1,
+                    false => 0
                 }
             }
         "#;
@@ -2947,7 +3078,10 @@ world"#;
         assert_eq!(path, &vec!["Collection".to_string()]);
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].name, "items");
-        assert_eq!(fields[0].value, crate::ast::Expr::Path(vec!["items".to_string()]));
+        assert_eq!(
+            fields[0].value,
+            crate::ast::Expr::Path(vec!["items".to_string()])
+        );
     }
 
     #[test]
