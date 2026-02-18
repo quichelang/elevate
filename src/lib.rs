@@ -3729,6 +3729,53 @@ mod tests {
     }
 
     #[test]
+    fn compile_supports_numeric_ref_to_value_comparisons() {
+        let source = r#"
+            fn eq_num(values: Vec<i64>, right: i64) -> bool {
+                values[0] == right
+            }
+        "#;
+
+        let output = compile_source(source).expect("numeric ref/value comparison should compile");
+        assert!(output.rust_code.contains("values["));
+        assert!(output.rust_code.contains("== right"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_string_ref_to_value_comparisons() {
+        let source = r#"
+            fn eq_text(values: Vec<String>, right: String) -> bool {
+                values[0] == right
+            }
+        "#;
+
+        let output = compile_source(source).expect("string ref/value comparison should compile");
+        assert!(output.rust_code.contains("values["));
+        assert!(output.rust_code.contains("== right"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_vec_to_slice_param_compatibility() {
+        let source = r#"
+            rust {
+                pub fn head(items: &[i64]) -> i64 {
+                    items[0]
+                }
+            }
+
+            fn run(values: Vec<i64>) -> i64 {
+                return head(values);
+            }
+        "#;
+
+        let output = compile_source(source).expect("Vec<T> to &[T] compatibility should compile");
+        assert!(output.rust_code.contains("pub fn head(items: &[i64]) -> i64"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_supports_ranges_and_tuple_destructure() {
         let source = r#"
             pub fn f() -> i64 {

@@ -2056,7 +2056,38 @@ impl LoweringState {
                         }
                     }
                 }
-                TypedItem::RustBlock(_) => {}
+                TypedItem::RustBlock(code) => {
+                    for (name, sig) in extract_rust_block_function_signatures(code) {
+                        state.known_functions.insert(name.clone());
+                        let mut borrowed_indexes = Vec::new();
+                        let mut mut_borrowed_indexes = Vec::new();
+                        for (index, param_ty) in sig.params.iter().enumerate() {
+                            if let SemType::Ref { mutable, .. } = param_ty {
+                                if *mutable {
+                                    mut_borrowed_indexes.push(index);
+                                } else {
+                                    borrowed_indexes.push(index);
+                                }
+                            }
+                        }
+                        if !borrowed_indexes.is_empty() {
+                            let slot = state.known_function_borrowed_args.entry(name.clone()).or_default();
+                            for index in borrowed_indexes {
+                                if !slot.contains(&index) {
+                                    slot.push(index);
+                                }
+                            }
+                        }
+                        if !mut_borrowed_indexes.is_empty() {
+                            let slot = state.known_function_mut_args.entry(name).or_default();
+                            for index in mut_borrowed_indexes {
+                                if !slot.contains(&index) {
+                                    slot.push(index);
+                                }
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -8170,6 +8201,13 @@ fn sem_without_refs(ty: &SemType) -> &SemType {
     current
 }
 
+fn sem_reference_inner(ty: &SemType) -> Option<&SemType> {
+    match ty {
+        SemType::Ref { inner, .. } => Some(inner),
+        _ => None,
+    }
+}
+
 fn sem_path_name_and_args(ty: &SemType) -> Option<(&str, &[SemType])> {
     let SemType::Path { path, args } = sem_without_refs(ty) else {
         return None;
@@ -9709,13 +9747,14 @@ fn maybe_insert_implicit_clone_for_borrowed_value(
     typed_expr: TypedExpr,
     expected: &SemType,
 ) -> TypedExpr {
-    let Some(inner) = reference_inner_type_name(&typed_expr.ty) else {
+    let typed_sem = sem_type_from_typed_type_string(&typed_expr.ty);
+    let Some(inner) = sem_reference_inner(&typed_sem) else {
         return typed_expr;
     };
-    let expected_ty = type_to_string(expected);
-    if inner != expected_ty.trim() {
+    if inner != expected {
         return typed_expr;
     }
+    let expected_ty = type_to_string(expected);
     TypedExpr {
         kind: TypedExprKind::Call {
             callee: Box::new(TypedExpr {
@@ -10817,21 +10856,31 @@ fn lower_expr_with_context(
                     lowered_right =
                         cast_expr_to_numeric_if_needed(lowered_right, &right.ty, &cmp_ty);
                 }
-                if let (Some(left_inner), None) = (
-                    numeric_reference_inner_name(&left.ty),
-                    numeric_reference_inner_name(&right.ty),
-                ) && is_numeric_type_name(right.ty.trim())
+                let left_sem = sem_type_from_typed_type_string(&left.ty);
+                let right_sem = sem_type_from_typed_type_string(&right.ty);
+                let left_ref_inner = sem_reference_inner(&left_sem);
+                let right_ref_inner = sem_reference_inner(&right_sem);
+                let left_numeric_ref_inner =
+                    left_ref_inner.filter(|inner| canonical_numeric_name(inner).is_some());
+                let right_numeric_ref_inner =
+                    right_ref_inner.filter(|inner| canonical_numeric_name(inner).is_some());
+
+                if let (Some(left_inner), None) = (left_numeric_ref_inner, right_numeric_ref_inner)
+                    && canonical_numeric_name(&right_sem).is_some()
                 {
+                    let right_name = type_to_string(&right_sem);
+                    let left_inner_name = type_to_string(left_inner);
                     lowered_right =
-                        cast_expr_to_numeric_if_needed(lowered_right, right.ty.trim(), left_inner);
+                        cast_expr_to_numeric_if_needed(lowered_right, &right_name, &left_inner_name);
                     lowered_right = borrow_expr(lowered_right);
-                } else if let (None, Some(right_inner)) = (
-                    numeric_reference_inner_name(&left.ty),
-                    numeric_reference_inner_name(&right.ty),
-                ) && is_numeric_type_name(left.ty.trim())
+                } else if let (None, Some(right_inner)) =
+                    (left_numeric_ref_inner, right_numeric_ref_inner)
+                    && canonical_numeric_name(&left_sem).is_some()
                 {
+                    let left_name = type_to_string(&left_sem);
+                    let right_inner_name = type_to_string(right_inner);
                     lowered_left =
-                        cast_expr_to_numeric_if_needed(lowered_left, left.ty.trim(), right_inner);
+                        cast_expr_to_numeric_if_needed(lowered_left, &left_name, &right_inner_name);
                     lowered_left = borrow_expr(lowered_left);
                 } else if left.ty.trim() == "_" && is_numeric_type_name(right.ty.trim()) {
                     state.needs_borrow_trait_import = true;
@@ -10849,18 +10898,12 @@ fn lower_expr_with_context(
                     if matches!(right.kind, TypedExprKind::Path(_)) && left.ty.trim() != "_" {
                         lowered_left = borrow_expr(lowered_left);
                     }
-                } else if let (Some(left_inner), None) = (
-                    reference_inner_type_name(&left.ty),
-                    reference_inner_type_name(&right.ty),
-                ) {
-                    if left_inner == right.ty.trim() {
+                } else if let (Some(left_inner), None) = (left_ref_inner, right_ref_inner) {
+                    if left_inner == &right_sem {
                         lowered_right = borrow_expr(lowered_right);
                     }
-                } else if let (None, Some(right_inner)) = (
-                    reference_inner_type_name(&left.ty),
-                    reference_inner_type_name(&right.ty),
-                ) {
-                    if right_inner == left.ty.trim() {
+                } else if let (None, Some(right_inner)) = (left_ref_inner, right_ref_inner) {
+                    if right_inner == &left_sem {
                         lowered_left = borrow_expr(lowered_left);
                     }
                 }
@@ -11150,22 +11193,6 @@ fn resolve_common_numeric_output_name(left: &str, right: &str) -> Option<String>
         return None;
     }
     Some(promote_numeric_names(left, right).to_string())
-}
-
-fn numeric_reference_inner_name(ty: &str) -> Option<&str> {
-    let inner = reference_inner_type_name(ty)?;
-    is_numeric_type_name(inner).then_some(inner)
-}
-
-fn reference_inner_type_name(ty: &str) -> Option<&str> {
-    let trimmed = ty.trim();
-    if let Some(rest) = trimmed.strip_prefix("&mut ") {
-        Some(rest.trim())
-    } else if let Some(rest) = trimmed.strip_prefix('&') {
-        Some(rest.trim())
-    } else {
-        None
-    }
 }
 
 fn should_clone_for_reuse(ty: &str, state: &LoweringState) -> bool {
@@ -14055,10 +14082,8 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
                 // Vec<T> can satisfy slice-style params (&[T] / [T]).
                 if a == "Vec"
                     && actual_args.len() == 1
-                    && expected_args.is_empty()
-                    && let Some(expected_item_name) = parse_slice_item_type_name(e)
+                    && let Some(expected_item_ty) = slice_style_item_type(expected)
                 {
-                    let expected_item_ty = sem_type_from_typed_type_string(expected_item_name);
                     if is_compatible(&actual_args[0], &expected_item_ty) {
                         return true;
                     }
@@ -14076,17 +14101,17 @@ fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
     }
 }
 
-fn parse_slice_item_type_name(type_name: &str) -> Option<&str> {
-    let trimmed = type_name.trim();
-    let inner = if let Some(rest) = trimmed.strip_prefix("&mut ") {
-        rest.trim()
-    } else if let Some(rest) = trimmed.strip_prefix('&') {
-        rest.trim()
-    } else {
-        trimmed
+fn slice_style_item_type(ty: &SemType) -> Option<SemType> {
+    let SemType::Path { path, args } = sem_without_refs(ty) else {
+        return None;
     };
-    if inner.starts_with('[') && inner.ends_with(']') && inner.len() > 2 {
-        Some(inner[1..inner.len() - 1].trim())
+    if !args.is_empty() || path.len() != 1 {
+        return None;
+    }
+    let path_head = path[0].trim();
+    if path_head.starts_with('[') && path_head.ends_with(']') && path_head.len() > 2 {
+        let inner = path_head[1..path_head.len() - 1].trim();
+        Some(sem_type_from_typed_type_string(inner))
     } else {
         None
     }
