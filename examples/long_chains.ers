@@ -3,7 +3,7 @@ struct Point<T> {
     y: T,
 }
 
-impl<T: Display> Point<T> {
+impl<T: std::fmt::Display> Point<T> {
   pub fn new(x: T, y: T) -> Self {
      Point { x: x, y: y}
   }

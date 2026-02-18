@@ -5042,6 +5042,515 @@ world"#;
         assert_rust_code_compiles(&output.rust_code);
     }
 
+    #[test]
+    fn compile_supports_if_let_chain_with_three_segments() {
+        let source = r#"
+            enum Maybe {
+                Some(i64),
+                None,
+            }
+
+            fn sum3(a: Maybe, b: Maybe, c: Maybe) -> i64 {
+                if let Maybe::Some(x) = a
+                    and x > 0
+                    and let Maybe::Some(y) = b
+                    and y > 0
+                    and let Maybe::Some(z) = c
+                {
+                    x + y + z
+                } else {
+                    0
+                }
+            }
+        "#;
+
+        let output = compile_source(source).expect("three-segment if let chain should compile");
+        assert!(output.rust_code.contains("match a"));
+        assert!(output.rust_code.contains("match b"));
+        assert!(output.rust_code.contains("match c"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_generic_struct_literal_shorthand() {
+        let source = r#"
+            struct Holder<T> {
+                value: T,
+                ready: bool,
+            }
+
+            fn make(v: i64) -> Holder<i64> {
+                let value = v;
+                let ready = true;
+                Holder<i64> { value, ready }
+            }
+        "#;
+
+        let output = compile_source(source).expect("generic struct shorthand literal should compile");
+        assert!(output.rust_code.contains("Holder"));
+        assert!(output.rust_code.contains("ready"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_iter_any_all_shorthand_predicates() {
+        let source = r#"
+            fn check(values: Vec<i64>) -> bool {
+                values.iter().all(|x| x >= 0) and values.iter().any(|x| x % 2 == 0)
+            }
+        "#;
+
+        let output =
+            compile_source(source).expect("iter all/any shorthand predicates should compile");
+        assert!(output.rust_code.contains(".all("));
+        assert!(output.rust_code.contains(".any("));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_impl_method_where_with_inherited_and_method_bounds() {
+        let source = r#"
+            struct Bag<T> {
+                values: Vec<T>,
+            }
+
+            impl<T> Bag<T> {
+                fn compare_with<U>(self, needle: T, other: U) -> bool
+                where
+                    T: PartialEq + Clone,
+                    U: PartialEq,
+                {
+                    self.values.contains(needle.clone()) and other == other
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("impl method where with inherited + method generic bounds should compile");
+        assert!(output.rust_code.contains("impl<T> Bag<T>"));
+        assert!(output.rust_code.contains("where T: PartialEq + Clone"));
+        assert!(output.rust_code.contains("U: PartialEq"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_supports_if_let_chain_inside_generic_where_function() {
+        let source = r#"
+            enum Maybe {
+                Some(i64),
+                None,
+            }
+
+            fn classify<T>(left: Maybe, right: Maybe, marker: T) -> i64
+            where
+                T: Clone + PartialEq,
+            {
+                if let Maybe::Some(a) = left and let Maybe::Some(b) = right and marker == marker {
+                    a + b
+                } else {
+                    0
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("if let chain inside generic where function should compile");
+        assert!(output.rust_code.contains("match left"));
+        assert!(output.rust_code.contains("match right"));
+        assert!(output.rust_code.contains("marker"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_mut_generic_impl_push_contains_flow() {
+        let source = r#"
+            struct Bag<T> {
+                values: Vec<T>,
+            }
+
+            impl<T> Bag<T> {
+                fn push_if_missing(mut self, item: T) -> Bag<T>
+                where
+                    T: Clone + PartialEq,
+                {
+                    if self.values.contains(item.clone()) {
+                        self
+                    } else {
+                        self.values.push(item);
+                        self
+                    }
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("mut generic impl push/contains flow should compile");
+        assert!(output.rust_code.contains("push_if_missing"));
+        assert!(output.rust_code.contains("contains"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_mut_generic_impl_if_let_and_field_mutation() {
+        let source = r#"
+            struct Counter<T> {
+                items: Vec<T>,
+                bumps: i64,
+            }
+
+            impl<T> Counter<T> {
+                fn bump_if_present(mut self, candidate: T) -> Counter<T>
+                where
+                    T: Clone,
+                {
+                    if let Some(_x) = self.items.get(0) and self.bumps >= 0 {
+                        self.items.push(candidate.clone());
+                        self.bumps += 1;
+                        self
+                    } else {
+                        self
+                    }
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("mut generic impl if-let + field mutation should compile");
+        assert!(output.rust_code.contains("match self.items.get"));
+        assert!(output.rust_code.contains("self.bumps +="));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_mut_param_iter_position_then_mutate() {
+        let source = r#"
+            fn mark_then_push(mut values: Vec<i64>, needle: i64) -> Vec<i64> {
+                if let Some(idx) = values.iter().position(|x| x >= needle) and idx >= 0 {
+                    values.push(needle);
+                    values
+                } else {
+                    values.push(0);
+                    values
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("mut param iter.position then mutate flow should compile");
+        assert!(output.rust_code.contains(".position("));
+        assert!(output.rust_code.contains("values.push"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_generic_impl_any_all_with_mut_capture() {
+        let source = r#"
+            struct Bag<T> {
+                values: Vec<T>,
+            }
+
+            impl<T> Bag<T> {
+                fn score(self, needle: T) -> i64
+                where
+                    T: Clone + PartialEq,
+                {
+                    let mut hits = 0;
+                    self.values.iter().for_each(|x| {
+                        if x == needle.clone() {
+                            hits += 1;
+                        } else {
+                            hits += 0;
+                        }
+                    });
+                    if self.values.iter().all(|x| x == needle.clone()) {
+                        hits + 100
+                    } else if self.values.iter().any(|x| x == needle.clone()) {
+                        hits + 10
+                    } else {
+                        hits
+                    }
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("generic impl any/all with mut closure capture should compile");
+        assert!(output.rust_code.contains(".for_each("));
+        assert!(output.rust_code.contains(".all("));
+        assert!(output.rust_code.contains(".any("));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_generic_swap_struct_literal_shorthand() {
+        let source = r#"
+            struct Pair<T> {
+                left: T,
+                right: T,
+            }
+
+            impl<T> Pair<T> {
+                fn swap_if_both(mut self, probe: T) -> Pair<T>
+                where
+                    T: Clone + PartialEq,
+                {
+                    if self.left == probe.clone() and self.right == probe.clone() {
+                        let left = self.right;
+                        let right = self.left;
+                        Pair<T> { left, right }
+                    } else {
+                        self
+                    }
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("generic swap struct literal shorthand should compile");
+        assert!(output.rust_code.contains("Pair"));
+        assert!(output.rust_code.contains("{ left: left, right: right }"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_inherited_and_method_generics_with_mut_self() {
+        let source = r#"
+            struct Bag<T> {
+                values: Vec<T>,
+            }
+
+            impl<T> Bag<T> {
+                fn seed_and_return<U>(mut self, extras: Vec<U>, seed: T) -> T
+                where
+                    T: Clone + PartialEq,
+                    U: Clone,
+                {
+                    self.values.push(seed.clone());
+                    for e in extras {
+                        let _x = e;
+                    }
+                    if let Some(v) = self.values.get(0) and self.values.len() >= 1 {
+                        v.clone()
+                    } else {
+                        seed
+                    }
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("inherited/method generics with mut self should compile");
+        assert!(output.rust_code.contains("seed_and_return"));
+        assert!(output.rust_code.contains("where T: Clone + PartialEq"));
+        assert!(output.rust_code.contains("U: Clone"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_nested_if_let_chain_and_mut_reassignment() {
+        let source = r#"
+            enum Maybe {
+                Some(i64),
+                None,
+            }
+
+            fn collapse(mut left: Maybe, right: Maybe) -> i64 {
+                if let Maybe::Some(a) = left and a >= 0 {
+                    left = right;
+                    if let Maybe::Some(b) = left and b >= 0 {
+                        a + b
+                    } else {
+                        a
+                    }
+                } else {
+                    0
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("nested if-let chain with mut reassignment should compile");
+        assert!(output.rust_code.contains("match left"));
+        assert!(output.rust_code.contains("left = right"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_generic_impl_mut_self_index_then_push() {
+        let source = r#"
+            struct Bag<T> {
+                values: Vec<T>,
+            }
+
+            impl<T> Bag<T> {
+                fn peek_then_push(mut self, item: T) -> Bag<T>
+                where
+                    T: Clone,
+                {
+                    if self.values.len() > 0 {
+                        let _first = self.values[0];
+                        self.values.push(item.clone());
+                        self
+                    } else {
+                        self.values.push(item);
+                        self
+                    }
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("generic impl mut self index then push should compile");
+        assert!(output.rust_code.contains("self.values.len()"));
+        assert!(output.rust_code.contains("self.values.push"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_edge_else_if_let_chain() {
+        let source = r#"
+            enum Maybe {
+                Some(i64),
+                None,
+            }
+
+            fn classify(a: Maybe, b: Maybe) -> i64 {
+                if let Maybe::Some(x) = a and x > 10 {
+                    x
+                } else if let Maybe::Some(y) = b and y > 5 {
+                    y
+                } else {
+                    0
+                }
+            }
+        "#;
+
+        let output =
+            compile_source(source).expect("else-if-let chain with guards should compile");
+        assert!(output.rust_code.contains("match a"));
+        assert!(output.rust_code.contains("match b"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_edge_mixed_and_let_call_chain() {
+        let source = r#"
+            enum Maybe {
+                Some(i64),
+                None,
+            }
+
+            fn probe(values: Vec<i64>, alt: Maybe) -> i64 {
+                if let Some(i) = values.iter().position(|x| x > 0)
+                    and i >= 0
+                    and let Maybe::Some(v) = alt
+                    and values.iter().any(|x| x == v)
+                {
+                    v
+                } else {
+                    0
+                }
+            }
+        "#;
+
+        let output =
+            compile_source(source).expect("mixed and-let plus call-chain condition should compile");
+        assert!(output.rust_code.contains(".position("));
+        assert!(output.rust_code.contains(".any("));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_edge_generic_struct_literal_in_match_arm() {
+        let source = r#"
+            enum Input {
+                Value(i64),
+                Empty,
+            }
+
+            struct Wrap<T> {
+                value: T,
+                ok: bool,
+            }
+
+            fn lower(input: Input) -> Wrap<i64> {
+                match input {
+                    Input::Value(v) => Wrap<i64> { value: v, ok: true },
+                    Input::Empty => {
+                        let value = 0;
+                        let ok = false;
+                        Wrap<i64> { value, ok }
+                    }
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("generic struct literal inside match arms should compile");
+        assert!(output.rust_code.contains("match input"));
+        assert!(output.rust_code.contains("Wrap"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_edge_else_if_let_with_struct_literal_tail() {
+        let source = r#"
+            enum Maybe {
+                Some(i64),
+                None,
+            }
+
+            struct Boxed<T> {
+                value: T,
+            }
+
+            fn choose(a: Maybe, b: Maybe) -> Boxed<i64> {
+                if let Maybe::Some(x) = a {
+                    Boxed<i64> { value: x }
+                } else if let Maybe::Some(y) = b and y >= 0 {
+                    Boxed<i64> { value: y }
+                } else {
+                    Boxed<i64> { value: 0 }
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("else-if-let with generic struct literal tail should compile");
+        assert!(output.rust_code.contains("Boxed"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_edge_match_arm_if_let_chain_block() {
+        let source = r#"
+            enum Maybe {
+                Some(i64),
+                None,
+            }
+
+            fn fold(flag: bool, left: Maybe, right: Maybe) -> i64 {
+                match flag {
+                    true => {
+                        if let Maybe::Some(a) = left and let Maybe::Some(b) = right and a >= 0 {
+                            a + b
+                        } else {
+                            0
+                        }
+                    }
+                    false => 1
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("if-let chain nested inside match arm block should compile");
+        assert!(output.rust_code.contains("match flag"));
+        assert!(output.rust_code.contains("match left"));
+        assert!(output.rust_code.contains("match right"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
     fn assert_rust_code_compiles(code: &str) {
         let rustc_available = Command::new("rustc").arg("--version").output().is_ok();
         if !rustc_available {

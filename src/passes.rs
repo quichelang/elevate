@@ -10572,10 +10572,12 @@ fn lower_expr_with_context(
                         cast_expr_to_numeric_if_needed(lowered_left, left.ty.trim(), right_inner);
                     lowered_left = borrow_expr(lowered_left);
                 } else if left.ty.trim() == "_" && is_numeric_type_name(right.ty.trim()) {
+                    state.needs_borrow_trait_import = true;
                     lowered_left = RustExpr::BorrowCall(Box::new(lowered_left));
                     lowered_right = borrow_expr(lowered_right);
                 } else if right.ty.trim() == "_" && is_numeric_type_name(left.ty.trim()) {
                     lowered_left = borrow_expr(lowered_left);
+                    state.needs_borrow_trait_import = true;
                     lowered_right = RustExpr::BorrowCall(Box::new(lowered_right));
                 }
             }
