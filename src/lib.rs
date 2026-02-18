@@ -268,6 +268,14 @@ pub fn compile_ast_with_options(
         &options.forced_clone_places,
         options,
     );
+    let invariant_diagnostics = passes::verify_lowered_signature_invariants(&typed, &lowered);
+    if !invariant_diagnostics.is_empty() {
+        return Err(CompileError::from_diagnostics(
+            invariant_diagnostics,
+            options.source_name.clone(),
+            None,
+        ));
+    }
     for name in options.experiments.active_names() {
         lowered
             .ownership_notes
@@ -448,6 +456,19 @@ mod tests {
     }
 
     #[test]
+    fn compile_keeps_owned_function_params_owned_after_lowering() {
+        let source = r#"
+            fn parse_i64(input: String) -> i64 {
+                return 1;
+            }
+        "#;
+
+        let output = compile_source(source).expect("expected successful compile");
+        assert!(output.rust_code.contains("fn parse_i64(input: String) -> i64"));
+        assert!(!output.rust_code.contains("fn parse_i64(input: &String) -> i64"));
+    }
+
+    #[test]
     fn compile_error_includes_source_name_and_line_col_for_parser_errors() {
         let source = "fn broken( { return 1; }";
         let mut options = CompileOptions::default();
@@ -546,7 +567,7 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("fn update(values: &mut Vec<i64>) -> i64")
+                .contains("fn update(mut values: Vec<i64>) -> i64")
         );
         assert!(output.rust_code.contains("values["));
         assert!(output.rust_code.contains("saturating_abs() as usize"));
@@ -585,7 +606,7 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("fn update(board: &mut Vec<Vec<i64>>) -> i64")
+                .contains("fn update(mut board: Vec<Vec<i64>>) -> i64")
         );
         assert!(output.rust_code.contains("board["));
         assert!(output.rust_code.contains("saturating_abs() as usize"));
@@ -606,7 +627,7 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("fn update(hyper: &mut Vec<Vec<Vec<Vec<i64>>>>) -> i64")
+                .contains("fn update(mut hyper: Vec<Vec<Vec<Vec<i64>>>>) -> i64")
         );
         assert!(output.rust_code.contains("hyper["));
         assert!(output.rust_code.contains("saturating_abs() as usize"));
@@ -1696,7 +1717,7 @@ mod tests {
         assert!(
             output
                 .rust_code
-                .contains("fn demo(values: &mut Vec<i64>, item: i64) -> usize")
+                .contains("fn demo(mut values: Vec<i64>, item: i64) -> usize")
         );
         assert!(output.rust_code.contains("values.push(item);"));
         assert!(output.rust_code.contains("Vec::len(values.borrow())"));

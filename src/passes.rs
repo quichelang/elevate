@@ -1609,6 +1609,206 @@ pub fn lower_to_rust_with_hints(
     (module, debug_log)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignatureOwnershipKind {
+    Owned,
+    SharedRef,
+    MutRef,
+}
+
+fn signature_ownership_kind(ty: &str) -> SignatureOwnershipKind {
+    let trimmed = ty.trim();
+    if trimmed.strip_prefix("&mut ").is_some() {
+        SignatureOwnershipKind::MutRef
+    } else if trimmed.strip_prefix('&').is_some() {
+        SignatureOwnershipKind::SharedRef
+    } else {
+        SignatureOwnershipKind::Owned
+    }
+}
+
+fn function_sig_key(name: &str) -> String {
+    format!("fn::{name}")
+}
+
+fn impl_method_sig_key(target: &str, trait_target: Option<&str>, method: &str) -> String {
+    if let Some(trait_target) = trait_target {
+        format!("impl::{target}::trait::{trait_target}::{method}")
+    } else {
+        format!("impl::{target}::{method}")
+    }
+}
+
+fn sem_type_equal_from_text(left: &str, right: &str) -> bool {
+    sem_type_from_typed_type_string(left) == sem_type_from_typed_type_string(right)
+}
+
+fn verify_function_signature_invariants(
+    label: &str,
+    typed_fn: &TypedFunction,
+    lowered_fn: &RustFunction,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if typed_fn.params.len() != lowered_fn.params.len() {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "E_SIG_INVARIANT_PARAM_COUNT: `{label}` changed parameter count from {} to {} during lowering",
+                typed_fn.params.len(),
+                lowered_fn.params.len()
+            ),
+            default_diag_span(),
+        ));
+        return;
+    }
+
+    for (index, (typed_param, lowered_param)) in
+        typed_fn.params.iter().zip(lowered_fn.params.iter()).enumerate()
+    {
+        if typed_param.name != lowered_param.name {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "E_SIG_INVARIANT_PARAM_NAME: `{label}` parameter {} renamed from `{}` to `{}` during lowering",
+                    index + 1,
+                    typed_param.name,
+                    lowered_param.name
+                ),
+                default_diag_span(),
+            ));
+        }
+
+        let typed_ownership = signature_ownership_kind(&typed_param.ty);
+        let lowered_ownership = signature_ownership_kind(&lowered_param.ty);
+        if typed_ownership != lowered_ownership {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "E_SIG_INVARIANT_PARAM_OWNERSHIP: `{label}` parameter `{}` ownership changed from `{}` to `{}` during lowering",
+                    typed_param.name, typed_param.ty, lowered_param.ty
+                ),
+                default_diag_span(),
+            ));
+        }
+
+        if !sem_type_equal_from_text(&typed_param.ty, &lowered_param.ty) {
+            diagnostics.push(Diagnostic::new(
+                format!(
+                    "E_SIG_INVARIANT_PARAM_TYPE: `{label}` parameter `{}` type changed from `{}` to `{}` during lowering",
+                    typed_param.name, typed_param.ty, lowered_param.ty
+                ),
+                default_diag_span(),
+            ));
+        }
+    }
+
+    let typed_return_ownership = signature_ownership_kind(&typed_fn.return_type);
+    let lowered_return_ownership = signature_ownership_kind(&lowered_fn.return_type);
+    if typed_return_ownership != lowered_return_ownership {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "E_SIG_INVARIANT_RETURN_OWNERSHIP: `{label}` return ownership changed from `{}` to `{}` during lowering",
+                typed_fn.return_type, lowered_fn.return_type
+            ),
+            default_diag_span(),
+        ));
+    }
+
+    if !sem_type_equal_from_text(&typed_fn.return_type, &lowered_fn.return_type) {
+        diagnostics.push(Diagnostic::new(
+            format!(
+                "E_SIG_INVARIANT_RETURN_TYPE: `{label}` return type changed from `{}` to `{}` during lowering",
+                typed_fn.return_type, lowered_fn.return_type
+            ),
+            default_diag_span(),
+        ));
+    }
+}
+
+pub fn verify_lowered_signature_invariants(
+    typed: &TypedModule,
+    lowered: &RustModule,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut lowered_functions = HashMap::<String, &RustFunction>::new();
+
+    for item in &lowered.items {
+        match item {
+            RustItem::Function(func) => {
+                lowered_functions.insert(function_sig_key(&func.name), func);
+            }
+            RustItem::Impl(imp) => {
+                for method in &imp.methods {
+                    lowered_functions.insert(
+                        impl_method_sig_key(
+                            &imp.target,
+                            imp.trait_target.as_deref(),
+                            &method.name,
+                        ),
+                        method,
+                    );
+                }
+            }
+            RustItem::Use(_)
+            | RustItem::Raw(_)
+            | RustItem::Struct(_)
+            | RustItem::Enum(_)
+            | RustItem::Trait(_)
+            | RustItem::Const(_)
+            | RustItem::Static(_) => {}
+        }
+    }
+
+    for item in &typed.items {
+        match item {
+            TypedItem::Function(func) => {
+                let label = format!("function `{}`", func.name);
+                let key = function_sig_key(&func.name);
+                let Some(lowered_fn) = lowered_functions.get(&key) else {
+                    diagnostics.push(Diagnostic::new(
+                        format!(
+                            "E_SIG_INVARIANT_MISSING_FUNCTION: `{}` was dropped during lowering",
+                            label
+                        ),
+                        default_diag_span(),
+                    ));
+                    continue;
+                };
+                verify_function_signature_invariants(&label, func, lowered_fn, &mut diagnostics);
+            }
+            TypedItem::Impl(imp) => {
+                for method in &imp.methods {
+                    let key =
+                        impl_method_sig_key(&imp.target, imp.trait_target.as_deref(), &method.name);
+                    let label = format!("method `{}::{}`", imp.target, method.name);
+                    let Some(lowered_fn) = lowered_functions.get(&key) else {
+                        diagnostics.push(Diagnostic::new(
+                            format!(
+                                "E_SIG_INVARIANT_MISSING_METHOD: `{}` was dropped during lowering",
+                                label
+                            ),
+                            default_diag_span(),
+                        ));
+                        continue;
+                    };
+                    verify_function_signature_invariants(
+                        &label,
+                        method,
+                        lowered_fn,
+                        &mut diagnostics,
+                    );
+                }
+            }
+            TypedItem::RustUse(_)
+            | TypedItem::RustBlock(_)
+            | TypedItem::Struct(_)
+            | TypedItem::Enum(_)
+            | TypedItem::Trait(_)
+            | TypedItem::Const(_)
+            | TypedItem::Static(_) => {}
+        }
+    }
+
+    diagnostics
+}
+
 struct LoweringContext {
     ownership_plan: OwnershipPlan,
     borrow_engine: Option<Box<dyn BorrowEngine>>,
@@ -2278,17 +2478,7 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
     if borrowed_self_returns_self {
         rewrite_borrowed_self_returns_to_clone(&mut lowered_body);
     }
-    let emitted_return_type = if borrowed_self_returns_self {
-        "Self".to_string()
-    } else {
-        def.return_type.clone()
-    };
-
-    // Detect which params are mutated and safe to promote to &mut T.
-    // A param is promotable when it is mutated AND not consumed (returned,
-    // passed as owned arg, or used as a tail expression).
-    let mutated = crate::codegen::collect_mutated_paths_in_stmts(&lowered_body);
-    let mut params: Vec<RustParam> = def
+    let params: Vec<RustParam> = def
         .params
         .iter()
         .map(|param| RustParam {
@@ -2296,29 +2486,6 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
             ty: param.ty.clone(),
         })
         .collect();
-    let mut mut_arg_indexes = Vec::new();
-    for (index, param) in params.iter_mut().enumerate() {
-        if param.name == "self" {
-            continue;
-        }
-        let (head, _) = split_type_head_and_args(param.ty.trim());
-        if is_copy_primitive_type(head) {
-            continue;
-        }
-        if mutated.contains(&param.name)
-            && !param.ty.trim_start().starts_with('&')
-            && !param_is_whole_consumed_in_body(&param.name, &lowered_body)
-            && has_direct_mutation_for_param(&param.name, &lowered_body)
-        {
-            param.ty = format!("&mut {}", param.ty);
-            mut_arg_indexes.push(index);
-        }
-    }
-    if !mut_arg_indexes.is_empty() {
-        state
-            .known_function_mut_args
-            .insert(def.name.clone(), mut_arg_indexes);
-    }
 
     RustFunction {
         is_public: def.is_public,
@@ -2332,7 +2499,7 @@ fn lower_function(def: &TypedFunction, state: &mut LoweringState) -> RustFunctio
             })
             .collect(),
         params,
-        return_type: emitted_return_type,
+        return_type: def.return_type.clone(),
         body: lowered_body,
     }
 }
@@ -15328,5 +15495,45 @@ mod tests {
             inner: Box::new(named_type("str")),
         };
         assert_eq!(rust_owned_type_string(&ty), "&str");
+    }
+
+    #[test]
+    fn signature_invariant_rejects_param_ownership_drift() {
+        let typed = TypedModule {
+            items: vec![TypedItem::Function(TypedFunction {
+                is_public: false,
+                name: "demo".to_string(),
+                type_params: Vec::new(),
+                params: vec![TypedParam {
+                    name: "value".to_string(),
+                    ty: "i64".to_string(),
+                }],
+                return_type: "i64".to_string(),
+                body: Vec::new(),
+            })],
+        };
+        let lowered = RustModule {
+            items: vec![RustItem::Function(RustFunction {
+                is_public: false,
+                name: "demo".to_string(),
+                type_params: Vec::new(),
+                params: vec![RustParam {
+                    name: "value".to_string(),
+                    ty: "&i64".to_string(),
+                }],
+                return_type: "i64".to_string(),
+                body: Vec::new(),
+            })],
+            ownership_notes: Vec::new(),
+        };
+
+        let diagnostics = verify_lowered_signature_invariants(&typed, &lowered);
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("E_SIG_INVARIANT_PARAM_OWNERSHIP")),
+            "expected ownership invariant diagnostic, got: {:?}",
+            diagnostics
+        );
     }
 }
