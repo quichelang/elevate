@@ -8565,7 +8565,7 @@ fn resolve_method_capability(
                 receiver_mode: CapabilityReceiverMode::Borrowed,
                 arg_modes: vec![CallArgMode::Owned],
                 expected_args: vec![named_type("usize")],
-                return_ty: option_type(item),
+                return_ty: option_type(borrow_sem_type(&item)),
             },
             _ => {
                 // Keep searching via rustdex.
@@ -15510,7 +15510,7 @@ mod tests {
         )
         .expect("Vec::get should resolve for &Vec<T>");
         assert_eq!(capability.expected_args, vec![named_type("usize")]);
-        assert_eq!(capability.return_ty, option_type(named_type("i64")));
+        assert_eq!(capability.return_ty, option_type(borrow_sem_type(&named_type("i64"))));
     }
 
     #[test]
@@ -15558,6 +15558,98 @@ mod tests {
                 .message
                 .contains("E_SIG_INVARIANT_PARAM_OWNERSHIP")),
             "expected ownership invariant diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn signature_invariant_rejects_impl_receiver_ownership_drift() {
+        let typed = TypedModule {
+            items: vec![TypedItem::Impl(TypedImpl {
+                type_params: Vec::new(),
+                target: "Bag".to_string(),
+                target_args: Vec::new(),
+                trait_target: None,
+                methods: vec![TypedFunction {
+                    is_public: false,
+                    name: "touch".to_string(),
+                    type_params: Vec::new(),
+                    params: vec![TypedParam {
+                        name: "self".to_string(),
+                        ty: "&Bag".to_string(),
+                    }],
+                    return_type: "i64".to_string(),
+                    body: Vec::new(),
+                }],
+            })],
+        };
+        let lowered = RustModule {
+            items: vec![RustItem::Impl(RustImpl {
+                type_params: Vec::new(),
+                target: "Bag".to_string(),
+                target_args: Vec::new(),
+                trait_target: None,
+                methods: vec![RustFunction {
+                    is_public: false,
+                    name: "touch".to_string(),
+                    type_params: Vec::new(),
+                    params: vec![RustParam {
+                        name: "self".to_string(),
+                        ty: "Bag".to_string(),
+                    }],
+                    return_type: "i64".to_string(),
+                    body: Vec::new(),
+                }],
+            })],
+            ownership_notes: Vec::new(),
+        };
+
+        let diagnostics = verify_lowered_signature_invariants(&typed, &lowered);
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("E_SIG_INVARIANT_PARAM_OWNERSHIP")),
+            "expected receiver ownership invariant diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn signature_invariant_rejects_return_reference_shape_drift() {
+        let typed = TypedModule {
+            items: vec![TypedItem::Function(TypedFunction {
+                is_public: false,
+                name: "peek".to_string(),
+                type_params: Vec::new(),
+                params: vec![TypedParam {
+                    name: "value".to_string(),
+                    ty: "&i64".to_string(),
+                }],
+                return_type: "&i64".to_string(),
+                body: Vec::new(),
+            })],
+        };
+        let lowered = RustModule {
+            items: vec![RustItem::Function(RustFunction {
+                is_public: false,
+                name: "peek".to_string(),
+                type_params: Vec::new(),
+                params: vec![RustParam {
+                    name: "value".to_string(),
+                    ty: "&i64".to_string(),
+                }],
+                return_type: "i64".to_string(),
+                body: Vec::new(),
+            })],
+            ownership_notes: Vec::new(),
+        };
+
+        let diagnostics = verify_lowered_signature_invariants(&typed, &lowered);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("E_SIG_INVARIANT_RETURN_OWNERSHIP")),
+            "expected return ownership invariant diagnostic, got: {:?}",
             diagnostics
         );
     }

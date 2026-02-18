@@ -5480,6 +5480,66 @@ world"#;
     }
 
     #[test]
+    fn compile_adversarial_gate_struct_impl_generics_mutability_and_capabilities() {
+        let source = r#"
+            use std::collections::HashMap;
+
+            struct Store<K, V> {
+                map: HashMap<K, V>,
+                writes: i64,
+            }
+
+            impl<K, V> Store<K, V> {
+                fn upsert_or_count(mut self, key: K, value: V) -> Store<K, V>
+                where
+                    K: Clone + Eq + std::hash::Hash,
+                    V: Clone,
+                {
+                    if self.map.get(key.clone()).is_some() and self.writes >= 0 {
+                        self.map.insert(key, value);
+                        self.writes += 1;
+                        self
+                    } else {
+                        self.map.insert(key, value.clone());
+                        self
+                    }
+                }
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("gate adversarial struct+impl+generics+mutability should compile");
+        assert!(output.rust_code.contains(".get("));
+        assert!(output.rust_code.contains(".insert("));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
+    fn compile_adversarial_gate_nested_control_flow_with_post_loop_mutation() {
+        let source = r#"
+            fn fold_and_append(mut values: Vec<i64>, gate: bool) -> i64 {
+                let total = 0;
+                for item in values.iter() {
+                    if gate and item >= 0 {
+                        total += item;
+                    } else if let Some(first) = values.get(0) {
+                        let _seen = first;
+                        total += 1;
+                    }
+                }
+                values.push(total);
+                values[0]
+            }
+        "#;
+
+        let output = compile_source(source)
+            .expect("gate adversarial nested control flow + post-loop mutation should compile");
+        assert!(output.rust_code.contains("for item in values.iter()"));
+        assert!(output.rust_code.contains("values.push(total)"));
+        assert_rust_code_compiles(&output.rust_code);
+    }
+
+    #[test]
     fn compile_adversarial_edge_else_if_let_chain() {
         let source = r#"
             enum Maybe {
