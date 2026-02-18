@@ -37,6 +37,10 @@ use index_capability::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SemType {
+    Ref {
+        mutable: bool,
+        inner: Box<SemType>,
+    },
     Path {
         path: Vec<String>,
         args: Vec<SemType>,
@@ -2635,6 +2639,7 @@ fn function_has_structural_requirements(sig: &FunctionSig) -> bool {
 
 fn sem_type_contains_any_type_param(ty: &SemType, type_params: &HashSet<String>) -> bool {
     match ty {
+        SemType::Ref { inner, .. } => sem_type_contains_any_type_param(inner, type_params),
         SemType::Path { path, args } => {
             (path.len() == 1 && args.is_empty() && type_params.contains(&path[0]))
                 || args
@@ -3176,6 +3181,15 @@ fn substitute_type_in_ast_type(ty: &Type, bindings: &HashMap<String, SemType>) -
 
 fn sem_type_to_ast_type(ty: &SemType) -> Type {
     match ty {
+        SemType::Ref { mutable, inner } => Type {
+            path: vec![if *mutable {
+                format!("&mut {}", type_to_string(inner))
+            } else {
+                format!("&{}", type_to_string(inner))
+            }],
+            args: Vec::new(),
+            trait_bounds: Vec::new(),
+        },
         SemType::Path { path, args } => Type {
             path: path.clone(),
             args: args.iter().map(sem_type_to_ast_type).collect(),
@@ -7982,6 +7996,21 @@ fn resolve_builtin_assert_call(
     }
 }
 
+fn sem_without_refs(ty: &SemType) -> &SemType {
+    let mut current = ty;
+    while let SemType::Ref { inner, .. } = current {
+        current = inner;
+    }
+    current
+}
+
+fn sem_path_name_and_args(ty: &SemType) -> Option<(&str, &[SemType])> {
+    let SemType::Path { path, args } = sem_without_refs(ty) else {
+        return None;
+    };
+    Some((path.last()?.as_str(), args.as_slice()))
+}
+
 fn resolve_method_call_type(
     base_ty: &SemType,
     method: &str,
@@ -7990,9 +8019,7 @@ fn resolve_method_call_type(
     context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> SemType {
-    if let SemType::Path { path, .. } = base_ty
-        && let Some(type_name) = path.last()
-    {
+    if let Some((type_name, _)) = sem_path_name_and_args(base_ty) {
         let lookup = format!("{type_name}::{method}");
         if let Some(sig) = context.functions.get(&lookup) {
             if sig.params.len() == args.len() + 1 {
@@ -8043,7 +8070,7 @@ fn resolve_method_call_type(
                 let vec_get_index_error = index == 0
                     && method == "get"
                     && matches!(
-                        base_ty,
+                        sem_without_refs(base_ty),
                         SemType::Path { path, .. } if path.last().is_some_and(|segment| segment == "Vec")
                     )
                     && !is_vector_index_type(actual);
@@ -8094,7 +8121,7 @@ fn resolve_method_call_type(
 }
 
 fn is_abstract_structural_symbol(ty: &SemType, context: &Context) -> bool {
-    let SemType::Path { path, args } = ty else {
+    let SemType::Path { path, args } = sem_without_refs(ty) else {
         return false;
     };
     if path.len() != 1 || !args.is_empty() {
@@ -8205,7 +8232,7 @@ fn resolve_method_capability(
     _context: &Context,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<MethodCapability> {
-    if let SemType::Iter(item_ty) = base_ty {
+    if let SemType::Iter(item_ty) = sem_without_refs(base_ty) {
         let iter_predicate_bool = SemType::Fn {
             params: vec![item_ty.as_ref().clone()],
             ret: Box::new(named_type("bool")),
@@ -8303,22 +8330,9 @@ fn resolve_method_capability(
         return Some(capability);
     }
 
-    let (raw_type_name, generic_args): (&str, &[SemType]) = match base_ty {
-        SemType::Path { path, args } => (
-            path.last()
-                .map(|segment| segment.as_str())
-                .unwrap_or_default(),
-            args.as_slice(),
-        ),
-        _ => ("", &[]),
-    };
-    let type_name = raw_type_name
-        .strip_prefix("&mut ")
-        .or_else(|| raw_type_name.strip_prefix('&'))
-        .unwrap_or(raw_type_name);
-    if type_name.is_empty() {
+    let Some((type_name, generic_args)) = sem_path_name_and_args(base_ty) else {
         return None;
-    }
+    };
 
     if method == "to_string" && actual_arity == 0 && builtin_value_supports_to_string(type_name) {
         return Some(MethodCapability {
@@ -8470,7 +8484,10 @@ fn override_iterator_return_type(
 }
 
 fn borrow_sem_type(inner: &SemType) -> SemType {
-    sem_type_from_typed_type_string(&format!("&{}", type_to_string(inner)))
+    SemType::Ref {
+        mutable: false,
+        inner: Box::new(inner.clone()),
+    }
 }
 
 fn expect_method_arity(
@@ -9037,7 +9054,7 @@ fn method_arg_type_compatible(expr: Option<&Expr>, actual: &SemType, expected: &
     // IntoIterator coercion: Vec<T> and Iter(T) are accepted where T is
     // expected, because Vec/Iter implement IntoIterator. This handles
     // methods like `extend`, `chain`, etc.
-    let item_ty_of_actual = match actual {
+    let item_ty_of_actual = match sem_without_refs(actual) {
         SemType::Iter(item) => Some(item.as_ref()),
         SemType::Path { path, args }
             if path.last().is_some_and(|s| s == "Vec") && !args.is_empty() =>
@@ -9124,6 +9141,9 @@ fn normalize_numeric_unary_type(expr: &SemType) -> SemType {
 }
 
 fn canonical_numeric_name(ty: &SemType) -> Option<&str> {
+    if let SemType::Ref { inner, .. } = ty {
+        return canonical_numeric_name(inner);
+    }
     if let SemType::Path { path, args } = ty
         && args.is_empty()
         && path.len() == 1
@@ -11974,6 +11994,23 @@ fn last_path_segment(path: &str) -> &str {
     segment.split('<').next().unwrap_or(segment)
 }
 
+fn parse_reference_type_prefix(ty: &str) -> Option<(bool, &str)> {
+    let rest = ty.strip_prefix('&')?.trim_start();
+    let mut rest = rest;
+    if rest.starts_with('\'') {
+        if let Some(space_idx) = rest.find(char::is_whitespace) {
+            rest = rest[space_idx..].trim_start();
+        } else {
+            return Some((false, "_"));
+        }
+    }
+    if let Some(rest_mut) = rest.strip_prefix("mut ") {
+        Some((true, rest_mut.trim_start()))
+    } else {
+        Some((false, rest))
+    }
+}
+
 fn sem_type_from_typed_type_string(ty: &str) -> SemType {
     let trimmed = ty.trim();
     if trimmed == "_" {
@@ -11981,6 +12018,12 @@ fn sem_type_from_typed_type_string(ty: &str) -> SemType {
     }
     if trimmed == "()" {
         return SemType::Unit;
+    }
+    if let Some((mutable, inner)) = parse_reference_type_prefix(trimmed) {
+        return SemType::Ref {
+            mutable,
+            inner: Box::new(sem_type_from_typed_type_string(inner)),
+        };
     }
     if let Some(items) = parse_tuple_items(trimmed) {
         return SemType::Tuple(
@@ -12336,6 +12379,10 @@ fn type_from_ast_with_impl_self_in_context(
 
 fn promote_trait_shorthand(ty: SemType, context: &Context) -> SemType {
     match ty {
+        SemType::Ref { mutable, inner } => SemType::Ref {
+            mutable,
+            inner: Box::new(promote_trait_shorthand(*inner, context)),
+        },
         SemType::Path { path, args } => {
             let args = args
                 .into_iter()
@@ -12952,6 +12999,13 @@ fn type_from_ast(ty: &Type) -> SemType {
     if ty.path.len() == 1 && ty.path[0] == "_" && ty.args.is_empty() && ty.trait_bounds.is_empty() {
         return SemType::Unknown;
     }
+    if ty.path.len() == 1
+        && ty.args.is_empty()
+        && ty.trait_bounds.is_empty()
+        && ty.path[0].trim_start().starts_with('&')
+    {
+        return sem_type_from_typed_type_string(&ty.path[0]);
+    }
     if !ty.trait_bounds.is_empty() {
         let mut bounds = Vec::with_capacity(1 + ty.trait_bounds.len());
         bounds.push(SemType::Path {
@@ -12977,6 +13031,13 @@ fn type_from_ast_with_impl_self(
 ) -> SemType {
     if ty.path.len() == 1 && ty.path[0] == "_" && ty.args.is_empty() && ty.trait_bounds.is_empty() {
         return SemType::Unknown;
+    }
+    if ty.path.len() == 1
+        && ty.args.is_empty()
+        && ty.trait_bounds.is_empty()
+        && ty.path[0].trim_start().starts_with('&')
+    {
+        return sem_type_from_typed_type_string(&ty.path[0]);
     }
     if !ty.trait_bounds.is_empty() {
         let mut bounds = Vec::with_capacity(1 + ty.trait_bounds.len());
@@ -13026,6 +13087,13 @@ fn type_to_string(ty: &SemType) -> String {
     match ty {
         SemType::Unit => "()".to_string(),
         SemType::Unknown => "_".to_string(),
+        SemType::Ref { mutable, inner } => {
+            if *mutable {
+                format!("&mut {}", type_to_string(inner))
+            } else {
+                format!("&{}", type_to_string(inner))
+            }
+        }
         SemType::TraitObject(bounds) => bounds
             .iter()
             .map(type_to_string)
@@ -13092,6 +13160,25 @@ fn rust_type_string(ty: &SemType, mode: RustTypeRenderMode) -> String {
     match ty {
         SemType::Unit => "()".to_string(),
         SemType::Unknown => "_".to_string(),
+        SemType::Ref { mutable, inner } => {
+            let prefix = if *mutable { "&mut " } else { "&" };
+            match inner.as_ref() {
+                SemType::TraitObject(bounds) => {
+                    let bounds = bounds
+                        .iter()
+                        .map(|bound| rust_type_string(bound, RustTypeRenderMode::TraitBound))
+                        .collect::<Vec<_>>()
+                        .join(" + ");
+                    if bounds.contains('+') {
+                        format!("{prefix}(dyn {bounds})")
+                    } else {
+                        format!("{prefix}dyn {bounds}")
+                    }
+                }
+                inner if is_bare_str(inner) => format!("{prefix}str"),
+                _ => format!("{prefix}{}", rust_type_string(inner, RustTypeRenderMode::Owned)),
+            }
+        }
         SemType::TraitObject(bounds) => render_rust_trait_object(bounds, mode),
         SemType::Tuple(items) => {
             let body = items
@@ -13228,6 +13315,9 @@ fn type_satisfies_bound_with_context(actual: &SemType, bound: &SemType, context:
 }
 
 fn concrete_type_name(ty: &SemType) -> Option<&str> {
+    if let SemType::Ref { inner, .. } = ty {
+        return concrete_type_name(inner);
+    }
     if let SemType::Path { path, args } = ty
         && args.is_empty()
     {
@@ -13295,6 +13385,7 @@ fn trait_object_has_trait(bounds: &[SemType], trait_name: &str) -> bool {
 fn type_is_clone(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::Ref { mutable, inner } => !*mutable && type_is_clone(inner),
         SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Clone"),
         SemType::Tuple(items) => items.iter().all(type_is_clone),
         SemType::Iter(item) => type_is_clone(item),
@@ -13320,6 +13411,7 @@ fn type_is_clone(ty: &SemType) -> bool {
 fn type_is_copy(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::Ref { mutable, .. } => !*mutable,
         SemType::TraitObject(_) => false,
         SemType::Tuple(items) => items.iter().all(type_is_copy),
         SemType::Iter(_) | SemType::Fn { .. } => false,
@@ -13335,6 +13427,7 @@ fn type_is_copy(ty: &SemType) -> bool {
 fn type_is_debug(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::Ref { inner, .. } => type_is_debug(inner),
         SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Debug"),
         SemType::Tuple(items) => items.iter().all(type_is_debug),
         SemType::Iter(item) => type_is_debug(item),
@@ -13360,6 +13453,7 @@ fn type_is_debug(ty: &SemType) -> bool {
 fn type_is_default(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::Ref { .. } => false,
         SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Default"),
         SemType::Tuple(items) => items.iter().all(type_is_default),
         SemType::Iter(_) | SemType::Fn { .. } => false,
@@ -13382,6 +13476,7 @@ fn type_is_default(ty: &SemType) -> bool {
 fn type_is_partial_eq(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::Ref { inner, .. } => type_is_partial_eq(inner),
         SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "PartialEq"),
         SemType::Tuple(items) => items.iter().all(type_is_partial_eq),
         SemType::Iter(_) | SemType::Fn { .. } => false,
@@ -13405,6 +13500,7 @@ fn type_is_partial_eq(ty: &SemType) -> bool {
 
 fn type_is_eq(ty: &SemType) -> bool {
     match ty {
+        SemType::Ref { inner, .. } => type_is_eq(inner),
         SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Eq"),
         SemType::Path { path, args } => {
             let Some(head) = path.last().map(|part| part.as_str()) else {
@@ -13436,6 +13532,7 @@ fn type_is_eq(ty: &SemType) -> bool {
 fn type_is_partial_ord(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::Ref { inner, .. } => type_is_partial_ord(inner),
         SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "PartialOrd"),
         SemType::Tuple(items) => items.iter().all(type_is_partial_ord),
         SemType::Iter(_) | SemType::Fn { .. } => false,
@@ -13457,6 +13554,7 @@ fn type_is_partial_ord(ty: &SemType) -> bool {
 fn type_is_ord(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::Ref { inner, .. } => type_is_ord(inner),
         SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Ord"),
         SemType::Tuple(items) => items.iter().all(type_is_ord),
         SemType::Iter(_) | SemType::Fn { .. } => false,
@@ -13484,6 +13582,7 @@ fn type_is_ord(ty: &SemType) -> bool {
 fn type_is_hash(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown | SemType::Unit => true,
+        SemType::Ref { inner, .. } => type_is_hash(inner),
         SemType::TraitObject(bounds) => trait_object_has_trait(bounds, "Hash"),
         SemType::Tuple(items) => items.iter().all(type_is_hash),
         SemType::Iter(_) | SemType::Fn { .. } => false,
@@ -13533,6 +13632,21 @@ fn bind_generic_params(
     }
 
     match (expected, actual) {
+        (
+            SemType::Ref {
+                mutable: expected_mut,
+                inner: expected_inner,
+            },
+            SemType::Ref {
+                mutable: actual_mut,
+                inner: actual_inner,
+            },
+        ) => {
+            if *expected_mut && !*actual_mut {
+                return false;
+            }
+            bind_generic_params(expected_inner, actual_inner, type_params, bindings)
+        }
         (SemType::Path { path: ep, args: ea }, SemType::Path { path: ap, args: aa }) => {
             if ep != ap || ea.len() != aa.len() {
                 return false;
@@ -13581,6 +13695,10 @@ fn substitute_generic_type(
     bindings: &HashMap<String, SemType>,
 ) -> SemType {
     match ty {
+        SemType::Ref { mutable, inner } => SemType::Ref {
+            mutable: *mutable,
+            inner: Box::new(substitute_generic_type(inner, type_params, bindings)),
+        },
         SemType::Path { path, args } if path.len() == 1 && args.is_empty() => {
             if type_params.contains(&path[0]) {
                 return bindings.get(&path[0]).cloned().unwrap_or(SemType::Unknown);
@@ -13628,6 +13746,10 @@ fn substitute_bound_generic_type(
     bindings: &HashMap<String, SemType>,
 ) -> SemType {
     match ty {
+        SemType::Ref { mutable, inner } => SemType::Ref {
+            mutable: *mutable,
+            inner: Box::new(substitute_bound_generic_type(inner, type_params, bindings)),
+        },
         SemType::Path { path, args } if path.len() == 1 && args.is_empty() => {
             if type_params.contains(&path[0]) {
                 return bindings
@@ -13679,6 +13801,18 @@ fn is_vector_index_type(ty: &SemType) -> bool {
 fn is_compatible(actual: &SemType, expected: &SemType) -> bool {
     match (actual, expected) {
         (_, SemType::Unknown) | (SemType::Unknown, _) => true,
+        (
+            SemType::Ref {
+                mutable: actual_mut,
+                inner: actual_inner,
+            },
+            SemType::Ref {
+                mutable: expected_mut,
+                inner: expected_inner,
+            },
+        ) => (!*expected_mut || *actual_mut) && is_compatible(actual_inner, expected_inner),
+        (_, SemType::Ref { inner, .. }) => is_compatible(actual, inner),
+        (SemType::Ref { inner, .. }, _) => is_compatible(inner, expected),
         (SemType::Unit, SemType::Unit) => true,
         (SemType::Unit, SemType::Tuple(items)) | (SemType::Tuple(items), SemType::Unit) => {
             items.is_empty()
@@ -13796,6 +13930,28 @@ fn merge_compatible_types(left: &SemType, right: &SemType) -> Option<SemType> {
     match (left, right) {
         (SemType::Unknown, _) => return Some(right.clone()),
         (_, SemType::Unknown) => return Some(left.clone()),
+        (
+            SemType::Ref {
+                mutable: left_mut,
+                inner: left_inner,
+            },
+            SemType::Ref {
+                mutable: right_mut,
+                inner: right_inner,
+            },
+        ) => {
+            let merged_inner = merge_compatible_types(left_inner, right_inner)?;
+            return Some(SemType::Ref {
+                mutable: *left_mut && *right_mut,
+                inner: Box::new(merged_inner),
+            });
+        }
+        (SemType::Ref { inner, .. }, other) | (other, SemType::Ref { inner, .. }) => {
+            if is_compatible(inner, other) && is_compatible(other, inner) {
+                return Some(prefer_more_concrete_type(inner, other));
+            }
+            return None;
+        }
         (SemType::Unit, SemType::Unit) => return Some(SemType::Unit),
         (SemType::Unit, SemType::Tuple(items)) | (SemType::Tuple(items), SemType::Unit) => {
             if items.is_empty() {
@@ -13899,6 +14055,7 @@ fn type_specificity_score(ty: &SemType) -> usize {
     match ty {
         SemType::Unknown => 0,
         SemType::Unit => 1,
+        SemType::Ref { inner, .. } => 1 + type_specificity_score(inner),
         SemType::TraitObject(bounds) => {
             1 + bounds.iter().map(type_specificity_score).sum::<usize>()
         }
@@ -13934,7 +14091,7 @@ fn result_type(ok: SemType, err: SemType) -> SemType {
 }
 
 fn option_inner(ty: &SemType) -> Option<&SemType> {
-    if let SemType::Path { path, args } = ty {
+    if let SemType::Path { path, args } = sem_without_refs(ty) {
         if path.len() == 1 && path[0] == "Option" && args.len() == 1 {
             return Some(&args[0]);
         }
@@ -13943,7 +14100,7 @@ fn option_inner(ty: &SemType) -> Option<&SemType> {
 }
 
 fn result_parts(ty: &SemType) -> Option<(&SemType, &SemType)> {
-    if let SemType::Path { path, args } = ty {
+    if let SemType::Path { path, args } = sem_without_refs(ty) {
         if path.len() == 1 && path[0] == "Result" && args.len() == 2 {
             return Some((&args[0], &args[1]));
         }
@@ -14962,6 +15119,10 @@ fn infer_return_type(
 /// return types lack a lifetime source in functions without reference params.
 fn promote_str_to_string_in_type(ty: SemType) -> SemType {
     match ty {
+        SemType::Ref { mutable, inner } => SemType::Ref {
+            mutable,
+            inner: Box::new(promote_str_to_string_in_type(*inner)),
+        },
         SemType::Path { path, args } => {
             let is_str = path.len() == 1 && path[0] == "str";
             if is_str && args.is_empty() {
@@ -15018,6 +15179,7 @@ fn contains_unknown(ty: &SemType) -> bool {
     match ty {
         SemType::Unknown => true,
         SemType::Unit => false,
+        SemType::Ref { inner, .. } => contains_unknown(inner),
         SemType::TraitObject(bounds) => bounds.iter().any(contains_unknown),
         SemType::Tuple(items) => items.iter().any(contains_unknown),
         SemType::Fn { params, ret } => params.iter().any(contains_unknown) || contains_unknown(ret),
@@ -15101,5 +15263,71 @@ mod tests {
                 args: vec![named_type("String"), named_type("i64")],
             }
         );
+    }
+
+    #[test]
+    fn sem_type_from_string_parses_references() {
+        assert_eq!(
+            sem_type_from_typed_type_string("&mut Vec<i64>"),
+            SemType::Ref {
+                mutable: true,
+                inner: Box::new(SemType::Path {
+                    path: vec!["Vec".to_string()],
+                    args: vec![named_type("i64")],
+                }),
+            }
+        );
+        assert_eq!(
+            sem_type_from_typed_type_string("&str"),
+            SemType::Ref {
+                mutable: false,
+                inner: Box::new(named_type("str")),
+            }
+        );
+    }
+
+    #[test]
+    fn compatibility_respects_reference_mutability() {
+        let imm = SemType::Ref {
+            mutable: false,
+            inner: Box::new(named_type("i64")),
+        };
+        let mut_ref = SemType::Ref {
+            mutable: true,
+            inner: Box::new(named_type("i64")),
+        };
+        assert!(is_compatible(&mut_ref, &imm));
+        assert!(!is_compatible(&imm, &mut_ref));
+    }
+
+    #[test]
+    fn resolve_method_capability_supports_reference_receivers() {
+        let base = SemType::Ref {
+            mutable: false,
+            inner: Box::new(SemType::Path {
+                path: vec!["Vec".to_string()],
+                args: vec![named_type("i64")],
+            }),
+        };
+        let mut diagnostics = Vec::new();
+        let capability = resolve_method_capability(
+            &base,
+            "get",
+            1,
+            &Context::default(),
+            &mut diagnostics,
+        )
+        .expect("Vec::get should resolve for &Vec<T>");
+        assert_eq!(capability.expected_args, vec![named_type("usize")]);
+        assert_eq!(capability.return_ty, option_type(named_type("i64")));
+    }
+
+    #[test]
+    fn rust_type_string_keeps_ref_str_single_borrow() {
+        let ty = SemType::Ref {
+            mutable: false,
+            inner: Box::new(named_type("str")),
+        };
+        assert_eq!(rust_owned_type_string(&ty), "&str");
     }
 }

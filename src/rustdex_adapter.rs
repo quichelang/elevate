@@ -111,7 +111,9 @@ fn convert_receiver(mode: &rustdex::ReceiverMode) -> CapabilityReceiverMode {
 
 /// Map a rustdex `ParamSig` → Elevate `CallArgMode`.
 fn convert_param_mode(param: &rustdex::ParamSig) -> CallArgMode {
-    if param.is_ref || param.is_mut_ref {
+    if param.is_mut_ref {
+        CallArgMode::MutBorrowed
+    } else if param.is_ref {
         CallArgMode::Borrowed
     } else {
         CallArgMode::Owned
@@ -224,20 +226,16 @@ fn qualify_unqualified_types(ty: &str, module: &str, impl_target: &str) -> Strin
 fn sem_type_from_rust_type(ty: &str, impl_target: &SemType) -> SemType {
     let mut inner = ty.trim();
 
+    if let Some((mutable, rest)) = parse_reference_prefix(inner) {
+        return SemType::Ref {
+            mutable,
+            inner: Box::new(sem_type_from_rust_type(rest, impl_target)),
+        };
+    }
+
     // "self" → target type
     if inner == "self" {
         return impl_target.clone();
-    }
-
-    // Strip reference qualifiers: &, &mut
-    while let Some(stripped) = inner.strip_prefix('&') {
-        inner = stripped.trim_start();
-        if let Some(stripped_mut) = inner.strip_prefix("mut ") {
-            inner = stripped_mut.trim_start();
-        }
-    }
-    if let Some(stripped_mut) = inner.strip_prefix("mut ") {
-        inner = stripped_mut.trim_start();
     }
 
     // Strip surrounding parens (e.g. `(Self)`)
@@ -285,6 +283,12 @@ pub(crate) fn parse_rustdoc_type_str(
     if s == "Self" {
         return named_type(type_name);
     }
+    if let Some((mutable, rest)) = parse_reference_prefix(s) {
+        return SemType::Ref {
+            mutable,
+            inner: Box::new(parse_rustdoc_type_str(rest, generic_args, type_name)),
+        };
+    }
 
     // Single-letter generic params from rustdoc.
     // Only map known container params; unknown placeholders (e.g. slice index
@@ -306,7 +310,8 @@ pub(crate) fn parse_rustdoc_type_str(
         "usize" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32"
         | "i64" | "i128" | "f32" | "f64" => return named_type(s),
         "char" => return named_type("char"),
-        "String" | "str" => return named_type("String"),
+        "String" => return named_type("String"),
+        "str" => return named_type("str"),
         _ => {}
     }
 
@@ -333,14 +338,6 @@ pub(crate) fn parse_rustdoc_type_str(
         }
     }
 
-    // Reference types: &str, &T, &mut T
-    if let Some(rest) = s.strip_prefix("&mut ") {
-        return parse_rustdoc_type_str(rest, generic_args, type_name);
-    }
-    if let Some(rest) = s.strip_prefix('&') {
-        return parse_rustdoc_type_str(rest, generic_args, type_name);
-    }
-
     if s.contains("::") && !s.starts_with('&') {
         return SemType::Path {
             path: s
@@ -353,6 +350,23 @@ pub(crate) fn parse_rustdoc_type_str(
     }
 
     named_type(s)
+}
+
+fn parse_reference_prefix(ty: &str) -> Option<(bool, &str)> {
+    let rest = ty.strip_prefix('&')?.trim_start();
+    let mut rest = rest;
+    if rest.starts_with('\'') {
+        if let Some(space_idx) = rest.find(char::is_whitespace) {
+            rest = rest[space_idx..].trim_start();
+        } else {
+            return Some((false, "_"));
+        }
+    }
+    if let Some(rest_mut) = rest.strip_prefix("mut ") {
+        Some((true, rest_mut.trim_start()))
+    } else {
+        Some((false, rest))
+    }
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────
@@ -440,6 +454,14 @@ mod tests {
             is_mut_ref: false,
         };
         assert_eq!(convert_param_mode(&owned_param), CallArgMode::Owned);
+
+        let mut_ref_param = rustdex::ParamSig {
+            name: "x".to_string(),
+            ty: "&mut Vec<i64>".to_string(),
+            is_ref: false,
+            is_mut_ref: true,
+        };
+        assert_eq!(convert_param_mode(&mut_ref_param), CallArgMode::MutBorrowed);
     }
 
     #[test]
@@ -466,6 +488,32 @@ mod tests {
         assert_eq!(
             parse_rustdoc_type_str("Option<T>", &args, "Vec"),
             option_type(named_type("i64"))
+        );
+    }
+
+    #[test]
+    fn parse_references_preserves_ref_semantics() {
+        let args = vec![named_type("i64")];
+        assert_eq!(
+            parse_rustdoc_type_str("&T", &args, "Vec"),
+            SemType::Ref {
+                mutable: false,
+                inner: Box::new(named_type("i64")),
+            }
+        );
+        assert_eq!(
+            parse_rustdoc_type_str("&mut T", &args, "Vec"),
+            SemType::Ref {
+                mutable: true,
+                inner: Box::new(named_type("i64")),
+            }
+        );
+        assert_eq!(
+            parse_rustdoc_type_str("&str", &args, "Vec"),
+            SemType::Ref {
+                mutable: false,
+                inner: Box::new(named_type("str")),
+            }
         );
     }
 }
