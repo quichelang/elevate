@@ -8589,7 +8589,7 @@ fn resolve_method_capability(
         if let Some(sig) =
             crate::rustdex_backend::lookup_method_signature(&rustdex_type_name, method)
         {
-            let mut capability =
+            let (mut capability, _unresolved_symbols) =
                 crate::rustdex_adapter::method_sig_to_capability(&sig, type_name, generic_args);
 
             // Override return type for iterator-producing methods (Elevate semantics)
@@ -12811,7 +12811,7 @@ fn resolve_rustdex_trait_method_signature(
         impl_target,
         impl_target_sem: &impl_target_sem,
     };
-    let result = crate::rustdex_adapter::trait_method_sig_to_override(&sig, &ctx);
+    let (result, _unresolved_symbols) = crate::rustdex_adapter::trait_method_sig_to_override(&sig, &ctx);
 
     if result.param_rust_types.is_empty() {
         return None;

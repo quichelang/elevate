@@ -12,6 +12,7 @@ use crate::passes::{
     CallArgMode, CapabilityReceiverMode, MethodCapability, SemType, TraitMethodSignatureOverride,
     named_type, option_type, rust_owned_type_string,
 };
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 // ─── Inherent method conversion ────────────────────────────────────────
 
@@ -24,25 +25,30 @@ pub(crate) fn method_sig_to_capability(
     sig: &rustdex::MethodSig,
     type_name: &str,
     generic_args: &[SemType],
-) -> MethodCapability {
+) -> (MethodCapability, Vec<String>) {
     let receiver_mode = convert_receiver(&sig.receiver);
+    let mut unresolved = BTreeSet::new();
+    let env = build_method_type_env(sig, type_name, generic_args);
 
     let mut arg_modes = Vec::with_capacity(sig.params.len());
     let mut expected_args = Vec::with_capacity(sig.params.len());
 
     for param in &sig.params {
         arg_modes.push(convert_param_mode(param));
-        expected_args.push(parse_rustdoc_type_str(&param.ty, generic_args, type_name));
+        expected_args.push(parse_rustdoc_type_with_env(&param.ty, &env, &mut unresolved));
     }
 
-    let return_ty = parse_rustdoc_type_str(&sig.return_type, generic_args, type_name);
+    let return_ty = parse_rustdoc_type_with_env(&sig.return_type, &env, &mut unresolved);
 
-    MethodCapability {
-        receiver_mode,
-        arg_modes,
-        expected_args,
-        return_ty,
-    }
+    (
+        MethodCapability {
+            receiver_mode,
+            arg_modes,
+            expected_args,
+            return_ty,
+        },
+        unresolved.into_iter().collect(),
+    )
 }
 
 // ─── Trait method conversion ───────────────────────────────────────────
@@ -68,8 +74,10 @@ pub(crate) struct TraitMethodContext<'a> {
 pub(crate) fn trait_method_sig_to_override(
     sig: &rustdex::MethodSig,
     ctx: &TraitMethodContext<'_>,
-) -> TraitMethodSignatureOverride {
+) -> (TraitMethodSignatureOverride, Vec<String>) {
     let impl_target_rust = rust_owned_type_string(ctx.impl_target_sem);
+    let mut unresolved = BTreeSet::new();
+    let env = build_trait_method_type_env(sig, ctx);
 
     // Build the raw Rust type strings including receiver
     let mut param_rust_types = build_param_rust_types(sig, ctx);
@@ -82,20 +90,23 @@ pub(crate) fn trait_method_sig_to_override(
     // Build semantic types from normalized strings
     let param_sem_types: Vec<SemType> = param_rust_types
         .iter()
-        .map(|ty| sem_type_from_rust_type(ty, ctx.impl_target_sem))
+        .map(|ty| parse_rustdoc_type_with_env(ty, &env, &mut unresolved))
         .collect();
 
     // Normalize return type
     let mut return_rust_type = sig.return_type.clone();
     return_rust_type = normalize_type_string(&return_rust_type, &impl_target_rust, ctx.trait_path);
-    let return_sem_type = sem_type_from_rust_type(&return_rust_type, ctx.impl_target_sem);
+    let return_sem_type = parse_rustdoc_type_with_env(&return_rust_type, &env, &mut unresolved);
 
-    TraitMethodSignatureOverride {
-        param_sem_types,
-        return_sem_type,
-        param_rust_types,
-        return_rust_type,
-    }
+    (
+        TraitMethodSignatureOverride {
+            param_sem_types,
+            return_sem_type,
+            param_rust_types,
+            return_rust_type,
+        },
+        unresolved.into_iter().collect(),
+    )
 }
 
 // ─── Internal: enum conversion ─────────────────────────────────────────
@@ -145,6 +156,117 @@ fn build_param_rust_types(sig: &rustdex::MethodSig, ctx: &TraitMethodContext<'_>
     }
 
     types
+}
+
+#[derive(Debug, Clone, Default)]
+struct RustdocTypeBindingEnv {
+    self_type: Option<SemType>,
+    container_bindings: HashMap<String, SemType>,
+    method_bindings: HashMap<String, SemType>,
+    trait_bindings: HashMap<String, SemType>,
+    known_symbols: HashSet<String>,
+}
+
+fn build_method_type_env(
+    sig: &rustdex::MethodSig,
+    type_name: &str,
+    generic_args: &[SemType],
+) -> RustdocTypeBindingEnv {
+    let mut env = RustdocTypeBindingEnv {
+        self_type: Some(path_with_generic_args(type_name, generic_args)),
+        ..RustdocTypeBindingEnv::default()
+    };
+    bind_generic_symbols(
+        &sig.impl_type_params,
+        generic_args,
+        &mut env.container_bindings,
+        &mut env.known_symbols,
+    );
+    for param in &sig.method_type_params {
+        if let Some(symbol) = generic_param_symbol(param) {
+            env.known_symbols.insert(symbol);
+        }
+    }
+    env
+}
+
+fn build_trait_method_type_env(
+    sig: &rustdex::MethodSig,
+    ctx: &TraitMethodContext<'_>,
+) -> RustdocTypeBindingEnv {
+    let mut env = RustdocTypeBindingEnv {
+        self_type: Some(ctx.impl_target_sem.clone()),
+        ..RustdocTypeBindingEnv::default()
+    };
+    if let SemType::Path { args, .. } = ctx.impl_target_sem {
+        bind_generic_symbols(
+            &sig.impl_type_params,
+            args,
+            &mut env.container_bindings,
+            &mut env.known_symbols,
+        );
+    } else {
+        for param in &sig.impl_type_params {
+            if let Some(symbol) = generic_param_symbol(param) {
+                env.known_symbols.insert(symbol);
+            }
+        }
+    }
+    for param in &sig.method_type_params {
+        if let Some(symbol) = generic_param_symbol(param) {
+            env.known_symbols.insert(symbol);
+        }
+    }
+    env
+}
+
+fn path_with_generic_args(type_name: &str, generic_args: &[SemType]) -> SemType {
+    let path = type_name
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect::<Vec<_>>();
+    if path.is_empty() {
+        return SemType::Unknown;
+    }
+    SemType::Path {
+        path,
+        args: generic_args.to_vec(),
+    }
+}
+
+fn bind_generic_symbols(
+    params: &[String],
+    args: &[SemType],
+    bindings: &mut HashMap<String, SemType>,
+    known_symbols: &mut HashSet<String>,
+) {
+    for (index, param) in params.iter().enumerate() {
+        let Some(symbol) = generic_param_symbol(param) else {
+            continue;
+        };
+        known_symbols.insert(symbol.clone());
+        if let Some(arg) = args.get(index) {
+            bindings.insert(symbol, arg.clone());
+        }
+    }
+}
+
+fn generic_param_symbol(param: &str) -> Option<String> {
+    let trimmed = param.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let trimmed = trimmed.strip_prefix("const ").unwrap_or(trimmed);
+    let stop = trimmed
+        .find(|ch: char| ch == ':' || ch == '=' || ch.is_whitespace())
+        .unwrap_or(trimmed.len());
+    let symbol = trimmed[..stop].trim();
+    if symbol.is_empty() {
+        None
+    } else {
+        Some(symbol.to_string())
+    }
 }
 
 /// Normalize a raw Rust type string from rustdex:
@@ -218,90 +340,59 @@ fn qualify_unqualified_types(ty: &str, module: &str, impl_target: &str) -> Strin
 
 // ─── Internal: type string → SemType conversion ───────────────────────
 
-/// Convert a raw Rust type string into an Elevate `SemType`.
-///
-/// Handles references, `Self`, generics, primitives, and qualified paths.
-/// Used for trait method signatures where the type strings have already
-/// been normalized.
-fn sem_type_from_rust_type(ty: &str, impl_target: &SemType) -> SemType {
-    let mut inner = ty.trim();
-
-    if let Some((mutable, rest)) = parse_reference_prefix(inner) {
-        return SemType::Ref {
-            mutable,
-            inner: Box::new(sem_type_from_rust_type(rest, impl_target)),
-        };
-    }
-
-    // "self" → target type
-    if inner == "self" {
-        return impl_target.clone();
-    }
-
-    // Strip surrounding parens (e.g. `(Self)`)
-    inner = inner.trim_matches(|ch: char| ch == '(' || ch == ')');
-
-    if inner == "Self" {
-        return impl_target.clone();
-    }
-    if inner == "_" {
-        return SemType::Unknown;
-    }
-    if inner == "()" {
-        return SemType::Unit;
-    }
-
-    // Split at first '<' to get the base type name
-    let without_generics = inner.split('<').next().unwrap_or(inner).trim();
-    if without_generics.is_empty() {
-        return SemType::Unknown;
-    }
-
-    SemType::Path {
-        path: without_generics
-            .split("::")
-            .map(|s| s.to_string())
-            .collect(),
-        args: Vec::new(),
-    }
-}
-
-/// Convert a rustdoc type string to `SemType`, substituting generic type
-/// parameters with concrete types from the caller's context.
-///
-/// Used for inherent methods where `generic_args` are the actual type
-/// arguments (e.g. for `Vec<i32>`, `generic_args = [SemType for i32]`).
-pub(crate) fn parse_rustdoc_type_str(
+fn parse_rustdoc_type_with_env(
     s: &str,
-    generic_args: &[SemType],
-    type_name: &str,
+    env: &RustdocTypeBindingEnv,
+    unresolved: &mut BTreeSet<String>,
 ) -> SemType {
     let s = s.trim();
+    if s.is_empty() || s == "_" {
+        return SemType::Unknown;
+    }
     if s == "()" {
         return SemType::Unit;
     }
-    if s == "Self" {
-        return named_type(type_name);
+    if s == "self" || s == "Self" {
+        return env.self_type.clone().unwrap_or(SemType::Unknown);
     }
     if let Some((mutable, rest)) = parse_reference_prefix(s) {
         return SemType::Ref {
             mutable,
-            inner: Box::new(parse_rustdoc_type_str(rest, generic_args, type_name)),
+            inner: Box::new(parse_rustdoc_type_with_env(rest, env, unresolved)),
         };
     }
 
-    // Single-letter generic params from rustdoc.
-    // Only map known container params; unknown placeholders (e.g. slice index
-    // `I` in `get<I>`) stay unknown instead of being aliased to `T`.
-    if s.len() == 1 && s.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
-        let idx = match s {
-            "T" | "K" => Some(0),
-            "V" | "E" => Some(1),
-            _ => None,
-        };
-        return idx
-            .and_then(|index| generic_args.get(index).cloned())
-            .unwrap_or(SemType::Unknown);
+    if let Some(tuple_items) = parse_tuple_type_items(s) {
+        return SemType::Tuple(
+            tuple_items
+                .into_iter()
+                .map(|item| parse_rustdoc_type_with_env(item, env, unresolved))
+                .collect(),
+        );
+    }
+
+    if let Some(inner) = s.strip_prefix("Option<").and_then(|rest| rest.strip_suffix('>')) {
+        return option_type(parse_rustdoc_type_with_env(inner, env, unresolved));
+    }
+
+    if let Some((head, generic_body)) = split_type_head_and_generic_body(s) {
+        let path = head
+            .split("::")
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| segment.to_string())
+            .collect::<Vec<_>>();
+        if path.is_empty() {
+            return SemType::Unknown;
+        }
+        let args = split_top_level_commas(generic_body)
+            .into_iter()
+            .map(|item| parse_rustdoc_type_with_env(item, env, unresolved))
+            .collect();
+        return SemType::Path { path, args };
+    }
+
+    if let Some(bound) = resolve_generic_symbol(s, env, unresolved) {
+        return bound;
     }
 
     // Primitives
@@ -315,29 +406,6 @@ pub(crate) fn parse_rustdoc_type_str(
         _ => {}
     }
 
-    // Handle Option<...>, Vec<...>, etc.
-    if let Some(inner_start) = s.find('<') {
-        let outer = &s[..inner_start];
-        let inner_str = &s[inner_start + 1..s.len().saturating_sub(1)]; // strip < and >
-
-        match outer {
-            "Option" => {
-                let inner = parse_rustdoc_type_str(inner_str, generic_args, type_name);
-                return option_type(inner);
-            }
-            "Vec" => {
-                let inner = parse_rustdoc_type_str(inner_str, generic_args, type_name);
-                return SemType::Path {
-                    path: vec!["Vec".to_string()],
-                    args: vec![inner],
-                };
-            }
-            _ => {
-                return named_type(outer);
-            }
-        }
-    }
-
     if s.contains("::") && !s.starts_with('&') {
         return SemType::Path {
             path: s
@@ -345,11 +413,113 @@ pub(crate) fn parse_rustdoc_type_str(
                 .filter(|segment| !segment.is_empty())
                 .map(|segment| segment.to_string())
                 .collect(),
-            args: vec![],
+            args: Vec::new(),
         };
     }
 
     named_type(s)
+}
+
+fn resolve_generic_symbol(
+    symbol: &str,
+    env: &RustdocTypeBindingEnv,
+    unresolved: &mut BTreeSet<String>,
+) -> Option<SemType> {
+    if let Some(bound) = env.method_bindings.get(symbol) {
+        return Some(bound.clone());
+    }
+    if let Some(bound) = env.container_bindings.get(symbol) {
+        return Some(bound.clone());
+    }
+    if let Some(bound) = env.trait_bindings.get(symbol) {
+        return Some(bound.clone());
+    }
+    if env.known_symbols.contains(symbol) || is_probable_generic_symbol(symbol) {
+        unresolved.insert(symbol.to_string());
+        return Some(SemType::Unknown);
+    }
+    None
+}
+
+fn is_probable_generic_symbol(symbol: &str) -> bool {
+    symbol.len() == 1
+        && symbol
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_uppercase())
+}
+
+fn split_type_head_and_generic_body(ty: &str) -> Option<(&str, &str)> {
+    let start = ty.find('<')?;
+    if !ty.ends_with('>') || start == 0 {
+        return None;
+    }
+    let head = ty[..start].trim();
+    let body = &ty[start + 1..ty.len() - 1];
+    if head.is_empty() || body.trim().is_empty() {
+        return None;
+    }
+    Some((head, body))
+}
+
+fn parse_tuple_type_items(ty: &str) -> Option<Vec<&str>> {
+    let ty = ty.trim();
+    if !ty.starts_with('(') || !ty.ends_with(')') {
+        return None;
+    }
+    let inner = &ty[1..ty.len() - 1];
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    Some(split_top_level_commas(inner))
+}
+
+fn split_top_level_commas(input: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let mut depth_angle = 0usize;
+    let mut depth_paren = 0usize;
+    let mut start = 0usize;
+
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => depth_angle = depth_angle.saturating_sub(1),
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            ',' if depth_angle == 0 && depth_paren == 0 => {
+                let segment = input[start..idx].trim();
+                if !segment.is_empty() {
+                    items.push(segment);
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        items.push(tail);
+    }
+    items
+}
+
+/// Convert a rustdoc type string to `SemType`, substituting generic type
+/// parameters with concrete types from the caller's context.
+///
+/// Used for inherent methods where `generic_args` are the actual type
+/// arguments (e.g. for `Vec<i32>`, `generic_args = [SemType for i32]`).
+pub(crate) fn parse_rustdoc_type_str(
+    s: &str,
+    generic_args: &[SemType],
+    type_name: &str,
+) -> SemType {
+    let env = RustdocTypeBindingEnv {
+        self_type: Some(path_with_generic_args(type_name, generic_args)),
+        ..RustdocTypeBindingEnv::default()
+    };
+    let mut unresolved = BTreeSet::new();
+    parse_rustdoc_type_with_env(s, &env, &mut unresolved)
 }
 
 fn parse_reference_prefix(ty: &str) -> Option<(bool, &str)> {
@@ -477,39 +647,80 @@ mod tests {
     #[test]
     fn parse_generics() {
         let args = vec![named_type("i64")];
-        assert_eq!(parse_rustdoc_type_str("T", &args, "Vec"), named_type("i64"));
+        assert_eq!(parse_rustdoc_type_str("T", &args, "Vec"), SemType::Unknown);
         assert_eq!(parse_rustdoc_type_str("T", &[], "Vec"), SemType::Unknown);
         assert_eq!(parse_rustdoc_type_str("I", &args, "Vec"), SemType::Unknown);
     }
 
     #[test]
-    fn parse_option() {
-        let args = vec![named_type("i64")];
+    fn method_capability_binds_container_generic_by_name() {
+        let sig = rustdex::MethodSig {
+            name: "first".to_string(),
+            receiver: rustdex::ReceiverMode::Ref,
+            impl_type_params: vec!["T".to_string()],
+            method_type_params: Vec::new(),
+            method_where_predicates: Vec::new(),
+            params: Vec::new(),
+            return_type: "Option<&T>".to_string(),
+        };
+        let (capability, unresolved) = method_sig_to_capability(&sig, "Vec", &[named_type("i64")]);
+        assert!(unresolved.is_empty());
         assert_eq!(
-            parse_rustdoc_type_str("Option<T>", &args, "Vec"),
-            option_type(named_type("i64"))
+            capability.return_ty,
+            option_type(SemType::Ref {
+                mutable: false,
+                inner: Box::new(named_type("i64"))
+            })
+        );
+    }
+
+    #[test]
+    fn method_capability_reports_unresolved_method_generic() {
+        let sig = rustdex::MethodSig {
+            name: "get".to_string(),
+            receiver: rustdex::ReceiverMode::Ref,
+            impl_type_params: vec!["T".to_string()],
+            method_type_params: vec!["I: SliceIndex<[T]>".to_string()],
+            method_where_predicates: Vec::new(),
+            params: vec![rustdex::ParamSig {
+                name: "index".to_string(),
+                ty: "I".to_string(),
+                is_ref: false,
+                is_mut_ref: false,
+            }],
+            return_type: "Option<&I>".to_string(),
+        };
+        let (_capability, unresolved) =
+            method_sig_to_capability(&sig, "Vec", &[named_type("i64")]);
+        assert!(unresolved.contains(&"I".to_string()));
+    }
+
+    #[test]
+    fn parse_option() {
+        assert_eq!(
+            parse_rustdoc_type_str("Option<T>", &[named_type("i64")], "Vec"),
+            option_type(SemType::Unknown)
         );
     }
 
     #[test]
     fn parse_references_preserves_ref_semantics() {
-        let args = vec![named_type("i64")];
         assert_eq!(
-            parse_rustdoc_type_str("&T", &args, "Vec"),
+            parse_rustdoc_type_str("&T", &[named_type("i64")], "Vec"),
             SemType::Ref {
                 mutable: false,
-                inner: Box::new(named_type("i64")),
+                inner: Box::new(SemType::Unknown),
             }
         );
         assert_eq!(
-            parse_rustdoc_type_str("&mut T", &args, "Vec"),
+            parse_rustdoc_type_str("&mut T", &[named_type("i64")], "Vec"),
             SemType::Ref {
                 mutable: true,
-                inner: Box::new(named_type("i64")),
+                inner: Box::new(SemType::Unknown),
             }
         );
         assert_eq!(
-            parse_rustdoc_type_str("&str", &args, "Vec"),
+            parse_rustdoc_type_str("&str", &[named_type("i64")], "Vec"),
             SemType::Ref {
                 mutable: false,
                 inner: Box::new(named_type("str")),
